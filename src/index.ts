@@ -46,6 +46,7 @@ interface ActiveTurn {
   messageId: string;
   threadId: string;
   prompt: string;
+  answer?: string;
   logs: string[];
   status: 'running' | 'success' | 'failed';
   dirty: boolean;
@@ -408,6 +409,15 @@ function getActiveTurnForNotification(msg: any): ActiveTurn | undefined {
   return undefined;
 }
 
+function getChatIdForThread(threadId: string): string | undefined {
+  for (const chatId in sessionDb) {
+    if (sessionDb[chatId].threadId === threadId) {
+      return chatId;
+    }
+  }
+  return undefined;
+}
+
 // Connect to Codex App Server
 async function initCodex() {
   console.log('Connecting to Codex App Server...');
@@ -429,10 +439,59 @@ async function initCodex() {
     // Log the notification
     console.log(`[Codex Notification]:`, JSON.stringify(msg));
 
-    const turn = getActiveTurnForNotification(msg);
-    if (!turn) return;
-
+    let turn = getActiveTurnForNotification(msg);
     const params = msg.params || {};
+
+    if (!turn) {
+      // Check if this is a turn/started event on a bound thread (reverse push)
+      if (msg.method === 'turn/started' && params.threadId) {
+        const chatId = getChatIdForThread(params.threadId);
+        const turnId = params.turn && params.turn.id;
+        
+        if (chatId && turnId) {
+          console.log(`[Reverse Push] Detected new turn ${turnId} started on bound thread ${params.threadId}. Creating Feishu message card...`);
+          
+          const reverseTurn: ActiveTurn = {
+            chatId,
+            messageId: "", // Will be populated once Feishu API returns
+            threadId: params.threadId,
+            prompt: "Desktop Input 💻", // Default placeholder
+            logs: ["Starting execution from Codex Desktop..."],
+            status: 'running',
+            dirty: false
+          };
+
+          activeTurns.set(turnId, reverseTurn);
+          threadToActiveTurnId.set(params.threadId, turnId);
+
+          // Trigger asynchronous Feishu message creation
+          (async () => {
+            try {
+              const res = await larkClient.im.message.create({
+                params: { receive_id_type: 'chat_id' },
+                data: {
+                  receive_id: chatId,
+                  msg_type: 'interactive',
+                  content: JSON.stringify(createLogCard(reverseTurn))
+                }
+              });
+              const newMsgId = res.data?.message_id;
+              if (newMsgId) {
+                reverseTurn.messageId = newMsgId;
+                // Immediate patch in case we already have logs
+                updateLogCard(reverseTurn);
+              }
+            } catch (e) {
+              console.error('[Reverse Push] Failed to create reverse card:', e);
+            }
+          })();
+
+          turn = reverseTurn;
+        }
+      }
+    }
+
+    if (!turn) return;
 
     if (msg.method === 'turn/completed') {
       console.log(`Turn completed for thread ${turn.threadId}`);
@@ -461,6 +520,24 @@ async function initCodex() {
     } else if (msg.method === 'turn/started') {
       turn.logs.push('Execution started...');
       turn.dirty = true;
+    } else if (msg.method === 'item/agentMessage/delta') {
+      const delta = params.delta;
+      if (delta) {
+        turn.answer = (turn.answer || "") + delta;
+        turn.dirty = true;
+      }
+    } else if (msg.method === 'item/started' || msg.method === 'item/completed') {
+      const item = params.item || {};
+      if (item.type === 'userMessage') {
+        const contentStr = (item.content && item.content[0] && item.content[0].text) || "";
+        if (contentStr) {
+          turn.prompt = contentStr;
+          turn.dirty = true;
+        }
+      } else if (item.type === 'agentMessage' && item.text) {
+        turn.answer = item.text;
+        turn.dirty = true;
+      }
     } else if (msg.method === 'agent/stderr') {
       const chunk = params.chunk;
       if (chunk) {
@@ -580,6 +657,37 @@ function createLogCard(turn: ActiveTurn) {
     logContent = "... (truncated) ...\n" + logContent.substring(logContent.length - maxChars);
   }
 
+  const elements: any[] = [
+    {
+      tag: "markdown",
+      content: `**Prompt**: ${turn.prompt}`
+    },
+    {
+      tag: "markdown",
+      content: `**Status**: ${statusText}`
+    }
+  ];
+
+  if (turn.answer) {
+    elements.push({
+      tag: "markdown",
+      content: `**Answer**:\n${turn.answer}`
+    });
+  }
+
+  elements.push(
+    {
+      tag: "hr"
+    },
+    {
+      tag: "div",
+      text: {
+        tag: "lark_md",
+        content: `**Execution Logs**:\n\`\`\`text\n${logContent}\n\`\`\``
+      }
+    }
+  );
+
   return {
     schema: "2.0",
     config: {
@@ -593,26 +701,7 @@ function createLogCard(turn: ActiveTurn) {
       }
     },
     body: {
-      elements: [
-        {
-          tag: "markdown",
-          content: `**Prompt**: ${turn.prompt}`
-        },
-        {
-          tag: "markdown",
-          content: `**Status**: ${statusText}`
-        },
-        {
-          tag: "hr"
-        },
-        {
-          tag: "div",
-          text: {
-            tag: "lark_md",
-            content: `**Execution Logs**:\n\`\`\`text\n${logContent}\n\`\`\``
-          }
-        }
-      ]
+      elements: elements
     }
   };
 }
