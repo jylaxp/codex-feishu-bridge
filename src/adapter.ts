@@ -684,31 +684,37 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
 
           if (path[2] === 'items' && typeof path[3] === 'number' && path[4] === 'text') {
             const itemIndex = path[3];
-            const textKey = `${threadId}-${turnIndex}-${itemIndex}`;
-            const oldText = this.lastAgentMessageTexts.get(textKey) || '';
-            const newText = patch.value || '';
-            if (newText.length > oldText.length) {
-              const delta = newText.slice(oldText.length);
-              this.lastAgentMessageTexts.set(textKey, newText);
-              this.emitNotification({
-                method: 'item/agentMessage/delta',
-                params: { threadId, turnId, delta }
-              });
+            const item = afterTurn.items[itemIndex];
+            if (item && item.type === 'agentMessage') {
+              const textKey = `${threadId}-${turnIndex}-${itemIndex}`;
+              const oldText = this.lastAgentMessageTexts.get(textKey) || '';
+              const newText = patch.value || '';
+              if (newText.length > oldText.length) {
+                const delta = newText.slice(oldText.length);
+                this.lastAgentMessageTexts.set(textKey, newText);
+                this.emitNotification({
+                  method: 'item/agentMessage/delta',
+                  params: { threadId, turnId, delta }
+                });
+              }
             }
           }
 
           if (path[2] === 'items' && typeof path[3] === 'number' && path[4] === 'aggregatedOutput') {
             const itemIndex = path[3];
-            const outputKey = `${threadId}-${turnIndex}-${itemIndex}`;
-            const oldOutput = this.lastCommandOutputs.get(outputKey) || '';
-            const newOutput = patch.value || '';
-            if (newOutput.length > oldOutput.length) {
-              const delta = newOutput.slice(oldOutput.length);
-              this.lastCommandOutputs.set(outputKey, newOutput);
-              this.emitNotification({
-                method: 'agent/stderr',
-                params: { chunk: delta }
-              });
+            const item = afterTurn.items[itemIndex];
+            if (item && item.type === 'commandExecution') {
+              const outputKey = `${threadId}-${turnIndex}-${itemIndex}`;
+              const oldOutput = this.lastCommandOutputs.get(outputKey) || '';
+              const newOutput = patch.value || '';
+              if (newOutput.length > oldOutput.length) {
+                const delta = newOutput.slice(oldOutput.length);
+                this.lastCommandOutputs.set(outputKey, newOutput);
+                this.emitNotification({
+                  method: 'agent/stderr',
+                  params: { chunk: delta }
+                });
+              }
             }
           }
 
