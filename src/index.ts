@@ -1205,10 +1205,44 @@ async function initCodex() {
 function createBindingCard(threads: CodexThread[]) {
   const homeDir = os.homedir();
 
-  // Sort threads so global/no-project threads are at the top, followed by projects grouped by cwd
-  const sortedThreads = [...threads].sort((a, b) => {
-    const isGlobalA = !a.cwd || a.cwd === homeDir || a.cwd === "/" || a.cwd === ".";
-    const isGlobalB = !b.cwd || b.cwd === homeDir || b.cwd === "/" || b.cwd === ".";
+  // Read Codex global state to get active projects and projectless threads
+  const globalStatePath = path.join(homeDir, '.codex', '.codex-global-state.json');
+  let savedWorkspaces: string[] = [];
+  let workspaceLabels: Record<string, string> = {};
+  let projectlessThreadIds: string[] = [];
+
+  if (fs.existsSync(globalStatePath)) {
+    try {
+      const globalState = JSON.parse(fs.readFileSync(globalStatePath, 'utf8'));
+      savedWorkspaces = globalState['electron-saved-workspace-roots'] || globalState['project-order'] || [];
+      workspaceLabels = globalState['electron-workspace-root-labels'] || {};
+      projectlessThreadIds = globalState['projectless-thread-ids'] || [];
+    } catch (e) {
+      console.error('Failed to parse .codex-global-state.json:', e);
+    }
+  }
+
+  // 1. Filter out threads belonging to deleted projects
+  const filteredThreads = threads.filter(t => {
+    const isProjectless = !t.cwd || t.cwd === homeDir || t.cwd === "/" || t.cwd === "." || (t.id && projectlessThreadIds.includes(t.id));
+    if (isProjectless) {
+      return true; // Keep global/projectless threads
+    }
+    
+    // Check if the thread's cwd is in the saved workspaces list
+    const isSavedWorkspace = savedWorkspaces.some(w => {
+      const normW = path.normalize(w).toLowerCase();
+      const normC = path.normalize(t.cwd || "").toLowerCase();
+      return normC === normW || normC.startsWith(normW + path.sep);
+    });
+
+    return isSavedWorkspace; // Only keep it if it belongs to a saved (active) workspace
+  });
+
+  // 2. Sort threads so global/no-project threads are at the top, followed by projects grouped by cwd
+  const sortedThreads = [...filteredThreads].sort((a, b) => {
+    const isGlobalA = !a.cwd || a.cwd === homeDir || a.cwd === "/" || a.cwd === "." || (a.id && projectlessThreadIds.includes(a.id));
+    const isGlobalB = !b.cwd || b.cwd === homeDir || b.cwd === "/" || b.cwd === "." || (b.id && projectlessThreadIds.includes(b.id));
     
     if (isGlobalA && !isGlobalB) return -1;
     if (!isGlobalA && isGlobalB) return 1;
@@ -1218,15 +1252,26 @@ function createBindingCard(threads: CodexThread[]) {
     return cwdA.localeCompare(cwdB);
   });
 
+  // 3. Map to dropdown options
   const options = sortedThreads.map(t => {
-    const isGlobal = !t.cwd || t.cwd === homeDir || t.cwd === "/" || t.cwd === ".";
+    const isGlobal = !t.cwd || t.cwd === homeDir || t.cwd === "/" || t.cwd === "." || (t.id && projectlessThreadIds.includes(t.id));
     
     let prefix = "🌐 全局会话 ➜ ";
     if (!isGlobal && t.cwd) {
-      try {
-        const dirName = path.basename(t.cwd);
-        prefix = dirName ? `📁 ${dirName} ➜ ` : "";
-      } catch (e) {}
+      // Find the matched workspace to get the proper label/basename
+      const matchedWorkspace = savedWorkspaces.find(w => {
+        const normW = path.normalize(w).toLowerCase();
+        const normC = path.normalize(t.cwd || "").toLowerCase();
+        return normC === normW || normC.startsWith(normW + path.sep);
+      });
+
+      let dirName = "";
+      if (matchedWorkspace) {
+        dirName = workspaceLabels[matchedWorkspace] || path.basename(matchedWorkspace);
+      } else {
+        dirName = path.basename(t.cwd);
+      }
+      prefix = dirName ? `📁 ${dirName} ➜ ` : "";
     }
     
     const content = `${prefix}${t.name}`;
