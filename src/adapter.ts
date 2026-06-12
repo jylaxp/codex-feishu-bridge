@@ -11,6 +11,7 @@ export interface CodexThread {
   id: string;
   name: string;
   preview: string;
+  cwd?: string;
 }
 
 export interface CodexThreadAdapter {
@@ -175,6 +176,15 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
           } else {
             pending.resolve(message.result);
           }
+        } else {
+          // This is a request from Codex App Server (e.g. approval request)
+          this.notificationHandlers.forEach(handler => {
+            try {
+              handler(message);
+            } catch (e) {
+              console.error('Error in notification handler:', e);
+            }
+          });
         }
       } else {
         // Notification event from App Server
@@ -249,8 +259,18 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
     return result.data.map((t: any) => ({
       id: t.id,
       name: t.name || t.preview || "未命名会话",
-      preview: t.preview || ""
+      preview: t.preview || "",
+      cwd: t.cwd || t.workspacePath || t.workspace || ""
     }));
+  }
+
+  respond(id: number | string, result: any): void {
+    const resp = { jsonrpc: '2.0', id, result };
+    if (this.ws) {
+      this.ws.send(JSON.stringify(resp));
+    } else if (this.childProcess && this.childProcess.stdin) {
+      this.childProcess.stdin.write(JSON.stringify(resp) + '\n');
+    }
   }
 
   private async tryDesktopIpcStartTurn(options: { threadId: string; cwd: string; prompt: string }): Promise<string | null> {

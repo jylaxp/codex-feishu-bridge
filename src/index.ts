@@ -41,21 +41,545 @@ function saveSessions(db: SessionDb) {
 }
 
 // Active turn interface
+interface TurnStats {
+  model?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  contextTokens?: number;
+  contextLength?: number;
+  apiCalls?: number;
+}
+
 interface ActiveTurn {
   chatId: string;
   messageId: string;
+  cardId?: string;
   threadId: string;
   prompt: string;
   answer?: string;
   logs: string[];
   status: 'running' | 'success' | 'failed';
   dirty: boolean;
+  startedAt?: number;
+  completedAt?: number;
+  stats: TurnStats;
+  sequence: number;
+}
+
+interface ActiveApproval {
+  requestId: number | string;
+  chatId: string;
+  threadId: string;
+  turnId: string;
+  approvalType: string;
+  summary: string;
+  cwd: string;
 }
 
 // Global states
 const sessionDb = loadSessions();
 const activeTurns = new Map<string, ActiveTurn>(); // turnId -> ActiveTurn
 const threadToActiveTurnId = new Map<string, string>(); // threadId -> turnId
+const activeApprovals = new Map<string, ActiveApproval>(); // approvalId -> ActiveApproval
+
+// --- Feishu Token Cache ---
+let cachedToken = "";
+let tokenExpiresAt = 0;
+
+async function getTenantAccessToken(): Promise<string> {
+  const now = Date.now();
+  if (cachedToken && tokenExpiresAt > now + 60000) {
+    return cachedToken;
+  }
+  const appId = process.env.LARK_APP_ID || process.env.APP_ID;
+  const appSecret = process.env.LARK_APP_SECRET || process.env.APP_SECRET;
+  if (!appId || !appSecret) {
+    throw new Error("Missing LARK_APP_ID or LARK_APP_SECRET");
+  }
+
+  const res = await fetch("https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ app_id: appId, app_secret: appSecret })
+  });
+  const data: any = await res.json();
+  if (data.code !== 0) {
+    throw new Error(`Failed to get Feishu token: ${data.msg}`);
+  }
+  cachedToken = data.tenant_access_token;
+  tokenExpiresAt = now + (data.expire || 7200) * 1000;
+  return cachedToken;
+}
+
+// --- CardKit 2.0 Core APIs ---
+async function createCardKitCard(cardContent: any): Promise<string> {
+  const token = await getTenantAccessToken();
+  const res = await fetch("https://open.feishu.cn/open-apis/cardkit/v1/cards", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${token}`
+    },
+    body: JSON.stringify({
+      type: "card_json",
+      data: JSON.stringify(cardContent)
+    })
+  });
+  const data: any = await res.json();
+  if (data.code !== 0) {
+    throw new Error(`Failed to create CardKit card: ${data.msg}`);
+  }
+  return data.data.card_id;
+}
+
+async function sendCardKitMessage(chatId: string, cardId: string): Promise<string> {
+  const res = await larkClient.im.message.create({
+    params: { receive_id_type: 'chat_id' },
+    data: {
+      receive_id: chatId,
+      msg_type: 'interactive',
+      content: JSON.stringify({
+        type: "card",
+        data: {
+          card_id: cardId
+        }
+      })
+    }
+  });
+  return res.data?.message_id || "";
+}
+
+async function streamCardKitElement(cardId: string, elementId: string, content: string, sequence: number) {
+  try {
+    const token = await getTenantAccessToken();
+    const res = await fetch(`https://open.feishu.cn/open-apis/cardkit/v1/cards/${encodeURIComponent(cardId)}/elements/${encodeURIComponent(elementId)}/content`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${token}`
+      },
+      body: JSON.stringify({
+        content: content || " ",
+        sequence: sequence
+      })
+    });
+    const data: any = await res.json();
+    if (data.code !== 0) {
+      console.error(`Failed to stream CardKit element ${elementId}:`, data.msg);
+    }
+  } catch (e) {
+    console.error(`Failed to stream element ${elementId} network request:`, e);
+  }
+}
+
+async function finalizeCardKitCard(cardId: string, finalContent: any, sequence: number) {
+  try {
+    const token = await getTenantAccessToken();
+    
+    // 1. Close streaming mode
+    const settingsRes = await fetch(`https://open.feishu.cn/open-apis/cardkit/v1/cards/${encodeURIComponent(cardId)}/settings`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${token}`
+      },
+      body: JSON.stringify({
+        settings: JSON.stringify({ streaming_mode: false }),
+        sequence: sequence
+      })
+    });
+    const settingsData: any = await settingsRes.json();
+    if (settingsData.code !== 0) {
+      console.error(`Failed to close streaming mode for card ${cardId}:`, settingsData.msg);
+    }
+
+    // 2. Put final full card json
+    const updateRes = await fetch(`https://open.feishu.cn/open-apis/cardkit/v1/cards/${encodeURIComponent(cardId)}`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${token}`
+      },
+      body: JSON.stringify({
+        card: {
+          type: "card_json",
+          data: JSON.stringify(finalContent)
+        },
+        sequence: sequence + 1
+      })
+    });
+    const updateData: any = await updateRes.json();
+    if (updateData.code !== 0) {
+      console.error(`Failed to finalize CardKit card ${cardId}:`, updateData.msg);
+    }
+  } catch (e) {
+    console.error(`Failed to finalize CardKit card network request:`, e);
+  }
+}
+
+// --- Stats Parser and Formatting ---
+function extractStatsFromParams(params: any): TurnStats {
+  const stats: TurnStats = {};
+  if (!params || typeof params !== 'object') {
+    return stats;
+  }
+  
+  function search(obj: any, depth = 0) {
+    if (depth > 8 || !obj || typeof obj !== 'object') return;
+    
+    const modelKeys = ["model", "model_name", "modelName", "model_id", "modelId", "toModel"];
+    for (const key of modelKeys) {
+      if (typeof obj[key] === 'string' && obj[key].trim()) {
+        stats.model = obj[key].trim();
+        break;
+      } else if (typeof obj[key] === 'object' && obj[key] !== null) {
+        const nestedModel = obj[key].id || obj[key].name || obj[key].model;
+        if (typeof nestedModel === 'string' && nestedModel.trim()) {
+          stats.model = nestedModel.trim();
+          break;
+        }
+      }
+    }
+
+    const inputTokenKeys = ["input_tokens", "inputTokens", "prompt_tokens", "promptTokens", "tokens_in", "tokensIn"];
+    for (const key of inputTokenKeys) {
+      if (typeof obj[key] === 'number') { stats.inputTokens = obj[key]; break; }
+      if (typeof obj[key] === 'string' && /^\d+$/.test(obj[key])) { stats.inputTokens = parseInt(obj[key], 10); break; }
+    }
+    const outputTokenKeys = ["output_tokens", "outputTokens", "completion_tokens", "completionTokens", "tokens_out", "tokensOut"];
+    for (const key of outputTokenKeys) {
+      if (typeof obj[key] === 'number') { stats.outputTokens = obj[key]; break; }
+      if (typeof obj[key] === 'string' && /^\d+$/.test(obj[key])) { stats.outputTokens = parseInt(obj[key], 10); break; }
+    }
+    const contextTokenKeys = ["context_tokens", "contextTokens", "context_used_tokens", "contextUsedTokens", "total_tokens", "totalTokens"];
+    for (const key of contextTokenKeys) {
+      if (typeof obj[key] === 'number') { stats.contextTokens = obj[key]; break; }
+      if (typeof obj[key] === 'string' && /^\d+$/.test(obj[key])) { stats.contextTokens = parseInt(obj[key], 10); break; }
+    }
+    const contextLengthKeys = ["context_length", "contextLength", "context_window", "contextWindow", "modelContextWindow", "max_context_tokens", "maxContextTokens"];
+    for (const key of contextLengthKeys) {
+      if (typeof obj[key] === 'number') { stats.contextLength = obj[key]; break; }
+      if (typeof obj[key] === 'string' && /^\d+$/.test(obj[key])) { stats.contextLength = parseInt(obj[key], 10); break; }
+    }
+    const apiCallKeys = ["api_calls", "apiCalls", "api_requests", "apiRequests", "request_count", "requestCount"];
+    for (const key of apiCallKeys) {
+      if (typeof obj[key] === 'number') { stats.apiCalls = obj[key]; break; }
+      if (typeof obj[key] === 'string' && /^\d+$/.test(obj[key])) { stats.apiCalls = parseInt(obj[key], 10); break; }
+    }
+
+    if (Array.isArray(obj)) {
+      for (const item of obj) {
+        search(item, depth + 1);
+      }
+    } else {
+      for (const k in obj) {
+        if (typeof obj[k] === 'object') {
+          search(obj[k], depth + 1);
+        }
+      }
+    }
+  }
+
+  search(params);
+  return stats;
+}
+
+function formatCount(value?: number): string {
+  if (value === undefined || value === null) return "-";
+  if (value >= 1000000) return `${(value / 1000000).toFixed(1)}M`;
+  if (value >= 1000) return `${(value / 1000).toFixed(1)}K`;
+  return String(value);
+}
+
+function formatDuration(ms: number): string {
+  const seconds = ms / 1000;
+  if (seconds < 60) {
+    return `${seconds.toFixed(1)}s`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  const remainder = Math.floor(seconds % 60);
+  return `${minutes}m${remainder.toString().padStart(2, '0')}s`;
+}
+
+function getStatsFooterText(turn: ActiveTurn): string {
+  const parts: string[] = [];
+  
+  if (turn.status === 'success') {
+    parts.push("✅ 已完成");
+  } else if (turn.status === 'failed') {
+    parts.push("❌ 失败");
+  } else {
+    parts.push("⏳ 运行中");
+  }
+
+  if (turn.startedAt) {
+    const elapsed = turn.completedAt 
+      ? turn.completedAt - turn.startedAt
+      : Date.now() - turn.startedAt;
+    parts.push(`耗时 ${formatDuration(elapsed)}`);
+  }
+
+  if (turn.stats.model) {
+    parts.push(turn.stats.model);
+  }
+
+  if (turn.stats.inputTokens !== undefined || turn.stats.outputTokens !== undefined) {
+    const inT = formatCount(turn.stats.inputTokens);
+    const outT = formatCount(turn.stats.outputTokens);
+    parts.push(`↑ ${inT} ↓ ${outT}`);
+  }
+
+  if (turn.stats.contextTokens !== undefined && turn.stats.contextLength) {
+    const percentage = Math.round((turn.stats.contextTokens / turn.stats.contextLength) * 100);
+    const used = formatCount(turn.stats.contextTokens);
+    const maxLen = formatCount(turn.stats.contextLength);
+    parts.push(`上下文 ${used}/${maxLen} (${percentage}%)`);
+  }
+
+  if (turn.stats.apiCalls !== undefined) {
+    parts.push(`API ${turn.stats.apiCalls}`);
+  }
+
+  return parts.join(" · ");
+}
+
+// --- CardKit Layout Constructors ---
+function createCardKitInitialLayout(turn: ActiveTurn) {
+  const footer = getStatsFooterText(turn);
+  
+  return {
+    schema: "2.0",
+    config: {
+      streaming_mode: true,
+      update_multi: true,
+      summary: { content: "Codex 执行进度" }
+    },
+    header: {
+      template: "indigo",
+      title: { tag: "plain_text", content: "🌌 Codex Remote Control" }
+    },
+    body: {
+      elements: [
+        {
+          tag: "markdown",
+          content: `**📥 输入 Prompt**\n> ${turn.prompt}`
+        },
+        { tag: "hr" },
+        {
+          tag: "markdown",
+          content: `🧠 **推理过程与日志**\nInitializing execution...`,
+          element_id: "codex_process"
+        },
+        { tag: "hr" },
+        {
+          tag: "markdown",
+          content: `✨ **最终结果输出**\n等待中...`,
+          element_id: "codex_output"
+        },
+        { tag: "hr" },
+        {
+          tag: "markdown",
+          content: `📊 ${footer}`,
+          element_id: "codex_footer"
+        }
+      ]
+    }
+  };
+}
+
+function createCardKitFinalLayout(turn: ActiveTurn) {
+  const headerTemplate = turn.status === "failed" ? "red" : "green";
+  const footer = getStatsFooterText(turn);
+  
+  let logContent = turn.logs.join("\n");
+  if (!logContent.trim()) {
+    logContent = "Finished.";
+  }
+  const maxChars = 2000;
+  if (logContent.length > maxChars) {
+    logContent = "... (truncated) ...\n" + logContent.substring(logContent.length - maxChars);
+  }
+
+  return {
+    schema: "2.0",
+    config: {
+      wide_screen_mode: true
+    },
+    header: {
+      template: headerTemplate,
+      title: { tag: "plain_text", content: turn.status === "success" ? "✅ Codex 执行成功" : "❌ Codex 执行失败" }
+    },
+    body: {
+      elements: [
+        {
+          tag: "markdown",
+          content: `**📥 输入 Prompt**\n> ${turn.prompt}`
+        },
+        { tag: "hr" },
+        {
+          tag: "div",
+          text: {
+            tag: "lark_md",
+            content: `🧠 **执行日志**:\n\`\`\`text\n${logContent}\n\`\`\``
+          }
+        },
+        { tag: "hr" },
+        {
+          tag: "markdown",
+          content: `✨ **最终结果输出**\n${turn.answer || '无最终文本输出'}`
+        },
+        { tag: "hr" },
+        {
+          tag: "markdown",
+          content: `📊 ${footer}`
+        }
+      ]
+    }
+  };
+}
+
+// --- Approval Card Templates ---
+function createApprovalCard(approvalId: string, type: string, cwd: string, summary: string) {
+  let cleanSummary = summary;
+  const secretPatterns = [
+    /(authorization:\s*bearer\s+)[^\s'"]+/gi,
+    /(token=)[^&\s]+/gi,
+    /(api[_-]?key=)[^&\s]+/gi,
+    /(secret=)[^&\s]+/gi
+  ];
+  for (const pattern of secretPatterns) {
+    cleanSummary = cleanSummary.replace(pattern, "$1[REDACTED]");
+  }
+
+  let riskLevel = "low";
+  const text = `${type} ${summary}`.toLowerCase();
+  if (/\b(rm|delete|curl|wget)\b|https?:\/\/|token|secret/i.test(text)) {
+    riskLevel = "high";
+  } else if (["exec", "command", "shell"].includes(type.toLowerCase())) {
+    riskLevel = "medium";
+  }
+
+  const riskText = riskLevel === "high" 
+    ? "<font color='red'><b>高风险 ⚠️ (包含敏感词或命令)</b></font>" 
+    : (riskLevel === "medium" ? "<font color='orange'><b>中风险 ⚡️ (执行命令)</b></font>" : "低风险 ✅");
+
+  return {
+    schema: "2.0",
+    config: {
+      wide_screen_mode: true
+    },
+    header: {
+      template: riskLevel === "high" ? "carmine" : (riskLevel === "medium" ? "orange" : "violet"),
+      title: {
+        tag: "plain_text",
+        content: "⚡️ Codex 安全审批申请"
+      }
+    },
+    body: {
+      elements: [
+        {
+          tag: "markdown",
+          content: "🚨 Codex 正在尝试在您的系统上执行以下敏感操作，需要您进行确认授权："
+        },
+        { tag: "hr" },
+        {
+          tag: "markdown",
+          content: `📌 **操作类型**: \`${type}\`\n📂 **工作目录**: \`${cwd || 'Unknown'}\`\n🛡️ **风险评估**: ${riskText}`
+        },
+        { tag: "hr" },
+        {
+          tag: "markdown",
+          content: `💻 **准备执行的操作指令**:\n\`\`\`text\n${cleanSummary}\n\`\`\``
+        },
+        { tag: "hr" },
+        {
+          tag: "action",
+          actions: [
+            {
+              tag: "button",
+              text: { tag: "plain_text", content: "批准 (Approve)" },
+              type: "primary",
+              value: {
+                action: "approval_decision",
+                approvalId: approvalId,
+                decision: "accept"
+              }
+            },
+            {
+              tag: "button",
+              text: { tag: "plain_text", content: "拒绝 (Deny)" },
+              type: "danger",
+              value: {
+                action: "approval_decision",
+                approvalId: approvalId,
+                decision: "decline"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  };
+}
+
+function createApprovalDecidedCard(type: string, decision: string) {
+  const isAccepted = decision === "accept";
+  return {
+    schema: "2.0",
+    config: {
+      wide_screen_mode: true
+    },
+    header: {
+      template: isAccepted ? "green" : "grey",
+      title: {
+        tag: "plain_text",
+        content: isAccepted ? "✅ 审批已批准" : "❌ 审批已拒绝"
+      }
+    },
+    body: {
+      elements: [
+        {
+          tag: "markdown",
+          content: isAccepted 
+            ? `该操作（类型：\`${type}\`）已于 **${new Date().toLocaleString()}** 被批准执行。` 
+            : `该操作已被拒绝。Codex 将停止该步骤 of 执行。`
+        }
+      ]
+    }
+  };
+}
+
+// --- Granular CardKit Updater ---
+async function streamUpdateCardKit(turn: ActiveTurn) {
+  if (!turn.cardId || turn.status !== 'running') return;
+  try {
+    const seq = turn.sequence++;
+    
+    // 1. Update Inference / logs
+    let logContent = turn.logs.join("\n");
+    if (logContent.trim()) {
+      const maxChars = 2000;
+      if (logContent.length > maxChars) {
+        logContent = "... (truncated) ...\n" + logContent.substring(logContent.length - maxChars);
+      }
+      const logMd = `🧠 **推理过程与日志**:\n\`\`\`text\n${logContent}\n\`\`\``;
+      await streamCardKitElement(turn.cardId, "codex_process", logMd, seq);
+    }
+
+    // 2. Update Output
+    if (turn.answer) {
+      const outputMd = `✨ **最终结果输出**:\n${turn.answer}`;
+      await streamCardKitElement(turn.cardId, "codex_output", outputMd, seq);
+    }
+
+    // 3. Update Footer
+    const footerText = `📊 ${getStatsFooterText(turn)}`;
+    await streamCardKitElement(turn.cardId, "codex_footer", footerText, seq);
+
+  } catch (e) {
+    console.error(`Failed to stream update CardKit card:`, e);
+  }
+}
 
 // Initialize Lark client (initialized dynamically in main)
 let larkClient: Lark.Client;
@@ -106,7 +630,7 @@ setInterval(async () => {
   for (const [turnId, turn] of activeTurns.entries()) {
     if (turn.dirty && turn.status === 'running') {
       turn.dirty = false;
-      await updateLogCard(turn);
+      await streamUpdateCardKit(turn);
     }
   }
 }, 1000);
@@ -161,14 +685,8 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
         }
 
         const bindingCard = createBindingCard(threads);
-        await larkClient.im.message.create({
-          params: { receive_id_type: 'chat_id' },
-          data: {
-            receive_id: chatId,
-            msg_type: 'interactive',
-            content: JSON.stringify(bindingCard)
-          }
-        });
+        const cardId = await createCardKitCard(bindingCard);
+        await sendCardKitMessage(chatId, cardId);
       } catch (e: any) {
         console.error('Failed to list threads or send card:', e);
         await larkClient.im.message.create({
@@ -204,23 +722,23 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
       const initialTurn: ActiveTurn = {
         chatId,
         messageId: "",
+        cardId: "",
         threadId: bound.threadId,
         prompt: text,
         logs: ["Starting remote control turn..."],
         status: 'running',
-        dirty: false
+        dirty: false,
+        startedAt: Date.now(),
+        stats: {},
+        sequence: 1
       };
       
-      const res = await larkClient.im.message.create({
-        params: { receive_id_type: 'chat_id' },
-        data: {
-          receive_id: chatId,
-          msg_type: 'interactive',
-          content: JSON.stringify(createLogCard(initialTurn))
-        }
-      });
-      
-      logCardMessageId = res.data?.message_id || "";
+      const initialLayout = createCardKitInitialLayout(initialTurn);
+      const cardId = await createCardKitCard(initialLayout);
+      initialTurn.cardId = cardId;
+
+      const resMessageId = await sendCardKitMessage(chatId, cardId);
+      logCardMessageId = resMessageId;
       if (!logCardMessageId) {
         throw new Error("Failed to retrieve Feishu log card message ID");
       }
@@ -328,8 +846,10 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
     const chatId = context.open_chat_id;
 
     const actionValue = action.value || {};
+    
+    // 1. Handle session binding
     if (action.action_id === 'bind_select_thread' || actionValue.action === 'bind_select_thread') {
-      const selectedThreadId = action.option;
+      const selectedThreadId = action.option || actionValue.threadId;
       if (!selectedThreadId) return;
 
       try {
@@ -379,6 +899,67 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
             i18n: {
               zh_cn: `绑定失败: ${e.message || e}`,
               en_us: `Binding failed: ${e.message || e}`
+            }
+          }
+        };
+      }
+    }
+
+    // 2. Handle approval decision callback
+    if (actionValue.action === 'approval_decision') {
+      const { approvalId, decision } = actionValue;
+      const approval = activeApprovals.get(approvalId);
+      if (!approval) {
+        return {
+          toast: {
+            type: "error",
+            content: "Approval request not found or expired",
+            i18n: {
+              zh_cn: "未找到该审批请求或已过期",
+              en_us: "Approval request not found or expired"
+            }
+          }
+        };
+      }
+
+      try {
+        console.log(`Responding to Codex Approval ${approval.requestId} with decision ${decision}...`);
+        
+        // Respond to Codex via adapter
+        adapter.respond(approval.requestId, { decision });
+
+        // Update card to finished state
+        const decidedCard = createApprovalDecidedCard(approval.approvalType, decision);
+        await larkClient.im.message.patch({
+          path: {
+            message_id: messageId
+          },
+          data: {
+            content: JSON.stringify(decidedCard)
+          }
+        });
+
+        activeApprovals.delete(approvalId);
+
+        return {
+          toast: {
+            type: "success",
+            content: `Decision: ${decision} submitted`,
+            i18n: {
+              zh_cn: `已提交决策: ${decision === 'accept' ? '批准' : '拒绝'}`,
+              en_us: `Decision: ${decision} submitted`
+            }
+          }
+        };
+      } catch (e: any) {
+        console.error('Failed to submit approval decision:', e);
+        return {
+          toast: {
+            type: "error",
+            content: `Failed: ${e.message || e}`,
+            i18n: {
+              zh_cn: `提交决策失败: ${e.message || e}`,
+              en_us: `Failed to submit decision: ${e.message || e}`
             }
           }
         };
@@ -439,8 +1020,57 @@ async function initCodex() {
     // Log the notification
     console.log(`[Codex Notification]:`, JSON.stringify(msg));
 
-    let turn = getActiveTurnForNotification(msg);
     const params = msg.params || {};
+
+    // 1. Intercept Codex approval request
+    if (msg.id !== undefined && msg.method && msg.method.toLowerCase().includes("approval")) {
+      const approvalId = 'apr-' + crypto.randomUUID();
+      const type = params.approvalType || params.type || "操作审批";
+      
+      const summaryKeys = ["cmd", "command", "path", "file", "summary"];
+      let summary = "";
+      for (const key of summaryKeys) {
+        if (params[key]) {
+          summary = String(params[key]);
+          break;
+        }
+      }
+      if (!summary) {
+        summary = JSON.stringify(params);
+      }
+      
+      const cwd = params.cwd || "";
+      const threadId = params.threadId || (params.turn && params.turn.threadId);
+      const turnId = params.turnId || (params.turn && params.turn.id);
+      
+      const chatId = threadId ? getChatIdForThread(threadId) : undefined;
+      if (chatId) {
+        console.log(`[Approval Request] Intercepted approval request ${msg.id} for thread ${threadId}. Sending Feishu card...`);
+        
+        activeApprovals.set(approvalId, {
+          requestId: msg.id,
+          chatId,
+          threadId: threadId || "",
+          turnId: turnId || "",
+          approvalType: type,
+          summary,
+          cwd
+        });
+
+        (async () => {
+          try {
+            const appCard = createApprovalCard(approvalId, type, cwd, summary);
+            const cardId = await createCardKitCard(appCard);
+            await sendCardKitMessage(chatId, cardId);
+          } catch (e) {
+            console.error('Failed to send approval card:', e);
+          }
+        })();
+      }
+      return;
+    }
+
+    let turn = getActiveTurnForNotification(msg);
 
     if (!turn) {
       // Check if this is a turn/started event on a bound thread (reverse push)
@@ -453,12 +1083,16 @@ async function initCodex() {
           
           const reverseTurn: ActiveTurn = {
             chatId,
-            messageId: "", // Will be populated once Feishu API returns
+            messageId: "",
+            cardId: "",
             threadId: params.threadId,
-            prompt: "Desktop Input 💻", // Default placeholder
+            prompt: "Desktop Input 💻",
             logs: ["Starting execution from Codex Desktop..."],
             status: 'running',
-            dirty: false
+            dirty: false,
+            startedAt: Date.now(),
+            stats: {},
+            sequence: 1
           };
 
           activeTurns.set(turnId, reverseTurn);
@@ -467,19 +1101,15 @@ async function initCodex() {
           // Trigger asynchronous Feishu message creation
           (async () => {
             try {
-              const res = await larkClient.im.message.create({
-                params: { receive_id_type: 'chat_id' },
-                data: {
-                  receive_id: chatId,
-                  msg_type: 'interactive',
-                  content: JSON.stringify(createLogCard(reverseTurn))
-                }
-              });
-              const newMsgId = res.data?.message_id;
+              const initialLayout = createCardKitInitialLayout(reverseTurn);
+              const cardId = await createCardKitCard(initialLayout);
+              reverseTurn.cardId = cardId;
+              
+              const newMsgId = await sendCardKitMessage(chatId, cardId);
               if (newMsgId) {
                 reverseTurn.messageId = newMsgId;
-                // Immediate patch in case we already have logs
-                updateLogCard(reverseTurn);
+                // Immediate update in case we already have logs
+                await streamUpdateCardKit(reverseTurn);
               }
             } catch (e) {
               console.error('[Reverse Push] Failed to create reverse card:', e);
@@ -493,6 +1123,10 @@ async function initCodex() {
 
     if (!turn) return;
 
+    // Extract stats dynamically if present in parameters
+    const stats = extractStatsFromParams(params);
+    turn.stats = { ...turn.stats, ...stats };
+
     if (msg.method === 'turn/completed') {
       console.log(`Turn completed for thread ${turn.threadId}`);
       turn.status = params.error ? 'failed' : 'success';
@@ -502,9 +1136,16 @@ async function initCodex() {
         turn.logs.push('Turn execution finished.');
       }
       turn.dirty = true;
+      turn.completedAt = Date.now();
       
-      // Immediate final patch
-      updateLogCard(turn);
+      // Finalize CardKit Card
+      if (turn.cardId) {
+        const cId = turn.cardId;
+        (async () => {
+          const finalLayout = createCardKitFinalLayout(turn);
+          await finalizeCardKitCard(cId, finalLayout, turn.sequence++);
+        })();
+      }
       
       // Retrieve the turnId
       const turnId = params.turnId || (params.turn && params.turn.id);
@@ -561,13 +1202,59 @@ async function initCodex() {
 
 // Message Card Builders
 function createBindingCard(threads: CodexThread[]) {
-  const options = threads.map(t => ({
-    text: {
-      tag: "plain_text",
-      content: t.name.length > 50 ? t.name.substring(0, 47) + "..." : t.name
-    },
-    value: t.id
-  }));
+  const groups: { [cwd: string]: CodexThread[] } = {};
+  for (const t of threads) {
+    const cwd = t.cwd || 'Other Sessions (未分类会话)';
+    if (!groups[cwd]) {
+      groups[cwd] = [];
+    }
+    groups[cwd].push(t);
+  }
+
+  const elements: any[] = [
+    {
+      tag: "markdown",
+      content: "请选择一个 Codex 活跃会话绑定至当前聊天。已按本地项目目录为您分组："
+    }
+  ];
+
+  for (const [cwd, list] of Object.entries(groups)) {
+    elements.push({ tag: "hr" });
+
+    let dirName = cwd;
+    if (cwd !== 'Other Sessions (未分类会话)') {
+      try {
+        dirName = path.basename(cwd);
+      } catch (e) {}
+    }
+
+    elements.push({
+      tag: "markdown",
+      content: `📁 **项目: ${dirName}**\n\`${cwd}\``
+    });
+
+    for (const t of list) {
+      elements.push({
+        tag: "div",
+        text: {
+          tag: "lark_md",
+          content: `💬 **${t.name}**\n> 预览: ${t.preview || '（空）'}`
+        },
+        extra: {
+          tag: "button",
+          text: {
+            tag: "plain_text",
+            content: "绑定"
+          },
+          type: "primary",
+          value: {
+            action: "bind_select_thread",
+            threadId: t.id
+          }
+        }
+      });
+    }
+  }
 
   return {
     schema: "2.0",
@@ -575,34 +1262,14 @@ function createBindingCard(threads: CodexThread[]) {
       wide_screen_mode: true
     },
     header: {
-      template: "blue",
+      template: "indigo",
       title: {
         tag: "plain_text",
-        content: "Bind Codex Session"
+        content: "📂 Codex 绑定会话列表"
       }
     },
     body: {
-      elements: [
-        {
-          tag: "div",
-          text: {
-            tag: "lark_md",
-            content: "Please select a Codex thread from the list below to bind with this Feishu chat."
-          }
-        },
-        {
-          tag: "select_static",
-          element_id: "bind_select_dropdown",
-          placeholder: {
-            tag: "plain_text",
-            content: "Select Codex Session..."
-          },
-          value: {
-            action: "bind_select_thread"
-          },
-          options: options.slice(0, 99)
-        }
-      ]
+      elements: elements
     }
   };
 }
