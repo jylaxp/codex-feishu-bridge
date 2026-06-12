@@ -38,6 +38,14 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
   private notificationHandlers: Array<(message: any) => void> = [];
   private exitHandlers: Array<() => void> = [];
 
+  private ipcClient: net.Socket | null = null;
+  private ipcClientId: string | null = null;
+  private pendingIpcRequests = new Map<string, {
+    resolve: (turnId: string | null) => void;
+    timeout: NodeJS.Timeout;
+  }>();
+  private ipcConnectionPromise: Promise<net.Socket | null> | null = null;
+
   constructor(private options: { socketPath?: string } = {}) {}
 
   async connect(): Promise<void> {
@@ -223,6 +231,21 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
     }
     this.pendingRequests.clear();
 
+    // Clean up persistent IPC client
+    if (this.ipcClient) {
+      try {
+        this.ipcClient.destroy();
+      } catch (e) {}
+      this.ipcClient = null;
+    }
+    this.ipcClientId = null;
+    for (const [reqId, pending] of this.pendingIpcRequests.entries()) {
+      clearTimeout(pending.timeout);
+      pending.resolve(null);
+    }
+    this.pendingIpcRequests.clear();
+    this.ipcConnectionPromise = null;
+
     // Trigger and clear exit handlers
     const handlers = this.exitHandlers;
     this.exitHandlers = [];
@@ -290,85 +313,74 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
     }
   }
 
-  private async tryDesktopIpcStartTurn(options: {
-    threadId: string;
-    cwd: string;
-    prompt: string;
-    workspaceKind?: 'project' | 'projectless';
-  }): Promise<string | null> {
-    if (process.env.NODE_ENV === 'test') {
-      console.log('Skipping Desktop IPC start turn in test environment.');
-      return null;
+  private async getIpcClient(): Promise<net.Socket | null> {
+    if (this.ipcClient && this.ipcClient.writable) {
+      return this.ipcClient;
     }
-    const tmpDir = os.homedir(); // Fallback homedir for temp check
-    const systemTmpDir = os.tmpdir();
-    const codexIpcDir = path.join(systemTmpDir, 'codex-ipc');
-    let socketPath = '';
-    
-    if (fs.existsSync(codexIpcDir)) {
-      const files = fs.readdirSync(codexIpcDir);
-      const sockFile = files.find(f => (f.startsWith('ipc-') && f.endsWith('.sock')) || f === 'ipc.sock');
-      if (sockFile) {
-        socketPath = path.join(codexIpcDir, sockFile);
-      }
-    }
-    
-    if (!socketPath) {
-      logToFile('[IPC] No desktop IPC socket found.');
-      return null;
+    if (this.ipcConnectionPromise) {
+      return this.ipcConnectionPromise;
     }
 
-    logToFile(`[IPC] Attempting connection to Desktop IPC socket: ${socketPath}`);
-    
-    return new Promise<string | null>((resolve) => {
+    this.ipcConnectionPromise = new Promise<net.Socket | null>((resolve) => {
+      const systemTmpDir = os.tmpdir();
+      const codexIpcDir = path.join(systemTmpDir, 'codex-ipc');
+      let socketPath = '';
+      
+      if (fs.existsSync(codexIpcDir)) {
+        const files = fs.readdirSync(codexIpcDir);
+        const sockFile = files.find(f => (f.startsWith('ipc-') && f.endsWith('.sock')) || f === 'ipc.sock');
+        if (sockFile) {
+          socketPath = path.join(codexIpcDir, sockFile);
+        }
+      }
+      
+      if (!socketPath) {
+        logToFile('[IPC] No desktop IPC socket found.');
+        this.ipcConnectionPromise = null;
+        resolve(null);
+        return;
+      }
+
+      logToFile(`[IPC] Connecting to Desktop IPC socket: ${socketPath}`);
       const client = net.createConnection(socketPath);
       let rxBuffer = Buffer.alloc(0);
       let expectedLen: number | null = null;
-      let clientId: string | null = null;
-      let turnId: string | null = null;
-      
-      // Helper to write length-prefixed message
-      function writeMessage(obj: any) {
+
+      const connectionTimeout = setTimeout(() => {
+        logToFile('[IPC] Connection to Desktop IPC socket timed out.');
+        client.destroy();
+        this.ipcConnectionPromise = null;
+        resolve(null);
+      }, 5000);
+
+      const writeMessage = (obj: any) => {
         const jsonStr = JSON.stringify(obj);
         const msgBuffer = Buffer.from(jsonStr, 'utf8');
         const lenBuffer = Buffer.alloc(4);
-        
         if (os.endianness() === 'LE') {
           lenBuffer.writeUInt32LE(msgBuffer.length, 0);
         } else {
           lenBuffer.writeUInt32BE(msgBuffer.length, 0);
         }
-        
         client.write(Buffer.concat([lenBuffer, msgBuffer]));
-      }
-      
-      const timeout = setTimeout(() => {
-        logToFile('[IPC] Desktop IPC request timed out (30s).');
-        client.destroy();
-        resolve(null);
-      }, 30000);
+      };
 
       client.on('connect', () => {
+        clearTimeout(connectionTimeout);
         logToFile('[IPC] Connected to Desktop IPC socket. Sending initialize...');
-        const req = {
+        writeMessage({
           type: 'request',
           requestId: crypto.randomUUID(),
           method: 'initialize',
-          params: {
-            clientType: 'vscode'
-          }
-        };
-        writeMessage(req);
+          params: { clientType: 'vscode' }
+        });
       });
 
       client.on('data', (data) => {
         rxBuffer = Buffer.concat([rxBuffer, data]);
-        
         while (true) {
           if (expectedLen === null) {
-            if (rxBuffer.length < 4) {
-              break;
-            }
+            if (rxBuffer.length < 4) break;
             if (os.endianness() === 'LE') {
               expectedLen = rxBuffer.readUInt32LE(0);
             } else {
@@ -376,11 +388,7 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
             }
             rxBuffer = rxBuffer.subarray(4);
           }
-          
-          if (rxBuffer.length < expectedLen) {
-            break;
-          }
-          
+          if (rxBuffer.length < expectedLen) break;
           const msgBytes = rxBuffer.subarray(0, expectedLen);
           rxBuffer = rxBuffer.subarray(expectedLen);
           expectedLen = null;
@@ -392,91 +400,146 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
             
             if (msg.type === 'response' && msg.method === 'initialize') {
               if (msg.resultType === 'success' && msg.result?.clientId) {
-                clientId = msg.result.clientId;
-                logToFile(`[IPC] Initialized successfully. clientId: ${clientId}`);
-                
-                const turnParams = {
-                  threadId: options.threadId,
-                  clientUserMessageId: 'bridge-' + crypto.randomUUID(),
-                  input: [{ type: 'text', text: options.prompt, text_elements: [] }],
-                  cwd: options.cwd,
-                  sandboxPolicy: {
-                    type: 'workspaceWrite',
-                    writableRoots: [options.cwd],
-                    networkAccess: false,
-                    excludeTmpdirEnvVar: false,
-                    excludeSlashTmp: false
-                  },
-                  approvalPolicy: 'on-request',
-                  approvalsReviewer: 'user',
-                  permissions: null,
-                  model: null,
-                  serviceTier: null,
-                  effort: null,
-                  summary: 'none',
-                  personality: null,
-                  responsesapiClientMetadata: { 
-                    workspace_kind: options.workspaceKind || 'project' 
-                  },
-                  attachments: [],
-                  commentAttachments: []
-                };
-
-                logToFile(`[IPC] Sending thread-follower-start-turn for thread: ${options.threadId}`);
-                writeMessage({
-                  type: 'request',
-                  requestId: crypto.randomUUID(),
-                  sourceClientId: clientId,
-                  version: 1,
-                  method: 'thread-follower-start-turn',
-                  params: {
-                    conversationId: options.threadId,
-                    turnStartParams: turnParams
-                  },
-                  timeoutMs: 30000
-                });
+                this.ipcClientId = msg.result.clientId;
+                this.ipcClient = client;
+                this.ipcConnectionPromise = null;
+                logToFile(`[IPC] Initialized successfully. clientId: ${this.ipcClientId}`);
+                resolve(client);
               } else {
-                const errMsg = `[IPC] Initialize IPC failed: ${JSON.stringify(msg.error || msg.result || msg)}`;
-                logToFile(errMsg);
-                console.warn(errMsg);
+                logToFile(`[IPC] Initialize failed: ${JSON.stringify(msg)}`);
                 client.destroy();
-                resolve(null);
               }
-            } else if (msg.type === 'response' && msg.method === 'thread-follower-start-turn') {
-              const resTurnId = msg.result?.turnId || msg.result?.result?.turn?.id;
-              if (msg.resultType === 'success' && resTurnId) {
-                turnId = resTurnId;
-                logToFile(`[IPC] Start turn successfully finished. turnId: ${turnId}`);
-                client.destroy();
-                clearTimeout(timeout);
-                resolve(turnId);
-              } else {
-                const errMsg = `[IPC] thread-follower-start-turn failed: ${JSON.stringify(msg.error || msg.result || msg)}`;
-                logToFile(errMsg);
-                console.warn(errMsg);
-                client.destroy();
-                resolve(null);
+            } else if (msg.type === 'response' && msg.requestId) {
+              const pending = this.pendingIpcRequests.get(msg.requestId);
+              if (pending) {
+                clearTimeout(pending.timeout);
+                this.pendingIpcRequests.delete(msg.requestId);
+                const resTurnId = msg.result?.turnId || msg.result?.result?.turn?.id;
+                if (msg.resultType === 'success' && resTurnId) {
+                  pending.resolve(resTurnId);
+                } else {
+                  logToFile(`[IPC] Request failed for ${msg.requestId}: ${JSON.stringify(msg)}`);
+                  pending.resolve(null);
+                }
               }
             }
           } catch (e: any) {
-            logToFile(`[IPC] Failed to parse IPC message: ${e.message}\n${e.stack}`);
-            console.error('[IPC] Failed to parse IPC message:', e);
+            logToFile(`[IPC] Failed to parse message: ${e.message}`);
           }
         }
       });
 
       client.on('error', (err) => {
-        logToFile(`[IPC] Desktop IPC connection error: ${err.message}`);
-        console.warn('[IPC] Desktop IPC connection error:', err.message);
-        clearTimeout(timeout);
-        resolve(null);
+        logToFile(`[IPC] Socket error: ${err.message}`);
+        clearTimeout(connectionTimeout);
+        if (this.ipcConnectionPromise) {
+          this.ipcConnectionPromise = null;
+          resolve(null);
+        }
       });
 
       client.on('close', () => {
-        logToFile('[IPC] Connection to Desktop IPC socket closed.');
-        console.log('[IPC] Connection to Desktop IPC socket closed.');
-        clearTimeout(timeout);
-        resolve(turnId);
+        logToFile('[IPC] Socket closed.');
+        clearTimeout(connectionTimeout);
+        
+        // Fail all pending requests
+        for (const [reqId, pending] of this.pendingIpcRequests.entries()) {
+          clearTimeout(pending.timeout);
+          pending.resolve(null);
+        }
+        this.pendingIpcRequests.clear();
+        
+        this.ipcClient = null;
+        this.ipcClientId = null;
+        if (this.ipcConnectionPromise) {
+          this.ipcConnectionPromise = null;
+          resolve(null);
+        }
+      });
+    });
+
+    return this.ipcConnectionPromise;
+  }
+
+  private async tryDesktopIpcStartTurn(options: {
+    threadId: string;
+    cwd: string;
+    prompt: string;
+    workspaceKind?: 'project' | 'projectless';
+  }): Promise<string | null> {
+    if (process.env.NODE_ENV === 'test') {
+      console.log('Skipping Desktop IPC start turn in test environment.');
+      return null;
+    }
+
+    const client = await this.getIpcClient();
+    if (!client || !this.ipcClientId) {
+      logToFile('[IPC] Failed to get connected IPC client.');
+      return null;
+    }
+
+    const turnParams = {
+      threadId: options.threadId,
+      clientUserMessageId: 'bridge-' + crypto.randomUUID(),
+      input: [{ type: 'text', text: options.prompt, text_elements: [] }],
+      cwd: options.cwd,
+      sandboxPolicy: {
+        type: 'workspaceWrite',
+        writableRoots: [options.cwd],
+        networkAccess: false,
+        excludeTmpdirEnvVar: false,
+        excludeSlashTmp: false
+      },
+      approvalPolicy: 'on-request',
+      approvalsReviewer: 'user',
+      permissions: null,
+      model: null,
+      serviceTier: null,
+      effort: null,
+      summary: 'none',
+      personality: null,
+      responsesapiClientMetadata: { 
+        workspace_kind: options.workspaceKind || 'project' 
+      },
+      attachments: [],
+      commentAttachments: []
+    };
+
+    const reqId = crypto.randomUUID();
+    logToFile(`[IPC] Sending thread-follower-start-turn for thread: ${options.threadId}, requestId: ${reqId}`);
+
+    return new Promise<string | null>((resolve) => {
+      const timeout = setTimeout(() => {
+        logToFile(`[IPC] Request ${reqId} timed out.`);
+        this.pendingIpcRequests.delete(reqId);
+        resolve(null);
+      }, 30000);
+
+      this.pendingIpcRequests.set(reqId, { resolve, timeout });
+
+      const writeMessage = (obj: any) => {
+        const jsonStr = JSON.stringify(obj);
+        const msgBuffer = Buffer.from(jsonStr, 'utf8');
+        const lenBuffer = Buffer.alloc(4);
+        if (os.endianness() === 'LE') {
+          lenBuffer.writeUInt32LE(msgBuffer.length, 0);
+        } else {
+          lenBuffer.writeUInt32BE(msgBuffer.length, 0);
+        }
+        client.write(Buffer.concat([lenBuffer, msgBuffer]));
+      };
+
+      writeMessage({
+        type: 'request',
+        requestId: reqId,
+        sourceClientId: this.ipcClientId,
+        version: 1,
+        method: 'thread-follower-start-turn',
+        params: {
+          conversationId: options.threadId,
+          turnStartParams: turnParams
+        },
+        timeoutMs: 30000
       });
     });
   }
@@ -487,6 +550,14 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
     prompt: string;
     workspaceKind?: 'project' | 'projectless';
   }): Promise<string> {
+    // Proactively resume/load the thread first on WS to ensure we subscribe to its event stream
+    try {
+      console.log(`Pre-loading thread ${options.threadId} via thread/resume...`);
+      await this.request('thread/resume', { threadId: options.threadId });
+    } catch (e) {
+      console.warn(`Failed to preload thread ${options.threadId} via thread/resume:`, e);
+    }
+
     // Attempt to launch the turn via Desktop IPC first (so that Desktop UI is updated)
     try {
       const ipcTurnId = await this.tryDesktopIpcStartTurn(options);
@@ -499,14 +570,6 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
     }
 
     console.log('Falling back to standard websocket turn/start...');
-    // Proactively resume/load the thread first to prevent "thread not found" error
-    try {
-      console.log(`Pre-loading thread ${options.threadId} via thread/resume...`);
-      await this.request('thread/resume', { threadId: options.threadId });
-    } catch (e) {
-      console.warn(`Failed to preload thread ${options.threadId} via thread/resume:`, e);
-    }
-
     const result = await this.request('turn/start', {
       threadId: options.threadId,
       cwd: options.cwd,
