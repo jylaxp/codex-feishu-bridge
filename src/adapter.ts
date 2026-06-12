@@ -25,6 +25,7 @@ export interface CodexThreadAdapter {
     threadId: string;
     cwd: string;
     prompt: string;
+    workspaceKind?: 'project' | 'projectless';
   }): Promise<string>;
 }
 
@@ -289,13 +290,19 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
     }
   }
 
-  private async tryDesktopIpcStartTurn(options: { threadId: string; cwd: string; prompt: string }): Promise<string | null> {
+  private async tryDesktopIpcStartTurn(options: {
+    threadId: string;
+    cwd: string;
+    prompt: string;
+    workspaceKind?: 'project' | 'projectless';
+  }): Promise<string | null> {
     if (process.env.NODE_ENV === 'test') {
       console.log('Skipping Desktop IPC start turn in test environment.');
       return null;
     }
-    const tmpDir = os.tmpdir();
-    const codexIpcDir = path.join(tmpDir, 'codex-ipc');
+    const tmpDir = os.homedir(); // Fallback homedir for temp check
+    const systemTmpDir = os.tmpdir();
+    const codexIpcDir = path.join(systemTmpDir, 'codex-ipc');
     let socketPath = '';
     
     if (fs.existsSync(codexIpcDir)) {
@@ -307,11 +314,11 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
     }
     
     if (!socketPath) {
-      console.log('No desktop IPC socket found.');
+      logToFile('[IPC] No desktop IPC socket found.');
       return null;
     }
 
-    console.log(`Attempting connection to Desktop IPC socket: ${socketPath}`);
+    logToFile(`[IPC] Attempting connection to Desktop IPC socket: ${socketPath}`);
     
     return new Promise<string | null>((resolve) => {
       const client = net.createConnection(socketPath);
@@ -336,13 +343,13 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
       }
       
       const timeout = setTimeout(() => {
-        console.log('[IPC] Desktop IPC request timed out (30s).');
+        logToFile('[IPC] Desktop IPC request timed out (30s).');
         client.destroy();
         resolve(null);
       }, 30000);
 
       client.on('connect', () => {
-        console.log('[IPC] Connected to Desktop IPC socket.');
+        logToFile('[IPC] Connected to Desktop IPC socket. Sending initialize...');
         const req = {
           type: 'request',
           requestId: crypto.randomUUID(),
@@ -381,19 +388,28 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
           const msgStr = msgBytes.toString('utf8');
           try {
             const msg = JSON.parse(msgStr);
+            logToFile(`[IPC Received]: type=${msg.type}, method=${msg.method}, resultType=${msg.resultType}`);
+            
             if (msg.type === 'response' && msg.method === 'initialize') {
               if (msg.resultType === 'success' && msg.result?.clientId) {
                 clientId = msg.result.clientId;
-                console.log(`[IPC] Initialized successfully. clientId: ${clientId}`);
+                logToFile(`[IPC] Initialized successfully. clientId: ${clientId}`);
                 
                 const turnParams = {
                   threadId: options.threadId,
                   clientUserMessageId: 'bridge-' + crypto.randomUUID(),
-                  input: [{ type: 'text', text: options.prompt, text_elements: [] }],
+                  input: [{ type: 'input_text', text: options.prompt }],
                   cwd: options.cwd,
+                  sandbox_policy: {
+                    type: 'workspace-write',
+                    writable_roots: [options.cwd],
+                    network_access: false,
+                    exclude_tmpdir_env_var: false,
+                    exclude_slash_tmp: false
+                  },
                   sandboxPolicy: {
-                    type: 'workspaceWrite',
-                    writableRoots: [],
+                    type: 'workspace-write',
+                    writableRoots: [options.cwd],
                     networkAccess: false,
                     excludeTmpdirEnvVar: false,
                     excludeSlashTmp: false
@@ -406,12 +422,14 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
                   effort: null,
                   summary: 'none',
                   personality: null,
-                  responsesapiClientMetadata: { workspace_kind: 'project' },
+                  responsesapiClientMetadata: { 
+                    workspace_kind: options.workspaceKind || 'project' 
+                  },
                   attachments: [],
                   commentAttachments: []
                 };
 
-                console.log(`[IPC] Sending thread-follower-start-turn for thread: ${options.threadId}`);
+                logToFile(`[IPC] Sending thread-follower-start-turn for thread: ${options.threadId}`);
                 writeMessage({
                   type: 'request',
                   requestId: crypto.randomUUID(),
@@ -425,36 +443,43 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
                   timeoutMs: 30000
                 });
               } else {
-                console.warn('[IPC] Initialize IPC failed:', msg.error || 'unknown error');
+                const errMsg = `[IPC] Initialize IPC failed: ${JSON.stringify(msg.error || msg.result || msg)}`;
+                logToFile(errMsg);
+                console.warn(errMsg);
                 client.destroy();
                 resolve(null);
               }
             } else if (msg.type === 'response' && msg.method === 'thread-follower-start-turn') {
               if (msg.resultType === 'success' && msg.result?.turnId) {
                 turnId = msg.result.turnId;
-                console.log(`[IPC] Start turn successfully finished. turnId: ${turnId}`);
+                logToFile(`[IPC] Start turn successfully finished. turnId: ${turnId}`);
                 client.destroy();
                 clearTimeout(timeout);
                 resolve(turnId);
               } else {
-                console.warn('[IPC] thread-follower-start-turn failed:', msg.error || 'unknown error');
+                const errMsg = `[IPC] thread-follower-start-turn failed: ${JSON.stringify(msg.error || msg.result || msg)}`;
+                logToFile(errMsg);
+                console.warn(errMsg);
                 client.destroy();
                 resolve(null);
               }
             }
-          } catch (e) {
+          } catch (e: any) {
+            logToFile(`[IPC] Failed to parse IPC message: ${e.message}\n${e.stack}`);
             console.error('[IPC] Failed to parse IPC message:', e);
           }
         }
       });
 
       client.on('error', (err) => {
+        logToFile(`[IPC] Desktop IPC connection error: ${err.message}`);
         console.warn('[IPC] Desktop IPC connection error:', err.message);
         clearTimeout(timeout);
         resolve(null);
       });
 
       client.on('close', () => {
+        logToFile('[IPC] Connection to Desktop IPC socket closed.');
         console.log('[IPC] Connection to Desktop IPC socket closed.');
         clearTimeout(timeout);
         resolve(turnId);
@@ -462,7 +487,12 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
     });
   }
 
-  async startRemoteControlTurn(options: { threadId: string; cwd: string; prompt: string }): Promise<string> {
+  async startRemoteControlTurn(options: {
+    threadId: string;
+    cwd: string;
+    prompt: string;
+    workspaceKind?: 'project' | 'projectless';
+  }): Promise<string> {
     // Attempt to launch the turn via Desktop IPC first (so that Desktop UI is updated)
     try {
       const ipcTurnId = await this.tryDesktopIpcStartTurn(options);
@@ -487,11 +517,18 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
       threadId: options.threadId,
       cwd: options.cwd,
       collaborationMode: null,
-      input: [{ type: "text", text: options.prompt, text_elements: [] }]
+      input: [{ type: "input_text", text: options.prompt }]
     });
     if (!result || !result.turn || !result.turn.id) {
       throw new Error(`Invalid turn/start response: ${JSON.stringify(result)}`);
     }
     return result.turn.id;
   }
+}
+
+export function logToFile(msg: string) {
+  try {
+    const logPath = path.join(os.homedir(), '.codex', 'bridge_debug.log');
+    fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${msg}\n`);
+  } catch (e) {}
 }
