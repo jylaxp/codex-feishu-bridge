@@ -443,8 +443,9 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
                 resolve(null);
               }
             } else if (msg.type === 'response' && msg.method === 'thread-follower-start-turn') {
-              if (msg.resultType === 'success' && msg.result?.turnId) {
-                turnId = msg.result.turnId;
+              const resTurnId = msg.result?.turnId || msg.result?.result?.turn?.id;
+              if (msg.resultType === 'success' && resTurnId) {
+                turnId = resTurnId;
                 logToFile(`[IPC] Start turn successfully finished. turnId: ${turnId}`);
                 client.destroy();
                 clearTimeout(timeout);
