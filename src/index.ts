@@ -1222,15 +1222,16 @@ function createBindingCard(threads: CodexThread[]) {
     }
   }
 
-  // 1. Filter out threads belonging to deleted projects
+  // 1. Filter out threads belonging to deleted projects or deleted global threads (like 'q')
   const filteredThreads = threads.filter(t => {
-    const isProjectless = !t.cwd || t.cwd === homeDir || t.cwd === "/" || t.cwd === "." || (t.id && projectlessThreadIds.includes(t.id));
-    if (isProjectless) {
-      return true; // Keep global/projectless threads
+    // A thread is a valid global/projectless thread only if its ID is explicitly active in projectless-thread-ids
+    const isValidProjectless = t.id && projectlessThreadIds.includes(t.id);
+    if (isValidProjectless) {
+      return true;
     }
     
-    // Check if the thread's cwd is in the saved workspaces list
-    const isSavedWorkspace = savedWorkspaces.some(w => {
+    // Check if the thread belongs to an active workspace
+    const isSavedWorkspace = t.cwd && savedWorkspaces.some(w => {
       const normW = path.normalize(w).toLowerCase();
       const normC = path.normalize(t.cwd || "").toLowerCase();
       return normC === normW || normC.startsWith(normW + path.sep);
@@ -1241,8 +1242,8 @@ function createBindingCard(threads: CodexThread[]) {
 
   // 2. Sort threads so global/no-project threads are at the top, followed by projects grouped by cwd
   const sortedThreads = [...filteredThreads].sort((a, b) => {
-    const isGlobalA = !a.cwd || a.cwd === homeDir || a.cwd === "/" || a.cwd === "." || (a.id && projectlessThreadIds.includes(a.id));
-    const isGlobalB = !b.cwd || b.cwd === homeDir || b.cwd === "/" || b.cwd === "." || (b.id && projectlessThreadIds.includes(b.id));
+    const isGlobalA = a.id && projectlessThreadIds.includes(a.id);
+    const isGlobalB = b.id && projectlessThreadIds.includes(b.id);
     
     if (isGlobalA && !isGlobalB) return -1;
     if (!isGlobalA && isGlobalB) return 1;
@@ -1254,7 +1255,7 @@ function createBindingCard(threads: CodexThread[]) {
 
   // 3. Map to dropdown options
   const options = sortedThreads.map(t => {
-    const isGlobal = !t.cwd || t.cwd === homeDir || t.cwd === "/" || t.cwd === "." || (t.id && projectlessThreadIds.includes(t.id));
+    const isGlobal = t.id && projectlessThreadIds.includes(t.id);
     
     let prefix = "🌐 全局会话 ➜ ";
     if (!isGlobal && t.cwd) {
