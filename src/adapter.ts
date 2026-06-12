@@ -256,12 +256,19 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
     if (!result || !Array.isArray(result.data)) {
       return [];
     }
-    return result.data.map((t: any) => ({
-      id: t.id,
-      name: t.name || t.preview || "未命名会话",
-      preview: t.preview || "",
-      cwd: t.cwd || t.workspacePath || t.workspace || ""
-    }));
+    return result.data
+      .filter((t: any) => {
+        if (t.deleted === true || t.isDeleted === true || t.is_deleted === true) return false;
+        if (t.archived === true) return false;
+        if (t.deletedAt || t.deleted_at) return false;
+        return true;
+      })
+      .map((t: any) => ({
+        id: t.id,
+        name: t.name || t.preview || "未命名会话",
+        preview: t.preview || "",
+        cwd: t.cwd || t.workspacePath || t.workspace || ""
+      }));
   }
 
   respond(id: number | string, result: any): void {
