@@ -59,6 +59,7 @@ interface ActiveTurn {
   threadId: string;
   prompt: string;
   answer?: string;
+  reasoning?: string;
   logs: string[];
   status: 'running' | 'success' | 'failed';
   dirty: boolean;
@@ -369,7 +370,13 @@ function createCardKitInitialLayout(turn: ActiveTurn) {
         { tag: "hr" },
         {
           tag: "markdown",
-          content: `🧠 **推理过程与日志**\nInitializing execution...`,
+          content: `🧠 **模型推理过程**\n等待开始...`,
+          element_id: "codex_reasoning"
+        },
+        { tag: "hr" },
+        {
+          tag: "markdown",
+          content: `📋 **执行日志**\n等待开始...`,
           element_id: "codex_process"
         },
         { tag: "hr" },
@@ -402,6 +409,44 @@ function createCardKitFinalLayout(turn: ActiveTurn) {
     logContent = "... (truncated) ...\n" + logContent.substring(logContent.length - maxChars);
   }
 
+  const elements: any[] = [
+    {
+      tag: "markdown",
+      content: `**📥 输入 Prompt**\n> ${turn.prompt}`
+    }
+  ];
+
+  if (turn.reasoning) {
+    elements.push(
+      { tag: "hr" },
+      {
+        tag: "markdown",
+        content: `🧠 **模型推理过程**\n${turn.reasoning}`
+      }
+    );
+  }
+
+  elements.push(
+    { tag: "hr" },
+    {
+      tag: "div",
+      text: {
+        tag: "lark_md",
+        content: `📋 **执行日志**:\n\`\`\`text\n${logContent}\n\`\`\``
+      }
+    },
+    { tag: "hr" },
+    {
+      tag: "markdown",
+      content: `✨ **最终结果输出**\n${turn.answer || '无最终文本输出'}`
+    },
+    { tag: "hr" },
+    {
+      tag: "markdown",
+      content: `📊 ${footer}`
+    }
+  );
+
   return {
     schema: "2.0",
     config: {
@@ -412,30 +457,7 @@ function createCardKitFinalLayout(turn: ActiveTurn) {
       title: { tag: "plain_text", content: turn.status === "success" ? "✅ Codex 执行成功" : "❌ Codex 执行失败" }
     },
     body: {
-      elements: [
-        {
-          tag: "markdown",
-          content: `**📥 输入 Prompt**\n> ${turn.prompt}`
-        },
-        { tag: "hr" },
-        {
-          tag: "div",
-          text: {
-            tag: "lark_md",
-            content: `🧠 **执行日志**:\n\`\`\`text\n${logContent}\n\`\`\``
-          }
-        },
-        { tag: "hr" },
-        {
-          tag: "markdown",
-          content: `✨ **最终结果输出**\n${turn.answer || '无最终文本输出'}`
-        },
-        { tag: "hr" },
-        {
-          tag: "markdown",
-          content: `📊 ${footer}`
-        }
-      ]
+      elements
     }
   };
 }
@@ -557,24 +579,30 @@ async function streamUpdateCardKit(turn: ActiveTurn) {
   try {
     const seq = turn.sequence++;
     
-    // 1. Update Inference / logs
+    // 1. Update Reasoning
+    if (turn.reasoning) {
+      const reasoningMd = `🧠 **模型推理过程**:\n${turn.reasoning}`;
+      await streamCardKitElement(turn.cardId, "codex_reasoning", reasoningMd, seq);
+    }
+
+    // 2. Update Logs
     let logContent = turn.logs.join("\n");
     if (logContent.trim()) {
       const maxChars = 2000;
       if (logContent.length > maxChars) {
         logContent = "... (truncated) ...\n" + logContent.substring(logContent.length - maxChars);
       }
-      const logMd = `🧠 **推理过程与日志**:\n\`\`\`text\n${logContent}\n\`\`\``;
+      const logMd = `📋 **执行日志**:\n\`\`\`text\n${logContent}\n\`\`\``;
       await streamCardKitElement(turn.cardId, "codex_process", logMd, seq);
     }
 
-    // 2. Update Output
+    // 3. Update Output
     if (turn.answer) {
       const outputMd = `✨ **最终结果输出**:\n${turn.answer}`;
       await streamCardKitElement(turn.cardId, "codex_output", outputMd, seq);
     }
 
-    // 3. Update Footer
+    // 4. Update Footer
     const footerText = `📊 ${getStatsFooterText(turn)}`;
     await streamCardKitElement(turn.cardId, "codex_footer", footerText, seq);
 
@@ -1204,6 +1232,12 @@ async function initCodex() {
         turn.answer = (turn.answer || "") + delta;
         turn.dirty = true;
       }
+    } else if (msg.method === 'item/reasoning/delta') {
+      const delta = params.delta;
+      if (delta) {
+        turn.reasoning = (turn.reasoning || "") + delta;
+        turn.dirty = true;
+      }
     } else if (msg.method === 'item/started' || msg.method === 'item/completed') {
       const item = params.item || {};
       if (item.type === 'userMessage') {
@@ -1214,6 +1248,9 @@ async function initCodex() {
         }
       } else if (item.type === 'agentMessage' && item.text) {
         turn.answer = item.text;
+        turn.dirty = true;
+      } else if (item.type === 'reasoning' && item.text) {
+        turn.reasoning = item.text;
         turn.dirty = true;
       }
     } else if (msg.method === 'agent/stderr') {

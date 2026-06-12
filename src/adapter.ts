@@ -623,6 +623,9 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
                 if (item.type === 'agentMessage' && typeof item.text === 'string') {
                   const textKey = `${threadId}-${turnIdx}-${itemIdx}`;
                   this.lastAgentMessageTexts.set(textKey, item.text);
+                } else if (item.type === 'reasoning' && typeof item.text === 'string') {
+                  const textKey = `${threadId}-${turnIdx}-${itemIdx}`;
+                  this.lastAgentMessageTexts.set(textKey, item.text);
                 } else if (item.type === 'commandExecution' && typeof item.aggregatedOutput === 'string') {
                   const outputKey = `${threadId}-${turnIdx}-${itemIdx}`;
                   this.lastCommandOutputs.set(outputKey, item.aggregatedOutput);
@@ -685,17 +688,31 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
           if (path[2] === 'items' && typeof path[3] === 'number' && path[4] === 'text') {
             const itemIndex = path[3];
             const item = afterTurn.items[itemIndex];
-            if (item && item.type === 'agentMessage') {
-              const textKey = `${threadId}-${turnIndex}-${itemIndex}`;
-              const oldText = this.lastAgentMessageTexts.get(textKey) || '';
-              const newText = patch.value || '';
-              if (newText.length > oldText.length) {
-                const delta = newText.slice(oldText.length);
-                this.lastAgentMessageTexts.set(textKey, newText);
-                this.emitNotification({
-                  method: 'item/agentMessage/delta',
-                  params: { threadId, turnId, delta }
-                });
+            if (item) {
+              if (item.type === 'agentMessage') {
+                const textKey = `${threadId}-${turnIndex}-${itemIndex}`;
+                const oldText = this.lastAgentMessageTexts.get(textKey) || '';
+                const newText = patch.value || '';
+                if (newText.length > oldText.length) {
+                  const delta = newText.slice(oldText.length);
+                  this.lastAgentMessageTexts.set(textKey, newText);
+                  this.emitNotification({
+                    method: 'item/agentMessage/delta',
+                    params: { threadId, turnId, delta }
+                  });
+                }
+              } else if (item.type === 'reasoning') {
+                const textKey = `${threadId}-${turnIndex}-${itemIndex}`;
+                const oldText = this.lastAgentMessageTexts.get(textKey) || '';
+                const newText = patch.value || '';
+                if (newText.length > oldText.length) {
+                  const delta = newText.slice(oldText.length);
+                  this.lastAgentMessageTexts.set(textKey, newText);
+                  this.emitNotification({
+                    method: 'item/reasoning/delta',
+                    params: { threadId, turnId, delta }
+                  });
+                }
               }
             }
           }
@@ -727,6 +744,13 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
                 this.lastAgentMessageTexts.set(textKey, item.text);
                 this.emitNotification({
                   method: 'item/agentMessage/delta',
+                  params: { threadId, turnId, delta: item.text }
+                });
+              } else if (item.type === 'reasoning' && item.text) {
+                const textKey = `${threadId}-${turnIndex}-${itemIndex}`;
+                this.lastAgentMessageTexts.set(textKey, item.text);
+                this.emitNotification({
+                  method: 'item/reasoning/delta',
                   params: { threadId, turnId, delta: item.text }
                 });
               } else if (item.type === 'commandExecution' && item.aggregatedOutput) {
