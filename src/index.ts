@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as qrcode from 'qrcode-terminal';
 import * as crypto from 'crypto';
+import * as os from 'os';
 import { LocalAppServerAdapter, CodexThread } from './adapter';
 
 // Load environmental variables
@@ -1202,21 +1203,32 @@ async function initCodex() {
 
 // Message Card Builders
 function createBindingCard(threads: CodexThread[]) {
-  // Sort threads by cwd so options are grouped by project directory
+  const homeDir = os.homedir();
+
+  // Sort threads so global/no-project threads are at the top, followed by projects grouped by cwd
   const sortedThreads = [...threads].sort((a, b) => {
+    const isGlobalA = !a.cwd || a.cwd === homeDir || a.cwd === "/" || a.cwd === ".";
+    const isGlobalB = !b.cwd || b.cwd === homeDir || b.cwd === "/" || b.cwd === ".";
+    
+    if (isGlobalA && !isGlobalB) return -1;
+    if (!isGlobalA && isGlobalB) return 1;
+    
     const cwdA = a.cwd || "";
     const cwdB = b.cwd || "";
     return cwdA.localeCompare(cwdB);
   });
 
   const options = sortedThreads.map(t => {
-    let dirName = "";
-    if (t.cwd) {
+    const isGlobal = !t.cwd || t.cwd === homeDir || t.cwd === "/" || t.cwd === ".";
+    
+    let prefix = "🌐 全局会话 ➜ ";
+    if (!isGlobal && t.cwd) {
       try {
-        dirName = path.basename(t.cwd);
+        const dirName = path.basename(t.cwd);
+        prefix = dirName ? `📁 ${dirName} ➜ ` : "";
       } catch (e) {}
     }
-    const prefix = dirName ? `📁 ${dirName} ➜ ` : "";
+    
     const content = `${prefix}${t.name}`;
     const cleanContent = content.length > 50 ? content.substring(0, 47) + "..." : content;
     

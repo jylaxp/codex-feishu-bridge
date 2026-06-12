@@ -256,11 +256,20 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
     if (!result || !Array.isArray(result.data)) {
       return [];
     }
+
+    const isValidDeletionTime = (val: any): boolean => {
+      if (!val || val === "null" || val === "0001-01-01T00:00:00Z" || val === "0000-00-00 00:00:00") {
+        return false;
+      }
+      const parsed = Date.parse(val);
+      return !isNaN(parsed) && parsed > 0;
+    };
+
     return result.data
       .filter((t: any) => {
         if (t.deleted === true || t.isDeleted === true || t.is_deleted === true) return false;
         if (t.archived === true) return false;
-        if (t.deletedAt || t.deleted_at) return false;
+        if (isValidDeletionTime(t.deletedAt) || isValidDeletionTime(t.deleted_at)) return false;
         return true;
       })
       .map((t: any) => ({
