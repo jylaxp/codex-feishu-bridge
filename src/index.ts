@@ -671,7 +671,7 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
     if (text.startsWith('/bind') || text.startsWith('/list')) {
       try {
         console.log(`Fetching Codex threads for ${text.startsWith('/bind') ? '/bind' : '/list'}...`);
-        const threads = (await adapter.listThreads()).slice(0, 15);
+        const threads = await adapter.listThreads();
         if (threads.length === 0) {
           await larkClient.im.message.create({
             params: { receive_id_type: 'chat_id' },
@@ -1250,16 +1250,6 @@ function createBindingCard(threads: CodexThread[]) {
       options: options.slice(0, 99)
     }
   ];
-
-  if (threads.length >= 15) {
-    elements.push({
-      tag: "div",
-      text: {
-        tag: "lark_md",
-        content: "*⚠️ 由于飞书卡片展示限制，仅展示最近活跃的前 15 个会话。*"
-      }
-    });
-  }
 
   return {
     schema: "2.0",
