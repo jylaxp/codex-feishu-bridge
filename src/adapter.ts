@@ -388,7 +388,7 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
           const msgStr = msgBytes.toString('utf8');
           try {
             const msg = JSON.parse(msgStr);
-            logToFile(`[IPC Received]: type=${msg.type}, method=${msg.method}, resultType=${msg.resultType}`);
+            logToFile(`[IPC Received]: ${msgStr}`);
             
             if (msg.type === 'response' && msg.method === 'initialize') {
               if (msg.resultType === 'success' && msg.result?.clientId) {
@@ -398,17 +398,10 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
                 const turnParams = {
                   threadId: options.threadId,
                   clientUserMessageId: 'bridge-' + crypto.randomUUID(),
-                  input: [{ type: 'input_text', text: options.prompt }],
+                  input: [{ type: 'text', text: options.prompt, text_elements: [] }],
                   cwd: options.cwd,
-                  sandbox_policy: {
-                    type: 'workspace-write',
-                    writable_roots: [options.cwd],
-                    network_access: false,
-                    exclude_tmpdir_env_var: false,
-                    exclude_slash_tmp: false
-                  },
                   sandboxPolicy: {
-                    type: 'workspace-write',
+                    type: 'workspaceWrite',
                     writableRoots: [options.cwd],
                     networkAccess: false,
                     excludeTmpdirEnvVar: false,
@@ -517,7 +510,7 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
       threadId: options.threadId,
       cwd: options.cwd,
       collaborationMode: null,
-      input: [{ type: "input_text", text: options.prompt }]
+      input: [{ type: "text", text: options.prompt, text_elements: [] }]
     });
     if (!result || !result.turn || !result.turn.id) {
       throw new Error(`Invalid turn/start response: ${JSON.stringify(result)}`);
