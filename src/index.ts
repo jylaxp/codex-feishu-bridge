@@ -1202,68 +1202,63 @@ async function initCodex() {
 
 // Message Card Builders
 function createBindingCard(threads: CodexThread[]) {
-  const groups: { [cwd: string]: CodexThread[] } = {};
-  for (const t of threads) {
-    const cwd = t.cwd || 'Other Sessions (未分类会话)';
-    if (!groups[cwd]) {
-      groups[cwd] = [];
+  // Sort threads by cwd so options are grouped by project directory
+  const sortedThreads = [...threads].sort((a, b) => {
+    const cwdA = a.cwd || "";
+    const cwdB = b.cwd || "";
+    return cwdA.localeCompare(cwdB);
+  });
+
+  const options = sortedThreads.map(t => {
+    let dirName = "";
+    if (t.cwd) {
+      try {
+        dirName = path.basename(t.cwd);
+      } catch (e) {}
     }
-    groups[cwd].push(t);
-  }
+    const prefix = dirName ? `📁 ${dirName} ➜ ` : "";
+    const content = `${prefix}${t.name}`;
+    const cleanContent = content.length > 50 ? content.substring(0, 47) + "..." : content;
+    
+    return {
+      text: {
+        tag: "plain_text",
+        content: cleanContent
+      },
+      value: t.id
+    };
+  });
 
   const elements: any[] = [
     {
-      tag: "markdown",
-      content: "请选择一个 Codex 活跃会话绑定至当前聊天。已按本地项目目录为您分组："
+      tag: "div",
+      text: {
+        tag: "lark_md",
+        content: "请从下方下拉菜单中选择一个 Codex 活跃会话绑定至当前聊天。选项已按本地项目分组："
+      }
+    },
+    {
+      tag: "select_static",
+      element_id: "bind_select_dropdown",
+      placeholder: {
+        tag: "plain_text",
+        content: "选择 Codex 会话..."
+      },
+      value: {
+        action: "bind_select_thread"
+      },
+      options: options.slice(0, 99)
     }
   ];
 
-  for (const [cwd, list] of Object.entries(groups)) {
-    elements.push({ tag: "hr" });
-
-    let dirName = cwd;
-    if (cwd !== 'Other Sessions (未分类会话)') {
-      try {
-        dirName = path.basename(cwd);
-      } catch (e) {}
-    }
-
-    elements.push({
-      tag: "markdown",
-      content: `📁 **项目: ${dirName}**\n\`${cwd}\``
-    });
-
-    for (const t of list) {
-      elements.push({
-        tag: "div",
-        text: {
-          tag: "lark_md",
-          content: `💬 **${t.name}**\n> 预览: ${t.preview || '（空）'}`
-        },
-        extra: {
-          tag: "button",
-          text: {
-            tag: "plain_text",
-            content: "绑定"
-          },
-          type: "primary",
-          value: {
-            action: "bind_select_thread",
-            threadId: t.id
-          }
-        }
-      });
-    }
-  }
-
   if (threads.length >= 15) {
-    elements.push(
-      { tag: "hr" },
-      {
-        tag: "markdown",
-        content: "*⚠️ 由于飞书卡片容量限制，仅展示最近活跃的前 15 个会话。*"
+    elements.push({
+      tag: "div",
+      text: {
+        tag: "lark_md",
+        content: "*⚠️ 由于飞书卡片展示限制，仅展示最近活跃的前 15 个会话。*"
       }
-    );
+    });
   }
 
   return {
@@ -1275,7 +1270,7 @@ function createBindingCard(threads: CodexThread[]) {
       template: "indigo",
       title: {
         tag: "plain_text",
-        content: "📂 Codex 绑定会话列表"
+        content: "📂 Codex 绑定会话"
       }
     },
     body: {
