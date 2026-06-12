@@ -757,10 +757,24 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
       (async () => {
         try {
           const boundCwd = bound.cwd || process.env.CODEX_CWD || process.cwd();
+          
+          // Determine workspaceKind from Codex global state
+          const homeDir = os.homedir();
+          const globalStatePath = path.join(homeDir, '.codex', '.codex-global-state.json');
+          let isProjectless = false;
+          if (fs.existsSync(globalStatePath)) {
+            try {
+              const globalState = JSON.parse(fs.readFileSync(globalStatePath, 'utf8'));
+              const projectlessThreadIds = globalState['projectless-thread-ids'] || [];
+              isProjectless = !!(bound.threadId && projectlessThreadIds.includes(bound.threadId));
+            } catch (e) {}
+          }
+
           const turnId = await adapter.startRemoteControlTurn({
             threadId: bound.threadId,
             cwd: boundCwd,
-            prompt: text
+            prompt: text,
+            workspaceKind: isProjectless ? 'projectless' : 'project'
           });
 
           // Replace the temporary turn ID with the actual turn ID
@@ -1077,50 +1091,69 @@ async function initCodex() {
     let turn = getActiveTurnForNotification(msg);
 
     if (!turn) {
-      // Check if this is a turn/started event on a bound thread (reverse push)
+      // Check if this is a turn/started event on a bound thread
       if (msg.method === 'turn/started' && params.threadId) {
         const chatId = getChatIdForThread(params.threadId);
-        const turnId = params.turn && params.turn.id;
+        const turnId = (params.turn && params.turn.id) || params.turnId;
         
         if (chatId && turnId) {
-          console.log(`[Reverse Push] Detected new turn ${turnId} started on bound thread ${params.threadId}. Creating Feishu message card...`);
+          // Check if there is already an active running turn on this thread (e.g. triggered by Feishu)
+          const activeTurnId = threadToActiveTurnId.get(params.threadId);
+          const existingTurn = activeTurnId ? activeTurns.get(activeTurnId) : undefined;
           
-          const reverseTurn: ActiveTurn = {
-            chatId,
-            messageId: "",
-            cardId: "",
-            threadId: params.threadId,
-            prompt: "Desktop Input 💻",
-            logs: ["Starting execution from Codex Desktop..."],
-            status: 'running',
-            dirty: false,
-            startedAt: Date.now(),
-            stats: {},
-            sequence: 1
-          };
-
-          activeTurns.set(turnId, reverseTurn);
-          threadToActiveTurnId.set(params.threadId, turnId);
-
-          // Trigger asynchronous Feishu message creation
-          (async () => {
-            try {
-              const initialLayout = createCardKitInitialLayout(reverseTurn);
-              const cardId = await createCardKitCard(initialLayout);
-              reverseTurn.cardId = cardId;
-              
-              const newMsgId = await sendCardKitMessage(chatId, cardId);
-              if (newMsgId) {
-                reverseTurn.messageId = newMsgId;
-                // Immediate update in case we already have logs
-                await streamUpdateCardKit(reverseTurn);
-              }
-            } catch (e) {
-              console.error('[Reverse Push] Failed to create reverse card:', e);
+          if (existingTurn && existingTurn.status === 'running') {
+            console.log(`[Turn Transition] Adopting new turnId ${turnId} for existing active turn (old: ${activeTurnId})`);
+            activeTurns.set(turnId, existingTurn);
+            threadToActiveTurnId.set(params.threadId, turnId);
+            
+            // Clean up old ID mapping if different
+            if (activeTurnId && activeTurnId !== turnId) {
+              activeTurns.delete(activeTurnId);
             }
-          })();
+            
+            // Link the local turn variable so subsequent parsing in this notification step runs normally
+            turn = existingTurn;
+          } else {
+            // This is a true reverse push from Codex Desktop UI, create a new card
+            console.log(`[Reverse Push] Detected new turn ${turnId} started on bound thread ${params.threadId}. Creating Feishu message card...`);
+            
+            const reverseTurn: ActiveTurn = {
+              chatId,
+              messageId: "",
+              cardId: "",
+              threadId: params.threadId,
+              prompt: "Desktop Input 💻",
+              logs: ["Starting execution from Codex Desktop..."],
+              status: 'running',
+              dirty: false,
+              startedAt: Date.now(),
+              stats: {},
+              sequence: 1
+            };
 
-          turn = reverseTurn;
+            activeTurns.set(turnId, reverseTurn);
+            threadToActiveTurnId.set(params.threadId, turnId);
+
+            // Trigger asynchronous Feishu message creation
+            (async () => {
+              try {
+                const initialLayout = createCardKitInitialLayout(reverseTurn);
+                const cardId = await createCardKitCard(initialLayout);
+                reverseTurn.cardId = cardId;
+                
+                const newMsgId = await sendCardKitMessage(chatId, cardId);
+                if (newMsgId) {
+                  reverseTurn.messageId = newMsgId;
+                  // Immediate update in case we already have logs
+                  await streamUpdateCardKit(reverseTurn);
+                }
+              } catch (e) {
+                console.error('[Reverse Push] Failed to create reverse card:', e);
+              }
+            })();
+            
+            turn = reverseTurn;
+          }
         }
       }
     }
