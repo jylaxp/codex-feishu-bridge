@@ -19,6 +19,7 @@ interface SessionDb {
   [feishuChatId: string]: {
     threadId: string;
     threadName: string;
+    cwd?: string;
   };
 }
 
@@ -755,9 +756,10 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
       // Asynchronously trigger Codex remote control to avoid blocking Feishu events (which triggers retries)
       (async () => {
         try {
+          const boundCwd = bound.cwd || process.env.CODEX_CWD || process.cwd();
           const turnId = await adapter.startRemoteControlTurn({
             threadId: bound.threadId,
-            cwd: process.env.CODEX_CWD || process.cwd(),
+            cwd: boundCwd,
             prompt: text
           });
 
@@ -864,7 +866,8 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
         // Save mapping
         sessionDb[chatId] = {
           threadId: selectedThreadId,
-          threadName: threadName
+          threadName: threadName,
+          cwd: selectedThread ? selectedThread.cwd : ""
         };
         saveSessions(sessionDb);
 
