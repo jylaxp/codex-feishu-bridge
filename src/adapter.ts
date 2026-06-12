@@ -45,6 +45,9 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
     timeout: NodeJS.Timeout;
   }>();
   private ipcConnectionPromise: Promise<net.Socket | null> | null = null;
+  private threadStates = new Map<string, any>();
+  private lastAgentMessageTexts = new Map<string, string>();
+  private lastCommandOutputs = new Map<string, string>();
 
   constructor(private options: { socketPath?: string } = {}) {}
 
@@ -422,6 +425,8 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
                   pending.resolve(null);
                 }
               }
+            } else if (msg.type === 'broadcast' && msg.method === 'thread-stream-state-changed') {
+              this.handleIpcThreadStreamStateChanged(msg);
             }
           } catch (e: any) {
             logToFile(`[IPC] Failed to parse message: ${e.message}`);
@@ -580,6 +585,169 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
       throw new Error(`Invalid turn/start response: ${JSON.stringify(result)}`);
     }
     return result.turn.id;
+  }
+
+  private handleIpcThreadStreamStateChanged(msg: any) {
+    const params = msg.params;
+    if (!params) return;
+    const threadId = params.conversationId || params.threadId;
+    if (!threadId) return;
+
+    if (!this.threadStates.has(threadId)) {
+      this.threadStates.set(threadId, { turns: [] });
+    }
+    const state = this.threadStates.get(threadId);
+
+    const change = params.change;
+    if (!change) return;
+
+    if (change.type === 'snapshot') {
+      this.threadStates.set(threadId, change.conversationState || { turns: [] });
+      for (const key of this.lastAgentMessageTexts.keys()) {
+        if (key.startsWith(threadId + '-')) {
+          this.lastAgentMessageTexts.delete(key);
+        }
+      }
+      for (const key of this.lastCommandOutputs.keys()) {
+        if (key.startsWith(threadId + '-')) {
+          this.lastCommandOutputs.delete(key);
+        }
+      }
+    } else if (change.type === 'patches' && Array.isArray(change.patches)) {
+      for (const patch of change.patches) {
+        if (!patch || !Array.isArray(patch.path)) continue;
+        
+        const path = patch.path;
+        if (path[0] === 'turns' && typeof path[1] === 'number') {
+          const turnIndex = path[1];
+          const beforeTurn = state.turns[turnIndex] ? { ...state.turns[turnIndex] } : null;
+
+          this.applyJsonPatch(state, patch);
+
+          const afterTurn = state.turns[turnIndex];
+          if (!afterTurn) continue;
+
+          const turnId = afterTurn.turnId || afterTurn.id;
+
+          if (path[2] === 'status') {
+            const beforeStatus = beforeTurn ? beforeTurn.status : null;
+            const afterStatus = afterTurn.status;
+            if (beforeStatus !== afterStatus && afterStatus) {
+              if (afterStatus === 'inProgress') {
+                this.emitNotification({
+                  method: 'turn/started',
+                  params: { threadId, turnId, turn: { id: turnId } }
+                });
+              } else if (afterStatus === 'completed' || afterStatus === 'failed' || afterStatus === 'interrupted') {
+                this.emitNotification({
+                  method: 'turn/completed',
+                  params: { 
+                    threadId, 
+                    turnId, 
+                    turn: { id: turnId, status: afterStatus },
+                    error: afterTurn.error || (afterStatus === 'failed' ? { message: 'Turn execution failed' } : null)
+                  }
+                });
+              }
+            }
+          }
+
+          if (path[2] === 'items' && typeof path[3] === 'number' && path[4] === 'text') {
+            const itemIndex = path[3];
+            const textKey = `${threadId}-${turnIndex}-${itemIndex}`;
+            const oldText = this.lastAgentMessageTexts.get(textKey) || '';
+            const newText = patch.value || '';
+            if (newText.length > oldText.length) {
+              const delta = newText.slice(oldText.length);
+              this.lastAgentMessageTexts.set(textKey, newText);
+              this.emitNotification({
+                method: 'item/agentMessage/delta',
+                params: { threadId, turnId, delta }
+              });
+            }
+          }
+
+          if (path[2] === 'items' && typeof path[3] === 'number' && path[4] === 'aggregatedOutput') {
+            const itemIndex = path[3];
+            const outputKey = `${threadId}-${turnIndex}-${itemIndex}`;
+            const oldOutput = this.lastCommandOutputs.get(outputKey) || '';
+            const newOutput = patch.value || '';
+            if (newOutput.length > oldOutput.length) {
+              const delta = newOutput.slice(oldOutput.length);
+              this.lastCommandOutputs.set(outputKey, newOutput);
+              this.emitNotification({
+                method: 'agent/stderr',
+                params: { chunk: delta }
+              });
+            }
+          }
+
+          if (path[2] === 'items' && typeof path[3] === 'number' && path.length === 4) {
+            const itemIndex = path[3];
+            const item = patch.value;
+            if (item) {
+              if (item.type === 'agentMessage' && item.text) {
+                const textKey = `${threadId}-${turnIndex}-${itemIndex}`;
+                this.lastAgentMessageTexts.set(textKey, item.text);
+                this.emitNotification({
+                  method: 'item/agentMessage/delta',
+                  params: { threadId, turnId, delta: item.text }
+                });
+              } else if (item.type === 'commandExecution' && item.aggregatedOutput) {
+                const outputKey = `${threadId}-${turnIndex}-${itemIndex}`;
+                this.lastCommandOutputs.set(outputKey, item.aggregatedOutput);
+                this.emitNotification({
+                  method: 'agent/stderr',
+                  params: { chunk: item.aggregatedOutput }
+                });
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  private applyJsonPatch(obj: any, patch: { op: string; path: (string | number)[]; value: any }) {
+    const path = patch.path;
+    if (path.length === 0) return;
+    
+    let curr = obj;
+    for (let i = 0; i < path.length - 1; i++) {
+      const key = path[i];
+      if (curr[key] === undefined) {
+        const nextKey = path[i + 1];
+        curr[key] = typeof nextKey === 'number' ? [] : {};
+      }
+      curr = curr[key];
+    }
+    
+    const lastKey = path[path.length - 1];
+    if (patch.op === 'add') {
+      if (Array.isArray(curr) && typeof lastKey === 'number') {
+        curr.splice(lastKey, 0, patch.value);
+      } else {
+        curr[lastKey] = patch.value;
+      }
+    } else if (patch.op === 'replace') {
+      curr[lastKey] = patch.value;
+    } else if (patch.op === 'remove') {
+      if (Array.isArray(curr) && typeof lastKey === 'number') {
+        curr.splice(lastKey, 1);
+      } else {
+        delete curr[lastKey];
+      }
+    }
+  }
+
+  private emitNotification(msg: any) {
+    this.notificationHandlers.forEach(handler => {
+      try {
+        handler(msg);
+      } catch (e) {
+        console.error('Error in propagated notification handler:', e);
+      }
+    });
   }
 }
 
