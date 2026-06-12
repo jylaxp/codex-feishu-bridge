@@ -602,7 +602,8 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
     if (!change) return;
 
     if (change.type === 'snapshot') {
-      this.threadStates.set(threadId, change.conversationState || { turns: [] });
+      const conversationState = change.conversationState || { turns: [] };
+      this.threadStates.set(threadId, conversationState);
       for (const key of this.lastAgentMessageTexts.keys()) {
         if (key.startsWith(threadId + '-')) {
           this.lastAgentMessageTexts.delete(key);
@@ -612,6 +613,24 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
         if (key.startsWith(threadId + '-')) {
           this.lastCommandOutputs.delete(key);
         }
+      }
+      // Populate text and command output tracking from snapshot to avoid duplication
+      if (Array.isArray(conversationState.turns)) {
+        conversationState.turns.forEach((turn: any, turnIdx: number) => {
+          if (turn && Array.isArray(turn.items)) {
+            turn.items.forEach((item: any, itemIdx: number) => {
+              if (item) {
+                if (item.type === 'agentMessage' && typeof item.text === 'string') {
+                  const textKey = `${threadId}-${turnIdx}-${itemIdx}`;
+                  this.lastAgentMessageTexts.set(textKey, item.text);
+                } else if (item.type === 'commandExecution' && typeof item.aggregatedOutput === 'string') {
+                  const outputKey = `${threadId}-${turnIdx}-${itemIdx}`;
+                  this.lastCommandOutputs.set(outputKey, item.aggregatedOutput);
+                }
+              }
+            });
+          }
+        });
       }
     } else if (change.type === 'patches' && Array.isArray(change.patches)) {
       for (const patch of change.patches) {
@@ -648,6 +667,17 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
                     error: afterTurn.error || (afterStatus === 'failed' ? { message: 'Turn execution failed' } : null)
                   }
                 });
+                // Clean up tracking for this turn to prevent memory leak
+                for (const key of this.lastAgentMessageTexts.keys()) {
+                  if (key.startsWith(`${threadId}-${turnIndex}-`)) {
+                    this.lastAgentMessageTexts.delete(key);
+                  }
+                }
+                for (const key of this.lastCommandOutputs.keys()) {
+                  if (key.startsWith(`${threadId}-${turnIndex}-`)) {
+                    this.lastCommandOutputs.delete(key);
+                  }
+                }
               }
             }
           }
