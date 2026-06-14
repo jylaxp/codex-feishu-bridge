@@ -7,6 +7,8 @@ import * as net from 'net';
 import WebSocket from 'ws';
 import * as crypto from 'crypto';
 
+const IS_LITTLE_ENDIAN = os.endianness() === 'LE';
+
 export interface CodexThread {
   id: string;
   name: string;
@@ -17,7 +19,7 @@ export interface CodexThread {
 export interface CodexThreadAdapter {
   connect(): Promise<void>;
   disconnect(): void;
-  request(method: string, params: Record<string, unknown>): Promise<any>;
+  request(method: string, params: Record<string, unknown>, timeoutMs?: number): Promise<any>;
   onNotification(handler: (message: any) => void): void;
   onExit(handler: () => void): void;
   listThreads(limit?: number): Promise<CodexThread[]>;
@@ -26,6 +28,9 @@ export interface CodexThreadAdapter {
     cwd: string;
     prompt: string;
     workspaceKind?: 'project' | 'projectless';
+    input?: any[];
+    collaborationMode?: string | null;
+    personality?: string | null;
   }): Promise<string>;
 }
 
@@ -257,21 +262,55 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
     });
   }
 
-  request(method: string, params: Record<string, unknown>): Promise<any> {
-    const id = this.nextId++;
-    const reqObj = { jsonrpc: '2.0', id, method, params };
+  async request(method: string, params: Record<string, unknown>, timeoutMs = 30000): Promise<any> {
+    const doRequest = () => {
+      const id = this.nextId++;
+      const reqObj = { jsonrpc: '2.0', id, method, params };
 
-    return new Promise((resolve, reject) => {
-      this.pendingRequests.set(id, { resolve, reject });
-      if (this.ws) {
-        this.ws.send(JSON.stringify(reqObj));
-      } else if (this.childProcess && this.childProcess.stdin) {
-        this.childProcess.stdin.write(JSON.stringify(reqObj) + '\n');
-      } else {
-        this.pendingRequests.delete(id);
-        reject(new Error("Transport disconnected"));
+      return new Promise<any>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          this.pendingRequests.delete(id);
+          reject(new Error(`RPC timeout: ${method} (id=${id})`));
+        }, timeoutMs);
+
+        this.pendingRequests.set(id, {
+          resolve: (v: any) => { clearTimeout(timer); resolve(v); },
+          reject: (e: any) => { clearTimeout(timer); reject(e); }
+        });
+        if (this.ws) {
+          this.ws.send(JSON.stringify(reqObj));
+        } else if (this.childProcess && this.childProcess.stdin) {
+          this.childProcess.stdin.write(JSON.stringify(reqObj) + '\n');
+        } else {
+          clearTimeout(timer);
+          this.pendingRequests.delete(id);
+          reject(new Error("Transport disconnected"));
+        }
+      });
+    };
+
+    try {
+      return await doRequest();
+    } catch (e: any) {
+      const threadId = params?.threadId;
+      if (
+        typeof threadId === 'string' &&
+        method !== 'thread/resume' &&
+        e?.message &&
+        e.message.toLowerCase().includes('thread not found')
+      ) {
+        console.log(`Auto-resuming thread ${threadId} due to error: ${e.message}`);
+        try {
+          await this.request('thread/resume', { threadId });
+          console.log(`Resumed thread ${threadId} successfully, retrying ${method}...`);
+          return await doRequest();
+        } catch (resumeErr) {
+          console.warn(`Failed to auto-resume thread ${threadId}:`, resumeErr);
+          throw e; // throw original error
+        }
       }
-    });
+      throw e;
+    }
   }
 
   onNotification(handler: (message: any) => void): void {
@@ -356,17 +395,7 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
         resolve(null);
       }, 5000);
 
-      const writeMessage = (obj: any) => {
-        const jsonStr = JSON.stringify(obj);
-        const msgBuffer = Buffer.from(jsonStr, 'utf8');
-        const lenBuffer = Buffer.alloc(4);
-        if (os.endianness() === 'LE') {
-          lenBuffer.writeUInt32LE(msgBuffer.length, 0);
-        } else {
-          lenBuffer.writeUInt32BE(msgBuffer.length, 0);
-        }
-        client.write(Buffer.concat([lenBuffer, msgBuffer]));
-      };
+      const writeMessage = (obj: any) => this.writeIpcMessage(client, obj);
 
       client.on('connect', () => {
         clearTimeout(connectionTimeout);
@@ -384,7 +413,7 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
         while (true) {
           if (expectedLen === null) {
             if (rxBuffer.length < 4) break;
-            if (os.endianness() === 'LE') {
+            if (IS_LITTLE_ENDIAN) {
               expectedLen = rxBuffer.readUInt32LE(0);
             } else {
               expectedLen = rxBuffer.readUInt32BE(0);
@@ -471,6 +500,9 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
     cwd: string;
     prompt: string;
     workspaceKind?: 'project' | 'projectless';
+    input?: any[];
+    collaborationMode?: string | null;
+    personality?: string | null;
   }): Promise<string | null> {
     if (process.env.NODE_ENV === 'test') {
       console.log('Skipping Desktop IPC start turn in test environment.');
@@ -486,8 +518,9 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
     const turnParams = {
       threadId: options.threadId,
       clientUserMessageId: 'bridge-' + crypto.randomUUID(),
-      input: [{ type: 'text', text: options.prompt, text_elements: [] }],
+      input: options.input || [{ type: 'text', text: options.prompt, text_elements: [] }],
       cwd: options.cwd,
+      collaborationMode: options.collaborationMode || null,
       sandboxPolicy: {
         type: 'workspaceWrite',
         writableRoots: [options.cwd],
@@ -502,7 +535,7 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
       serviceTier: null,
       effort: null,
       summary: 'none',
-      personality: null,
+      personality: options.personality || null,
       responsesapiClientMetadata: { 
         workspace_kind: options.workspaceKind || 'project' 
       },
@@ -522,17 +555,7 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
 
       this.pendingIpcRequests.set(reqId, { resolve, timeout });
 
-      const writeMessage = (obj: any) => {
-        const jsonStr = JSON.stringify(obj);
-        const msgBuffer = Buffer.from(jsonStr, 'utf8');
-        const lenBuffer = Buffer.alloc(4);
-        if (os.endianness() === 'LE') {
-          lenBuffer.writeUInt32LE(msgBuffer.length, 0);
-        } else {
-          lenBuffer.writeUInt32BE(msgBuffer.length, 0);
-        }
-        client.write(Buffer.concat([lenBuffer, msgBuffer]));
-      };
+      const writeMessage = (obj: any) => this.writeIpcMessage(client, obj);
 
       writeMessage({
         type: 'request',
@@ -554,6 +577,9 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
     cwd: string;
     prompt: string;
     workspaceKind?: 'project' | 'projectless';
+    input?: any[];
+    collaborationMode?: string | null;
+    personality?: string | null;
   }): Promise<string> {
     // Proactively resume/load the thread first on WS to ensure we subscribe to its event stream
     try {
@@ -578,8 +604,9 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
     const result = await this.request('turn/start', {
       threadId: options.threadId,
       cwd: options.cwd,
-      collaborationMode: null,
-      input: [{ type: "text", text: options.prompt, text_elements: [] }]
+      collaborationMode: options.collaborationMode || null,
+      personality: options.personality || null,
+      input: options.input || [{ type: "text", text: options.prompt, text_elements: [] }]
     });
     if (!result || !result.turn || !result.turn.id) {
       throw new Error(`Invalid turn/start response: ${JSON.stringify(result)}`);
@@ -635,11 +662,60 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
           }
         });
       }
+      if (Array.isArray(conversationState.requests)) {
+        conversationState.requests.forEach((requestVal: any) => {
+          if (requestVal && requestVal.method && requestVal.id !== undefined) {
+            logToFile(`[IPC Snapshot] Intercepted request: ${JSON.stringify(requestVal)}`);
+            this.emitNotification({
+              id: requestVal.id,
+              method: requestVal.method,
+              params: {
+                ...requestVal.params,
+                threadId: threadId
+              },
+              isIpc: true
+            });
+          }
+        });
+      }
     } else if (change.type === 'patches' && Array.isArray(change.patches)) {
       for (const patch of change.patches) {
         if (!patch || !Array.isArray(patch.path)) continue;
         
         const path = patch.path;
+        if (path[0] === 'requests') {
+          if (patch.op === 'add') {
+            const requestVal = patch.value;
+            if (requestVal && requestVal.method && requestVal.id !== undefined) {
+              logToFile(`[IPC Patch add] Intercepted requests: ${JSON.stringify(requestVal)}`);
+              this.emitNotification({
+                id: requestVal.id,
+                method: requestVal.method,
+                params: {
+                  ...requestVal.params,
+                  threadId: threadId
+                },
+                isIpc: true
+              });
+            }
+          } else if (patch.op === 'replace' && Array.isArray(patch.value)) {
+            patch.value.forEach((requestVal: any) => {
+              if (requestVal && requestVal.method && requestVal.id !== undefined) {
+                logToFile(`[IPC Patch replace] Intercepted requests: ${JSON.stringify(requestVal)}`);
+                this.emitNotification({
+                  id: requestVal.id,
+                  method: requestVal.method,
+                  params: {
+                    ...requestVal.params,
+                    threadId: threadId
+                  },
+                  isIpc: true
+                });
+              }
+            });
+          }
+        }
+
         if (path[0] === 'turns' && typeof path[1] === 'number') {
           const turnIndex = path[1];
           const beforeTurn = state.turns[turnIndex] ? { ...state.turns[turnIndex] } : null;
@@ -651,15 +727,41 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
 
           const turnId = afterTurn.turnId || afterTurn.id;
 
+          const emitTurnStartedAndPrompt = () => {
+            this.emitNotification({
+              method: 'turn/started',
+              params: { threadId, turnId, turn: { id: turnId } }
+            });
+
+            // Extract prompt text and emit userMessage item/started notification
+            const inputElements = afterTurn.input || [];
+            const textElement = inputElements.find((el: any) => el.type === 'text');
+            const promptText = textElement ? textElement.text : '';
+            if (promptText) {
+              this.emitNotification({
+                method: 'item/started',
+                params: {
+                  threadId,
+                  turnId,
+                  item: {
+                    type: 'userMessage',
+                    content: [{ type: 'text', text: promptText }]
+                  }
+                }
+              });
+            }
+          };
+
+          if (patch.op === 'add' && path.length === 2 && afterTurn && afterTurn.status === 'inProgress') {
+            emitTurnStartedAndPrompt();
+          }
+
           if (path[2] === 'status') {
             const beforeStatus = beforeTurn ? beforeTurn.status : null;
             const afterStatus = afterTurn.status;
             if (beforeStatus !== afterStatus && afterStatus) {
               if (afterStatus === 'inProgress') {
-                this.emitNotification({
-                  method: 'turn/started',
-                  params: { threadId, turnId, turn: { id: turnId } }
-                });
+                emitTurnStartedAndPrompt();
               } else if (afterStatus === 'completed' || afterStatus === 'failed' || afterStatus === 'interrupted') {
                 this.emitNotification({
                   method: 'turn/completed',
@@ -685,6 +787,25 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
             }
           }
 
+          if (path[2] === 'input') {
+            const inputElements = afterTurn.input || [];
+            const textElement = inputElements.find((el: any) => el.type === 'text');
+            const promptText = textElement ? textElement.text : '';
+            if (promptText) {
+              this.emitNotification({
+                method: 'item/started',
+                params: {
+                  threadId,
+                  turnId,
+                  item: {
+                    type: 'userMessage',
+                    content: [{ type: 'text', text: promptText }]
+                  }
+                }
+              });
+            }
+          }
+
           if (path[2] === 'items' && typeof path[3] === 'number' && path[4] === 'text') {
             const itemIndex = path[3];
             const item = afterTurn.items[itemIndex];
@@ -696,10 +817,17 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
                 if (newText.length > oldText.length) {
                   const delta = newText.slice(oldText.length);
                   this.lastAgentMessageTexts.set(textKey, newText);
-                  this.emitNotification({
-                    method: 'item/agentMessage/delta',
-                    params: { threadId, turnId, delta }
-                  });
+                  if (item.phase === 'commentary') {
+                    this.emitNotification({
+                      method: 'item/reasoning/delta',
+                      params: { threadId, turnId, delta }
+                    });
+                  } else {
+                    this.emitNotification({
+                      method: 'item/agentMessage/delta',
+                      params: { threadId, turnId, delta }
+                    });
+                  }
                 }
               } else if (item.type === 'reasoning') {
                 const textKey = `${threadId}-${turnIndex}-${itemIndex}`;
@@ -741,25 +869,47 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
             if (item) {
               if (item.type === 'agentMessage' && item.text) {
                 const textKey = `${threadId}-${turnIndex}-${itemIndex}`;
-                this.lastAgentMessageTexts.set(textKey, item.text);
-                this.emitNotification({
-                  method: 'item/agentMessage/delta',
-                  params: { threadId, turnId, delta: item.text }
-                });
+                const oldText = this.lastAgentMessageTexts.get(textKey) || '';
+                const newText = item.text || '';
+                if (newText.length > oldText.length) {
+                  const delta = newText.slice(oldText.length);
+                  this.lastAgentMessageTexts.set(textKey, newText);
+                  if (item.phase === 'commentary') {
+                    this.emitNotification({
+                      method: 'item/reasoning/delta',
+                      params: { threadId, turnId, delta }
+                    });
+                  } else {
+                    this.emitNotification({
+                      method: 'item/agentMessage/delta',
+                      params: { threadId, turnId, delta }
+                    });
+                  }
+                }
               } else if (item.type === 'reasoning' && item.text) {
                 const textKey = `${threadId}-${turnIndex}-${itemIndex}`;
-                this.lastAgentMessageTexts.set(textKey, item.text);
-                this.emitNotification({
-                  method: 'item/reasoning/delta',
-                  params: { threadId, turnId, delta: item.text }
-                });
+                const oldText = this.lastAgentMessageTexts.get(textKey) || '';
+                const newText = item.text || '';
+                if (newText.length > oldText.length) {
+                  const delta = newText.slice(oldText.length);
+                  this.lastAgentMessageTexts.set(textKey, newText);
+                  this.emitNotification({
+                    method: 'item/reasoning/delta',
+                    params: { threadId, turnId, delta }
+                  });
+                }
               } else if (item.type === 'commandExecution' && item.aggregatedOutput) {
                 const outputKey = `${threadId}-${turnIndex}-${itemIndex}`;
-                this.lastCommandOutputs.set(outputKey, item.aggregatedOutput);
-                this.emitNotification({
-                  method: 'agent/stderr',
-                  params: { chunk: item.aggregatedOutput }
-                });
+                const oldOutput = this.lastCommandOutputs.get(outputKey) || '';
+                const newOutput = item.aggregatedOutput || '';
+                if (newOutput.length > oldOutput.length) {
+                  const delta = newOutput.slice(oldOutput.length);
+                  this.lastCommandOutputs.set(outputKey, newOutput);
+                  this.emitNotification({
+                    method: 'agent/stderr',
+                    params: { chunk: delta }
+                  });
+                }
               }
             }
           }
@@ -800,6 +950,82 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
     }
   }
 
+  async respondIpcApproval(options: {
+    threadId: string;
+    requestId: string | number;
+    method: string;
+    decision: string;
+  }): Promise<boolean> {
+    const client = await this.getIpcClient();
+    if (!client || !this.ipcClientId) {
+      logToFile('[IPC] Failed to get connected IPC client for approval response.');
+      return false;
+    }
+
+    let ipcMethod = '';
+    let params: any = {
+      conversationId: options.threadId,
+      requestId: options.requestId,
+    };
+
+    const methodLower = options.method.toLowerCase();
+    if (methodLower.includes('command')) {
+      ipcMethod = 'thread-follower-command-approval-decision';
+      params.decision = options.decision;
+    } else if (methodLower.includes('filechange') || methodLower.includes('file')) {
+      ipcMethod = 'thread-follower-file-approval-decision';
+      params.decision = options.decision;
+    } else if (methodLower.includes('permissions')) {
+      ipcMethod = 'thread-follower-permissions-request-approval-response';
+      params.response = { decision: options.decision };
+    } else {
+      logToFile(`[IPC] Unknown approval method: ${options.method}`);
+      return false;
+    }
+
+    const reqId = crypto.randomUUID();
+    logToFile(`[IPC] Sending ${ipcMethod} for request ${options.requestId}, decision ${options.decision}`);
+
+    return new Promise<boolean>((resolve) => {
+      const timeout = setTimeout(() => {
+        logToFile(`[IPC] Approval response request ${reqId} timed out.`);
+        this.pendingIpcRequests.delete(reqId);
+        resolve(false);
+      }, 10000);
+
+      this.pendingIpcRequests.set(reqId, {
+        resolve: () => {
+          resolve(true);
+        },
+        timeout
+      });
+
+      const writeMessage = (obj: any) => this.writeIpcMessage(client, obj);
+
+      writeMessage({
+        type: 'request',
+        requestId: reqId,
+        sourceClientId: this.ipcClientId,
+        version: 1,
+        method: ipcMethod,
+        params,
+        timeoutMs: 10000
+      });
+    });
+  }
+
+  private writeIpcMessage(client: net.Socket, obj: any): void {
+    const jsonStr = JSON.stringify(obj);
+    const msgBuffer = Buffer.from(jsonStr, 'utf8');
+    const lenBuffer = Buffer.alloc(4);
+    if (IS_LITTLE_ENDIAN) {
+      lenBuffer.writeUInt32LE(msgBuffer.length, 0);
+    } else {
+      lenBuffer.writeUInt32BE(msgBuffer.length, 0);
+    }
+    client.write(Buffer.concat([lenBuffer, msgBuffer]));
+  }
+
   private emitNotification(msg: any) {
     this.notificationHandlers.forEach(handler => {
       try {
@@ -814,6 +1040,12 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
 export function logToFile(msg: string) {
   try {
     const logPath = path.join(os.homedir(), '.codex', 'bridge_debug.log');
+    const MAX_SIZE = 10 * 1024 * 1024; // 10MB
+    try {
+      if (fs.existsSync(logPath) && fs.statSync(logPath).size > MAX_SIZE) {
+        fs.renameSync(logPath, logPath + '.old');
+      }
+    } catch (_) {}
     fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${msg}\n`);
   } catch (e) {}
 }

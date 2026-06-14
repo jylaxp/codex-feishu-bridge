@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "Local bridge connecting Feishu Bot to Codex App Server",
   "main": "dist/index.js",
+  "bin": {
+    "feishu-codex-bridge": "./dist/cli.js"
+  },
   "scripts": {
     "build": "tsc",
     "start": "ts-node src/index.ts",
