@@ -5,8 +5,8 @@ import * as path from 'path';
 import * as qrcode from 'qrcode-terminal';
 import * as crypto from 'crypto';
 import * as os from 'os';
-import { exec } from 'child_process';
-import { LocalAppServerAdapter, CodexThread } from './adapter';
+import { exec, execFile } from 'child_process';
+import { LocalAppServerAdapter, CodexThread, redactSecrets, get24HourTimeStr } from './adapter';
 
 // Load environmental variables
 dotenv.config();
@@ -18,6 +18,7 @@ const SESSIONS_FILE = path.join(process.cwd(), 'sessions.json');
 const APPROVALS_FILE = path.join(process.cwd(), 'approvals.json');
 const PUSHED_TURNS_FILE = path.join(process.cwd(), 'pushed_turns.json');
 const APPROVAL_TTL_MS = 30 * 60 * 1000; // 30 minutes
+const RATE_LIMIT_QUERY_INTERVAL_MS = parseInt(process.env.RATE_LIMIT_QUERY_INTERVAL_MS || '300000', 10);
 
 interface SessionDb {
   [feishuChatId: string]: {
@@ -46,6 +47,12 @@ function loadPushedTurns(): Set<string> {
   return new Set();
 }
 
+function writeJsonFileSyncAtomic(filepath: string, data: any) {
+  const tmpPath = filepath + '.tmp';
+  fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), 'utf8');
+  fs.renameSync(tmpPath, filepath);
+}
+
 function savePushedTurns(set: Set<string>) {
   try {
     let arr = Array.from(set);
@@ -54,7 +61,7 @@ function savePushedTurns(set: Set<string>) {
       set.clear();
       arr.forEach(item => set.add(item));
     }
-    fs.writeFileSync(PUSHED_TURNS_FILE, JSON.stringify(arr, null, 2), 'utf8');
+    writeJsonFileSyncAtomic(PUSHED_TURNS_FILE, arr);
   } catch (e) {
     console.error('Failed to save pushed_turns.json:', e);
   }
@@ -73,7 +80,7 @@ function loadSessions(): SessionDb {
 
 function saveSessions(db: SessionDb) {
   try {
-    fs.writeFileSync(SESSIONS_FILE, JSON.stringify(db, null, 2), 'utf8');
+    writeJsonFileSyncAtomic(SESSIONS_FILE, db);
   } catch (e) {
     console.error('Failed to save sessions.json:', e);
   }
@@ -108,7 +115,7 @@ function loadApprovals(): Map<string, ActiveApproval> {
 function saveApprovals(map: Map<string, ActiveApproval>) {
   try {
     const obj = Object.fromEntries(map.entries());
-    fs.writeFileSync(APPROVALS_FILE, JSON.stringify(obj, null, 2), 'utf8');
+    writeJsonFileSyncAtomic(APPROVALS_FILE, obj);
   } catch (e) {
     console.error('Failed to save approvals.json:', e);
   }
@@ -124,6 +131,16 @@ function getAllowedCommands(): string[] {
   return allowedCommands;
 }
 
+function parseCommandArgs(command: string): string[] {
+  const matches = command.match(/"[^"]*"|'[^']*'|\S+/g) || [];
+  return matches.map(arg => {
+    if ((arg.startsWith('"') && arg.endsWith('"')) || (arg.startsWith("'") && arg.endsWith("'"))) {
+      return arg.substring(1, arg.length - 1);
+    }
+    return arg;
+  });
+}
+
 async function executeUserCommand(chatId: string, command: string) {
   command = command.trim();
   if (!command) {
@@ -131,8 +148,13 @@ async function executeUserCommand(chatId: string, command: string) {
     return;
   }
 
-  // Extract command name (first word)
-  const firstWord = command.split(/\s+/)[0].toLowerCase();
+  const parsedArgs = parseCommandArgs(command);
+  if (parsedArgs.length === 0) {
+    await sendSimpleStatusCard(chatId, "⚠️ 缺少指令内容", "orange", "请提供要执行的命令行指令。\n例如：`/cmd ls -la` 或 `/run git status`。");
+    return;
+  }
+
+  const firstWord = parsedArgs[0].toLowerCase();
   
   // Command Whitelist Check
   const allowedCommands = getAllowedCommands();
@@ -164,11 +186,16 @@ async function executeUserCommand(chatId: string, command: string) {
     }
 
     try {
-      if (!fs.existsSync(newCwd) || !fs.statSync(newCwd).isDirectory()) {
-        await sendSimpleStatusCard(chatId, "🚫 切换目录失败", "red", `路径不存在或不是一个目录：\n\`${newCwd}\``);
+      const stats = fs.statSync(newCwd);
+      if (!stats.isDirectory()) {
+        await sendSimpleStatusCard(chatId, "🚫 切换目录失败", "red", `路径不是一个目录：\n\`${newCwd}\``);
         return;
       }
     } catch (statErr: any) {
+      if (statErr.code === 'ENOENT') {
+        await sendSimpleStatusCard(chatId, "🚫 切换目录失败", "red", `路径不存在：\n\`${newCwd}\``);
+        return;
+      }
       const errMsg = statErr?.message || "";
       if (errMsg.includes("Operation not permitted") || errMsg.includes("EACCES")) {
         await sendSimpleStatusCard(chatId, "⚠️ 系统权限不足 (Operation not permitted)", "orange", `网桥程序无权访问该目录：\n\`${newCwd}\`\n\n**建议解决办法**：\n1. 将项目移出 \`Documents\` / \`Desktop\` 等系统受限文件夹，移至例如 \`~/work/\` 下。\n2. 或者前往 macOS \`系统设置 -> 隐私与安全性 -> 完全磁盘访问权限\`，为您的终端应用或 node 启用读取权限。`);
@@ -192,7 +219,8 @@ async function executeUserCommand(chatId: string, command: string) {
   console.log(`Executing terminal command: "${command}" in cwd: "${execCwd}"`);
 
   try {
-    exec(command, { cwd: execCwd, timeout: 15000 }, async (error: any, stdout: string, stderr: string) => {
+    const cmdArgs = parsedArgs.slice(1);
+    execFile(parsedArgs[0], cmdArgs, { cwd: execCwd, timeout: 15000 }, async (error: any, stdout: string, stderr: string) => {
       let isPermissionError = false;
       const stdErrStr = stderr || "";
       const errStr = error?.message || "";
@@ -230,7 +258,7 @@ async function executeUserCommand(chatId: string, command: string) {
         chatId, 
         isPermissionError ? "⚠️ 系统权限不足" : "💻 终端命令执行结果", 
         isPermissionError ? "orange" : "blue", 
-        isPermissionError ? output : `**工作目录 (CWD)**: \`${execCwd}\`\n\n\`\`\`text\n${output}\n\`\`\``
+        `**工作目录 (CWD)**: \`${execCwd}\`\n\n\`\`\`text\n${output}\n\`\`\``
       );
     });
   } catch (err: any) {
@@ -270,6 +298,14 @@ interface ActiveTurn {
   skillName?: string;
   collaborationMode?: string | null;
   personality?: string | null;
+  streamingClosed?: boolean;
+  rateLimitStr?: string;
+  lastFullUpdateAt?: number;
+  lastSentValues?: Record<string, string>;
+  commandExecutionCount?: number;
+  hasLoggedFoldMessage?: boolean;
+  pendingReasoningHeader?: string;
+  lastRateLimitQueryAt?: number;
 }
 
 interface ActiveApproval {
@@ -290,6 +326,7 @@ interface ActiveApproval {
 const sessionDb = loadSessions();
 const activeTurns = new Map<string, ActiveTurn>(); // turnId -> ActiveTurn
 const threadToActiveTurnId = new Map<string, string>(); // threadId -> turnId
+const recentTurns = new Map<string, ActiveTurn>(); // turnId or threadId -> ActiveTurn (for late stats delivery)
 const activeApprovals = loadApprovals();
 const pushedTurns = loadPushedTurns();
 const exploreCwds = new Map<string, string>();
@@ -314,14 +351,21 @@ setInterval(() => {
 
 // Serialization Queue for Card Updates
 const turnQueues = new Map<string, Promise<any>>();
+const turnTaskCounts = new Map<string, number>();
 
 function queueTurnTask(turnId: string, task: () => Promise<any>): Promise<any> {
   const previous = turnQueues.get(turnId) || Promise.resolve();
+  turnTaskCounts.set(turnId, (turnTaskCounts.get(turnId) || 0) + 1);
+
   const next = previous.then(() => task()).catch((err) => {
     console.error(`Error executing task in queue for turn ${turnId}:`, err);
   }).finally(() => {
-    if (turnQueues.get(turnId) === next) {
+    const count = (turnTaskCounts.get(turnId) || 0) - 1;
+    if (count <= 0) {
+      turnTaskCounts.delete(turnId);
       turnQueues.delete(turnId);
+    } else {
+      turnTaskCounts.set(turnId, count);
     }
   });
   turnQueues.set(turnId, next);
@@ -331,30 +375,44 @@ function queueTurnTask(turnId: string, task: () => Promise<any>): Promise<any> {
 // --- Feishu Token Cache ---
 let cachedToken = "";
 let tokenExpiresAt = 0;
+let tokenFetchPromise: Promise<string> | null = null;
 
 async function getTenantAccessToken(): Promise<string> {
   const now = Date.now();
   if (cachedToken && tokenExpiresAt > now + 60000) {
     return cachedToken;
   }
-  const appId = process.env.LARK_APP_ID || process.env.APP_ID;
-  const appSecret = process.env.LARK_APP_SECRET || process.env.APP_SECRET;
-  if (!appId || !appSecret) {
-    throw new Error("Missing LARK_APP_ID or LARK_APP_SECRET");
+  if (tokenFetchPromise) {
+    return tokenFetchPromise;
   }
 
-  const res = await fetch("https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ app_id: appId, app_secret: appSecret })
-  });
-  const data: any = await res.json();
-  if (data.code !== 0) {
-    throw new Error(`Failed to get Feishu token: ${data.msg}`);
-  }
-  cachedToken = data.tenant_access_token;
-  tokenExpiresAt = now + (data.expire || 7200) * 1000;
-  return cachedToken;
+  tokenFetchPromise = (async () => {
+    try {
+      const appId = process.env.LARK_APP_ID || process.env.APP_ID;
+      const appSecret = process.env.LARK_APP_SECRET || process.env.APP_SECRET;
+      console.log(`[DEBUG] getTenantAccessToken using APP_ID: ${appId}`);
+      if (!appId || !appSecret) {
+        throw new Error("Missing LARK_APP_ID or LARK_APP_SECRET");
+      }
+
+      const res = await fetch("https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ app_id: appId, app_secret: appSecret })
+      });
+      const data: any = await res.json();
+      if (data.code !== 0) {
+        throw new Error(`Failed to get Feishu token: ${data.msg}`);
+      }
+      cachedToken = data.tenant_access_token;
+      tokenExpiresAt = Date.now() + (data.expire || 7200) * 1000;
+      return cachedToken;
+    } finally {
+      tokenFetchPromise = null;
+    }
+  })();
+
+  return tokenFetchPromise;
 }
 
 // --- CardKit 2.0 Core APIs ---
@@ -372,6 +430,7 @@ async function createCardKitCard(cardContent: any): Promise<string> {
     })
   });
   const data: any = await res.json();
+  console.log(`[DEBUG] createCardKitCard response: ${JSON.stringify(data)}`);
   if (data.code !== 0) {
     throw new Error(`Failed to create CardKit card: ${data.msg}`);
   }
@@ -379,20 +438,39 @@ async function createCardKitCard(cardContent: any): Promise<string> {
 }
 
 async function sendCardKitMessage(chatId: string, cardId: string): Promise<string> {
-  const res = await larkClient.im.message.create({
-    params: { receive_id_type: 'chat_id' },
-    data: {
-      receive_id: chatId,
-      msg_type: 'interactive',
-      content: JSON.stringify({
-        type: "card",
+  let attempts = 0;
+  const maxAttempts = 6;
+  while (true) {
+    try {
+      const res = await larkClient.im.message.create({
+        params: { receive_id_type: 'chat_id' },
         data: {
-          card_id: cardId
+          receive_id: chatId,
+          msg_type: 'interactive',
+          content: JSON.stringify({
+            type: "card",
+            data: {
+              card_id: cardId
+            }
+          })
         }
-      })
+      });
+      return res.data?.message_id || "";
+    } catch (err: any) {
+      attempts++;
+      const errData = err.response?.data;
+      const isCardInvalid = errData?.code === 230099 || 
+                            (errData?.msg && errData.msg.includes("cardid is invalid")) ||
+                            (err.message && err.message.includes("400")) ||
+                            err.code === 'ERR_BAD_REQUEST';
+      if (attempts >= maxAttempts || !isCardInvalid) {
+        throw err;
+      }
+      const delay = attempts * 500;
+      console.warn(`[DEBUG] sendCardKitMessage failed (card_id: ${cardId}), retrying in ${delay}ms (attempt ${attempts}/${maxAttempts}). Error: ${err.message || err}`);
+      await new Promise(resolve => setTimeout(resolve, delay));
     }
-  });
-  return res.data?.message_id || "";
+  }
 }
 
 async function sendSimpleStatusCard(chatId: string, title: string, template: string, markdownContent: string): Promise<string> {
@@ -437,7 +515,7 @@ async function sendSimpleStatusCard(chatId: string, title: string, template: str
   }
 }
 
-async function streamCardKitElement(cardId: string, elementId: string, content: string, sequence: number) {
+async function streamCardKitElement(cardId: string, elementId: string, content: string, sequence: number, turn?: ActiveTurn) {
   try {
     const token = await getTenantAccessToken();
     const res = await fetch(`https://open.feishu.cn/open-apis/cardkit/v1/cards/${encodeURIComponent(cardId)}/elements/${encodeURIComponent(elementId)}/content`, {
@@ -453,6 +531,9 @@ async function streamCardKitElement(cardId: string, elementId: string, content: 
     });
     const data: any = await res.json();
     if (data.code !== 0) {
+      if (data.msg && (data.msg.includes('streaming mode is closed') || data.msg.includes('streaming_mode is closed'))) {
+        if (turn) turn.streamingClosed = true;
+      }
       console.error(`Failed to stream CardKit element ${elementId}:`, data.msg);
     }
   } catch (e) {
@@ -511,6 +592,26 @@ function extractStatsFromParams(params: any): TurnStats {
   if (!params || typeof params !== 'object') {
     return stats;
   }
+
+  // Explicit check for Codex tokenUsage notification format
+  if (params.tokenUsage && typeof params.tokenUsage === 'object') {
+    const tu = params.tokenUsage;
+    if (tu.last && typeof tu.last === 'object') {
+      if (typeof tu.last.inputTokens === 'number') stats.inputTokens = tu.last.inputTokens;
+      if (typeof tu.last.outputTokens === 'number') stats.outputTokens = tu.last.outputTokens;
+    }
+    if (tu.last && typeof tu.last === 'object' && typeof tu.last.totalTokens === 'number') {
+      stats.contextTokens = tu.last.totalTokens;
+    } else if (tu.total && typeof tu.total === 'object' && typeof tu.total.totalTokens === 'number') {
+      stats.contextTokens = tu.total.totalTokens;
+    }
+    if (typeof tu.modelContextWindow === 'number') {
+      stats.contextLength = tu.modelContextWindow;
+    }
+    if (typeof params.model === 'string') {
+      stats.model = params.model;
+    }
+  }
   
   function search(obj: any, depth = 0) {
     if (depth > 8 || !obj || typeof obj !== 'object') return;
@@ -518,12 +619,12 @@ function extractStatsFromParams(params: any): TurnStats {
     const modelKeys = ["model", "model_name", "modelName", "model_id", "modelId", "toModel"];
     for (const key of modelKeys) {
       if (typeof obj[key] === 'string' && obj[key].trim()) {
-        stats.model = obj[key].trim();
+        if (!stats.model) stats.model = obj[key].trim();
         break;
       } else if (typeof obj[key] === 'object' && obj[key] !== null) {
         const nestedModel = obj[key].id || obj[key].name || obj[key].model;
         if (typeof nestedModel === 'string' && nestedModel.trim()) {
-          stats.model = nestedModel.trim();
+          if (!stats.model) stats.model = nestedModel.trim();
           break;
         }
       }
@@ -531,28 +632,28 @@ function extractStatsFromParams(params: any): TurnStats {
 
     const inputTokenKeys = ["input_tokens", "inputTokens", "prompt_tokens", "promptTokens", "tokens_in", "tokensIn"];
     for (const key of inputTokenKeys) {
-      if (typeof obj[key] === 'number') { stats.inputTokens = obj[key]; break; }
-      if (typeof obj[key] === 'string' && /^\d+$/.test(obj[key])) { stats.inputTokens = parseInt(obj[key], 10); break; }
+      if (typeof obj[key] === 'number') { if (stats.inputTokens === undefined) stats.inputTokens = obj[key]; break; }
+      if (typeof obj[key] === 'string' && /^\d+$/.test(obj[key])) { if (stats.inputTokens === undefined) stats.inputTokens = parseInt(obj[key], 10); break; }
     }
     const outputTokenKeys = ["output_tokens", "outputTokens", "completion_tokens", "completionTokens", "tokens_out", "tokensOut"];
     for (const key of outputTokenKeys) {
-      if (typeof obj[key] === 'number') { stats.outputTokens = obj[key]; break; }
-      if (typeof obj[key] === 'string' && /^\d+$/.test(obj[key])) { stats.outputTokens = parseInt(obj[key], 10); break; }
+      if (typeof obj[key] === 'number') { if (stats.outputTokens === undefined) stats.outputTokens = obj[key]; break; }
+      if (typeof obj[key] === 'string' && /^\d+$/.test(obj[key])) { if (stats.outputTokens === undefined) stats.outputTokens = parseInt(obj[key], 10); break; }
     }
     const contextTokenKeys = ["context_tokens", "contextTokens", "context_used_tokens", "contextUsedTokens", "total_tokens", "totalTokens"];
     for (const key of contextTokenKeys) {
-      if (typeof obj[key] === 'number') { stats.contextTokens = obj[key]; break; }
-      if (typeof obj[key] === 'string' && /^\d+$/.test(obj[key])) { stats.contextTokens = parseInt(obj[key], 10); break; }
+      if (typeof obj[key] === 'number') { if (stats.contextTokens === undefined) stats.contextTokens = obj[key]; break; }
+      if (typeof obj[key] === 'string' && /^\d+$/.test(obj[key])) { if (stats.contextTokens === undefined) stats.contextTokens = parseInt(obj[key], 10); break; }
     }
     const contextLengthKeys = ["context_length", "contextLength", "context_window", "contextWindow", "modelContextWindow", "max_context_tokens", "maxContextTokens"];
     for (const key of contextLengthKeys) {
-      if (typeof obj[key] === 'number') { stats.contextLength = obj[key]; break; }
-      if (typeof obj[key] === 'string' && /^\d+$/.test(obj[key])) { stats.contextLength = parseInt(obj[key], 10); break; }
+      if (typeof obj[key] === 'number') { if (stats.contextLength === undefined) stats.contextLength = obj[key]; break; }
+      if (typeof obj[key] === 'string' && /^\d+$/.test(obj[key])) { if (stats.contextLength === undefined) stats.contextLength = parseInt(obj[key], 10); break; }
     }
     const apiCallKeys = ["api_calls", "apiCalls", "api_requests", "apiRequests", "request_count", "requestCount"];
     for (const key of apiCallKeys) {
-      if (typeof obj[key] === 'number') { stats.apiCalls = obj[key]; break; }
-      if (typeof obj[key] === 'string' && /^\d+$/.test(obj[key])) { stats.apiCalls = parseInt(obj[key], 10); break; }
+      if (typeof obj[key] === 'number') { if (stats.apiCalls === undefined) stats.apiCalls = obj[key]; break; }
+      if (typeof obj[key] === 'string' && /^\d+$/.test(obj[key])) { if (stats.apiCalls === undefined) stats.apiCalls = parseInt(obj[key], 10); break; }
     }
 
     if (Array.isArray(obj)) {
@@ -560,7 +661,11 @@ function extractStatsFromParams(params: any): TurnStats {
         search(item, depth + 1);
       }
     } else {
-      for (const k in obj) {
+      for (const k of Object.keys(obj)) {
+        if (k === 'total' && depth > 0) {
+          // Skip total usage fields to prevent cumulative stats from overwriting current turn stats
+          continue;
+        }
         if (typeof obj[k] === 'object') {
           search(obj[k], depth + 1);
         }
@@ -630,7 +735,39 @@ function getStatsFooterText(turn: ActiveTurn): string {
     parts.push(`API ${turn.stats.apiCalls}`);
   }
 
+  if (turn.rateLimitStr) {
+    parts.push(`用量: ${turn.rateLimitStr}`);
+  }
+
   return parts.join(" · ");
+}
+
+async function fetchRateLimitsForTurn(turn: ActiveTurn): Promise<void> {
+  try {
+    const res = await adapter.request('account/rateLimits/read', {});
+    const codexLimits = res?.rateLimitsByLimitId?.codex || res?.rateLimits;
+    if (codexLimits) {
+      let limitStrs = [];
+      if (codexLimits.primary) {
+        limitStrs.push(`5h: ${codexLimits.primary.usedPercent ?? 0}%`);
+      }
+      if (codexLimits.secondary) {
+        limitStrs.push(`7d: ${codexLimits.secondary.usedPercent ?? 0}%`);
+      }
+      if (codexLimits.credits && codexLimits.credits.hasCredits) {
+        limitStrs.push(`点数: ${codexLimits.credits.balance}`);
+      }
+      if (limitStrs.length > 0) {
+        const newStr = limitStrs.join(" | ");
+        if (turn.rateLimitStr !== newStr) {
+          turn.rateLimitStr = newStr;
+          turn.dirty = true;
+        }
+      }
+    }
+  } catch (e) {
+    console.error('Failed to fetch rate limits:', e);
+  }
 }
 
 function getTurnMetadataContent(turn: ActiveTurn): string | null {
@@ -653,6 +790,7 @@ function getTurnMetadataContent(turn: ActiveTurn): string | null {
 // --- CardKit Layout Constructors ---
 function createCardKitInitialLayout(turn: ActiveTurn) {
   const footer = getStatsFooterText(turn);
+  const metadataContent = getTurnMetadataContent(turn);
   
   return {
     schema: "2.0",
@@ -691,12 +829,6 @@ function createCardKitInitialLayout(turn: ActiveTurn) {
         { tag: "hr" },
         {
           tag: "markdown",
-          content: `📋 **执行日志**\n等待开始...`,
-          element_id: "codex_process"
-        },
-        { tag: "hr" },
-        {
-          tag: "markdown",
           content: `✨ **最终结果输出**\n等待中...`,
           element_id: "codex_output"
         },
@@ -712,7 +844,13 @@ function createCardKitInitialLayout(turn: ActiveTurn) {
 }
 
 function createCardKitFinalLayout(turn: ActiveTurn) {
-  const headerTemplate = turn.status === "failed" ? "red" : (turn.status === "interrupted" ? "grey" : (turn.isHistory ? "indigo" : "green"));
+  const headerTemplate = turn.status === "failed" 
+    ? "red" 
+    : (turn.status === "interrupted" 
+        ? "grey" 
+        : (turn.status === "running" 
+            ? "indigo" 
+            : (turn.isHistory ? "indigo" : "green")));
   const footer = getStatsFooterText(turn);
   
   let logContent = turn.logs.join("\n");
@@ -752,14 +890,6 @@ function createCardKitFinalLayout(turn: ActiveTurn) {
   elements.push(
     { tag: "hr" },
     {
-      tag: "div",
-      text: {
-        tag: "lark_md",
-        content: `📋 **执行日志**:\n\`\`\`text\n${logContent}\n\`\`\``
-      }
-    },
-    { tag: "hr" },
-    {
       tag: "markdown",
       content: `✨ **最终结果输出**\n${turn.answer || '无最终文本输出'}`
     },
@@ -790,36 +920,7 @@ function createCardKitFinalLayout(turn: ActiveTurn) {
   };
 }
 
-function redactSecrets(text: string): string {
-  if (!text) return text;
-  let clean = text;
-  
-  // 1. Patterns that need a prefix captured and kept (i.e. replacement is $1[REDACTED])
-  const prefixPatterns = [
-    /(authorization:\s*bearer\s+)[^\s'"]+/gi,
-    /(token=)[^&\s]+/gi,
-    /(api[_-]?key=)[^&\s]+/gi,
-    /(secret=)[^&\s]+/gi,
-    /(password=)[^&\s]+/gi,
-    /(passwd=)[^&\s]+/gi,
-    /(openai[_-]?api[_-]?key=)[^&\s]+/gi,
-    /(\b(?:openai[_-]?)?api[_-]?key\b\s*[:=]\s*['"]?)[a-zA-Z0-9_-]+/gi,
-    /(\bpassword\b\s*[:=]\s*['"]?)[a-zA-Z0-9_-]+/gi,
-  ];
-  for (const pattern of prefixPatterns) {
-    clean = clean.replace(pattern, "$1[REDACTED]");
-  }
-
-  // 2. Patterns to replace entirely with [REDACTED]
-  const fullPatterns = [
-    /sk-[a-zA-Z0-9_-]{20,}/gi,
-  ];
-  for (const pattern of fullPatterns) {
-    clean = clean.replace(pattern, "[REDACTED]");
-  }
-
-  return clean;
-}
+// redactSecrets is now imported from './adapter'
 
 // --- Approval Card Templates ---
 function createApprovalCard(approvalId: string, type: string, cwd: string, summary: string, reason?: string) {
@@ -957,16 +1058,7 @@ function createApprovalDecidedCard(
   const isAlways = decision === "acceptForSession";
   const isDeclined = decision === "decline";
   
-  let cleanSummary = summary;
-  const secretPatterns = [
-    /(authorization:\s*bearer\s+)[^\s'"]+/gi,
-    /(token=)[^&\s]+/gi,
-    /(api[_-]?key=)[^&\s]+/gi,
-    /(secret=)[^&\s]+/gi
-  ];
-  for (const pattern of secretPatterns) {
-    cleanSummary = cleanSummary.replace(pattern, "$1[REDACTED]");
-  }
+  let cleanSummary = redactSecrets(summary);
 
   let riskLevel = "low";
   const text = `${type} ${summary}`.toLowerCase();
@@ -1092,45 +1184,105 @@ function createApprovalDecidedCard(
 // --- Granular CardKit Updater ---
 async function streamUpdateCardKit(turn: ActiveTurn) {
   if (!turn.cardId || turn.status !== 'running') return;
+  
+  if (turn.streamingClosed) {
+    const now = Date.now();
+    if (turn.lastFullUpdateAt && now - turn.lastFullUpdateAt < 2000) {
+      turn.dirty = true;
+      return;
+    }
+    turn.lastFullUpdateAt = now;
+    
+    try {
+      const fullLayout = createCardKitFinalLayout(turn);
+      const token = await getTenantAccessToken();
+      const updateRes = await fetch(`https://open.feishu.cn/open-apis/cardkit/v1/cards/${encodeURIComponent(turn.cardId)}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          card: {
+            type: "card_json",
+            data: JSON.stringify(fullLayout)
+          },
+          sequence: turn.sequence++,
+          update_multi: true
+        })
+      });
+      const data: any = await updateRes.json();
+      if (data.code !== 0) {
+        console.error(`Failed to full update card ${turn.cardId}:`, data.msg);
+      }
+    } catch (e) {
+      console.error(`Failed full update card network request:`, e);
+    }
+    return;
+  }
+
   try {
+    if (!turn.lastSentValues) {
+      turn.lastSentValues = {};
+    }
+
+    const shouldUpdate = (elementId: string, content: string): boolean => {
+      if (turn.lastSentValues![elementId] === content) {
+        return false;
+      }
+      turn.lastSentValues![elementId] = content;
+      return true;
+    };
+
     // 0. Update Prompt
     if (turn.prompt) {
       const promptMd = `**📥 输入 Prompt**\n> ${turn.prompt}`;
-      await streamCardKitElement(turn.cardId, "codex_prompt", promptMd, turn.sequence++);
+      if (shouldUpdate("codex_prompt", promptMd)) {
+        await streamCardKitElement(turn.cardId, "codex_prompt", promptMd, turn.sequence++, turn);
+      }
     }
 
     // 0.1 Update Metadata
     const metadataContent = getTurnMetadataContent(turn);
     if (metadataContent) {
-      await streamCardKitElement(turn.cardId, "codex_metadata", metadataContent, turn.sequence++);
+      if (shouldUpdate("codex_metadata", metadataContent)) {
+        await streamCardKitElement(turn.cardId, "codex_metadata", metadataContent, turn.sequence++, turn);
+      }
     }
 
     // 1. Update Reasoning
     if (turn.reasoning) {
-      const reasoningMd = `🧠 **模型推理过程**:\n${turn.reasoning}${turn.activeStream === 'reasoning' ? ' ▉' : ''}`;
-      await streamCardKitElement(turn.cardId, "codex_reasoning", reasoningMd, turn.sequence++);
+      let reasoningContent = turn.reasoning;
+      const maxReasoningChars = 4000;
+      if (reasoningContent.length > maxReasoningChars) {
+        reasoningContent = `... (已省略前部 ${reasoningContent.length - maxReasoningChars} 字) ...\n` + reasoningContent.substring(reasoningContent.length - maxReasoningChars);
+      }
+      const reasoningMd = `🧠 **模型推理过程**:\n${reasoningContent}${turn.activeStream === 'reasoning' ? ' ▉' : ''}`;
+      if (shouldUpdate("codex_reasoning", reasoningMd)) {
+        await streamCardKitElement(turn.cardId, "codex_reasoning", reasoningMd, turn.sequence++, turn);
+      }
     }
 
-    // 2. Update Logs
-    let logContent = turn.logs.join("\n");
-    if (logContent.trim()) {
-      const maxChars = 2000;
-      if (logContent.length > maxChars) {
-        logContent = "... (truncated) ...\n" + logContent.substring(logContent.length - maxChars);
-      }
-      const logMd = `📋 **执行日志**:\n\`\`\`text\n${logContent}\n\`\`\``;
-      await streamCardKitElement(turn.cardId, "codex_process", logMd, turn.sequence++);
-    }
+
 
     // 3. Update Output
     if (turn.answer) {
-      const outputMd = `✨ **最终结果输出**:\n${turn.answer}${turn.activeStream === 'answer' ? ' ▉' : ''}`;
-      await streamCardKitElement(turn.cardId, "codex_output", outputMd, turn.sequence++);
+      let answerContent = turn.answer;
+      const maxAnswerChars = 4000;
+      if (answerContent.length > maxAnswerChars) {
+        answerContent = `... (已省略前部 ${answerContent.length - maxAnswerChars} 字) ...\n` + answerContent.substring(answerContent.length - maxAnswerChars);
+      }
+      const outputMd = `✨ **最终结果输出**:\n${answerContent}${turn.activeStream === 'answer' ? ' ▉' : ''}`;
+      if (shouldUpdate("codex_output", outputMd)) {
+        await streamCardKitElement(turn.cardId, "codex_output", outputMd, turn.sequence++, turn);
+      }
     }
 
     // 4. Update Footer
     const footerText = `📊 ${getStatsFooterText(turn)}`;
-    await streamCardKitElement(turn.cardId, "codex_footer", footerText, turn.sequence++);
+    if (shouldUpdate("codex_footer", footerText)) {
+      await streamCardKitElement(turn.cardId, "codex_footer", footerText, turn.sequence++, turn);
+    }
 
   } catch (e) {
     console.error(`Failed to stream update CardKit card:`, e);
@@ -1160,30 +1312,37 @@ function extractTextMessage(contentStr: string): string {
 
 // Helper to clean up turn maps
 function cleanupTurn(turnId: string, threadId: string) {
+  const turn = activeTurns.get(turnId);
+  if (turn) {
+    recentTurns.set(turnId, turn);
+    recentTurns.set(threadId, turn);
+    // Keep in recentTurns for 30 seconds to handle late notifications, then purge
+    setTimeout(() => {
+      recentTurns.delete(turnId);
+      recentTurns.delete(threadId);
+    }, 30000);
+  }
+
   activeTurns.delete(turnId);
   threadToActiveTurnId.delete(threadId);
-}
-
-// Update log card via Patch API
-async function updateLogCard(turn: ActiveTurn) {
-  try {
-    const cardContent = createLogCard(turn);
-    await larkClient.im.message.patch({
-      path: {
-        message_id: turn.messageId
-      },
-      data: {
-        content: JSON.stringify(cardContent)
-      }
-    });
-  } catch (e) {
-    console.error(`Failed to update log card for message ${turn.messageId}:`, e);
+  if (typeof adapter.cleanupThreadState === 'function') {
+    adapter.cleanupThreadState(threadId);
   }
 }
 
+
 // Periodic tick (100ms throttling for real-time typewriter experience)
 setInterval(() => {
+  const now = Date.now();
   for (const [turnId, turn] of activeTurns.entries()) {
+    if (turn.status === 'running') {
+      // Query rate limits periodically for long-running turns
+      if (!turn.lastRateLimitQueryAt || now - turn.lastRateLimitQueryAt > RATE_LIMIT_QUERY_INTERVAL_MS) {
+        turn.lastRateLimitQueryAt = now;
+        fetchRateLimitsForTurn(turn);
+      }
+    }
+
     if (turn.dirty && turn.status === 'running' && !turn.updating) {
       turn.dirty = false;
       turn.updating = true;
@@ -1201,6 +1360,16 @@ setInterval(() => {
 // Keep track of recently processed message IDs to prevent duplicates
 const processedMessageIds = new Map<string, number>();
 
+// Periodically clean up old message IDs (older than 10 minutes) every 5 minutes
+setInterval(() => {
+  const tenMinutesAgo = Date.now() - 10 * 60 * 1000;
+  for (const [id, timestamp] of processedMessageIds.entries()) {
+    if (timestamp < tenMinutesAgo) {
+      processedMessageIds.delete(id);
+    }
+  }
+}, 5 * 60 * 1000);
+
 // Initialize Event Dispatcher
 const eventDispatcher = new Lark.EventDispatcher({}).register({
   'im.message.receive_v1': async (data) => {
@@ -1213,20 +1382,23 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
     }
 
     const messageId = message.message_id;
+
+    // Validate incoming message sender if AUTHORIZED_USERS is configured in environment
+    const authorizedUsersStr = process.env.AUTHORIZED_USERS;
+    const senderOpenId = sender?.sender_id?.open_id;
+    if (authorizedUsersStr && senderOpenId) {
+      const authList = authorizedUsersStr.split(',').map(id => id.trim()).filter(Boolean);
+      if (authList.length > 0 && !authList.includes(senderOpenId)) {
+        console.warn(`[Unauthorized Access Attempt] Sender: ${senderOpenId}, Msg: ${messageId || "unknown"}`);
+        return;
+      }
+    }
     if (messageId) {
       if (processedMessageIds.has(messageId)) {
         console.log(`[Duplicate Message Ignored] Msg: ${messageId}`);
         return;
       }
       processedMessageIds.set(messageId, Date.now());
-
-      // Periodically clean up old message IDs (older than 10 minutes)
-      const tenMinutesAgo = Date.now() - 10 * 60 * 1000;
-      for (const [id, timestamp] of processedMessageIds.entries()) {
-        if (timestamp < tenMinutesAgo) {
-          processedMessageIds.delete(id);
-        }
-      }
     }
 
     // Ignore old backlogged messages sent by Feishu on reconnect (older than 30s)
@@ -1310,7 +1482,7 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
           return;
         }
 
-        const bindingCard = createBindingCard(threads);
+        const bindingCard = await createBindingCard(threads);
         const cardId = await createCardKitCard(bindingCard);
         await sendCardKitMessage(chatId, cardId);
       } catch (e: any) {
@@ -1416,28 +1588,14 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
                 threadToActiveTurnId.delete(bound.threadId);
               }
               
-              // Update the card to show failure
-              if (logCardMessageId) {
-                try {
-                  await larkClient.im.message.patch({
-                    path: { message_id: logCardMessageId },
-                    data: {
-                      content: JSON.stringify({
-                        schema: "2.0",
-                        config: { wide_screen_mode: true },
-                        header: { template: "red", title: { tag: "plain_text", content: "Codex Error" } },
-                        body: {
-                          elements: [
-                            { tag: "markdown", content: `**Goal**: ${commandArg}` },
-                            { tag: "markdown", content: `**Failed to trigger goal turn**: ${e.message || e}` }
-                          ]
-                        }
-                      })
-                    }
-                  });
-                } catch (patchErr) {
-                  console.error('Failed to patch goal error message card asynchronously:', patchErr);
-                }
+              // Update the card to show failure via CardKit
+              initialTurn.status = 'failed';
+              initialTurn.logs.push(`Failed to trigger goal turn: ${e.message || e}`);
+              if (initialTurn.cardId) {
+                const finalLayout = createCardKitFinalLayout(initialTurn);
+                finalizeCardKitCard(initialTurn.cardId, finalLayout, initialTurn).catch(finalizeErr => {
+                  console.error('Failed to finalize goal error card asynchronously:', finalizeErr);
+                });
               }
             }
           })();
@@ -1624,7 +1782,48 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
       return;
     }
 
-    // 1.4.7. Handle /skills command
+    // 1.4.7. Handle /usage or /quota command
+    if (text.startsWith('/usage') || text.startsWith('/quota')) {
+      try {
+        const res = await adapter.request('account/rateLimits/read', {});
+        const codexLimits = res?.rateLimitsByLimitId?.codex || res?.rateLimits;
+        
+        if (!codexLimits) {
+          await sendSimpleStatusCard(chatId, "📊 用量信息", "orange", "无法获取当前账户的使用量信息，请稍后再试。");
+          return;
+        }
+
+        const planType = codexLimits.planType || '未知';
+        
+        let msg = `**账户类型**: ${planType.toUpperCase()}\n\n`;
+
+        if (codexLimits.primary) {
+          const used = codexLimits.primary.usedPercent ?? 0;
+          const windowHours = Math.round(codexLimits.primary.windowDurationMins / 60);
+          const resetTime = new Date(codexLimits.primary.resetsAt * 1000);
+          msg += `**短期窗口 (${windowHours}h) 使用量**:\n• 已用: ${used}%\n• 重置时间: ${resetTime.toLocaleString()}\n\n`;
+        }
+
+        if (codexLimits.secondary) {
+          const used = codexLimits.secondary.usedPercent ?? 0;
+          const windowHours = Math.round(codexLimits.secondary.windowDurationMins / 60);
+          const resetTime = new Date(codexLimits.secondary.resetsAt * 1000);
+          msg += `**长期窗口 (${windowHours}h) 使用量**:\n• 已用: ${used}%\n• 重置时间: ${resetTime.toLocaleString()}\n\n`;
+        }
+        
+        if (codexLimits.credits && codexLimits.credits.hasCredits) {
+          msg += `**点数余额**: ${codexLimits.credits.balance}\n`;
+        }
+
+        await sendSimpleStatusCard(chatId, "📊 账户用量统计", "blue", msg.trim());
+      } catch (e: any) {
+        console.error('Failed to execute usage command:', e);
+        await sendSimpleStatusCard(chatId, "📊 获取用量失败", "red", `${e.message || e}`);
+      }
+      return;
+    }
+
+    // 1.4.8. Handle /skills command
     if (text.startsWith('/skills')) {
       const bound = sessionDb[chatId];
       if (!bound) {
@@ -1729,11 +1928,16 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
           }
 
           try {
-            if (!fs.existsSync(finalCwd) || !fs.statSync(finalCwd).isDirectory()) {
-              await sendSimpleStatusCard(chatId, "🚫 路径绑定失败", "red", `路径不存在或不是一个目录：\n\`${finalCwd}\``);
+            const stats = fs.statSync(finalCwd);
+            if (!stats.isDirectory()) {
+              await sendSimpleStatusCard(chatId, "🚫 路径绑定失败", "red", `路径不是一个目录：\n\`${finalCwd}\``);
               return;
             }
           } catch (statErr: any) {
+            if (statErr.code === 'ENOENT') {
+              await sendSimpleStatusCard(chatId, "🚫 路径绑定失败", "red", `路径不存在：\n\`${finalCwd}\``);
+              return;
+            }
             const errMsg = statErr?.message || "";
             if (errMsg.includes("Operation not permitted") || errMsg.includes("EACCES")) {
               await sendSimpleStatusCard(chatId, "⚠️ 系统权限不足 (Operation not permitted)", "orange", `网桥程序无权访问该目录：\n\`${finalCwd}\`\n\n**建议解决办法**：\n1. 将项目移出 \`Documents\` / \`Desktop\` 等系统受限文件夹，移至例如 \`~/work/\` 下。\n2. 或者前往 macOS \`系统设置 -> 隐私与安全性 -> 完全磁盘访问权限\`，为您的终端应用或 node 启用读取权限。`);
@@ -2268,38 +2472,9 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
         }
       }
 
-      // If it is a single chat, automatically add the user's open_id to the allowed list
       const clickerOpenId = data.operator?.open_id;
-      if (isSingleChat && clickerOpenId) {
-        let allowedList = allowedApproversStr ? allowedApproversStr.split(',').map(id => id.trim()).filter(Boolean) : [];
-        if (!allowedList.includes(clickerOpenId)) {
-          allowedList.push(clickerOpenId);
-          const newAllowedStr = allowedList.join(',');
-          process.env.ALLOWED_APPROVERS = newAllowedStr;
-          
-          // Also persist it to the .env file
-          try {
-            const envPath = path.join(process.cwd(), '.env');
-            let envContent = '';
-            if (fs.existsSync(envPath)) {
-              envContent = fs.readFileSync(envPath, 'utf8');
-            }
-            if (envContent.includes('ALLOWED_APPROVERS=')) {
-              envContent = envContent.replace(/ALLOWED_APPROVERS=.*/g, `ALLOWED_APPROVERS=${newAllowedStr}`);
-            } else {
-              envContent += `\nALLOWED_APPROVERS=${newAllowedStr}\n`;
-            }
-            fs.writeFileSync(envPath, envContent.trim() + '\n', 'utf8');
-            console.log(`[Whitelist Auto-Add] Automatically added ${clickerOpenId} to ALLOWED_APPROVERS and saved to .env`);
-          } catch (e) {
-            console.error('Failed to update .env with new allowed approver:', e);
-          }
-          
-          allowedApproversStr = newAllowedStr;
-        }
-      }
 
-      if (allowedApproversStr && !isSingleChat) {
+      if (allowedApproversStr) {
         const allowedList = allowedApproversStr.split(',').map(id => id.trim()).filter(Boolean);
         if (allowedList.length > 0 && (!clickerOpenId || !allowedList.includes(clickerOpenId))) {
           console.warn(`Unauthorized approval attempt: user ${clickerOpenId} tried to make decision on ${approvalId} (chatType: ${context.chat_type})`);
@@ -2315,6 +2490,10 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
           };
         }
       }
+
+      // Atomically delete from map and persist before any async operations to prevent double-triggering
+      activeApprovals.delete(approvalId);
+      saveApprovals(activeApprovals);
 
       try {
         console.log(`Responding to Codex Approval ${approval.requestId} with decision ${decision}...`);
@@ -2349,9 +2528,6 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
             content: JSON.stringify(decidedCard)
           }
         });
-
-        activeApprovals.delete(approvalId);
-        saveApprovals(activeApprovals);
 
         return {
           card: {
@@ -2390,8 +2566,13 @@ function getActiveTurnForNotification(msg: any): ActiveTurn | undefined {
   
   // Try mapping by turnId first
   const turnId = params.turnId || (params.turn && params.turn.id);
-  if (turnId && activeTurns.has(turnId)) {
-    return activeTurns.get(turnId);
+  if (turnId) {
+    if (activeTurns.has(turnId)) {
+      return activeTurns.get(turnId);
+    }
+    if (recentTurns.has(turnId)) {
+      return recentTurns.get(turnId);
+    }
   }
 
   // Fallback to threadId mapping
@@ -2399,7 +2580,17 @@ function getActiveTurnForNotification(msg: any): ActiveTurn | undefined {
   if (threadId) {
     const activeTurnId = threadToActiveTurnId.get(threadId);
     if (activeTurnId) {
-      return activeTurns.get(activeTurnId);
+      const turn = activeTurns.get(activeTurnId);
+      if (turn && turnId && activeTurnId !== turnId && activeTurnId.startsWith('temp-')) {
+        console.log(`[Turn Transition in resolver] Migrating active turn mapping for thread ${threadId} from ${activeTurnId} to ${turnId}`);
+        activeTurns.set(turnId, turn);
+        threadToActiveTurnId.set(threadId, turnId);
+        activeTurns.delete(activeTurnId);
+      }
+      return turn;
+    }
+    if (recentTurns.has(threadId)) {
+      return recentTurns.get(threadId);
     }
   }
 
@@ -2421,6 +2612,7 @@ function parseCodexTurnToActiveTurn(chatId: string, threadId: string, turn: any)
   let answer = "";
   const logs: string[] = [];
   let skillName = "";
+  let commandExecutionCount = 0;
 
   if (Array.isArray(turn.input)) {
     const textItem = turn.input.find((inp: any) => inp && inp.type === 'text');
@@ -2447,8 +2639,31 @@ function parseCodexTurnToActiveTurn(chatId: string, threadId: string, turn: any)
     } else if (item.type === 'reasoning') {
       reasoning += (item.text || "");
     } else if (item.type === 'commandExecution') {
-      if (item.aggregatedOutput) {
-        logs.push(item.aggregatedOutput);
+      commandExecutionCount++;
+      if (commandExecutionCount === 1) {
+        const cmd = item.command || "";
+        const exitCode = item.exitCode;
+        const exitStatus = exitCode === 0 ? "成功" : (exitCode !== undefined ? `失败 (Exit Code: ${exitCode})` : "完成");
+        
+        const separator = reasoning ? `\n\n---\n` : ``;
+        let cmdDisplay = cmd;
+        if (cmdDisplay.length > 120) {
+          cmdDisplay = cmdDisplay.substring(0, 120) + '...';
+        }
+        
+        let outputLog = "";
+        if (item.aggregatedOutput && typeof item.aggregatedOutput === 'string' && item.aggregatedOutput.trim()) {
+          let out = item.aggregatedOutput.trim();
+          const limit = 800;
+          if (out.length > limit) {
+            out = out.substring(0, limit / 2) + '\n... (truncated) ...\n' + out.substring(out.length - limit / 2);
+          }
+          outputLog = `\n\`\`\`text\n${out}\n\`\`\``;
+        }
+        
+        reasoning += `${separator}🛠️ 运行命令: \`${cmdDisplay}\`\n📌 命令执行结束: ${exitStatus}${outputLog}`;
+      } else if (commandExecutionCount === 2) {
+        reasoning += `\n\n---\n📎 *后续执行指令已自动折叠*`;
       }
     }
   }
@@ -2478,77 +2693,111 @@ function parseCodexTurnToActiveTurn(chatId: string, threadId: string, turn: any)
 
 async function checkAndPushHistory() {
   console.log('Checking for history turns to push to Feishu...');
-  for (const [chatId, session] of Object.entries(sessionDb)) {
-    if (!session.lastPushedTurnId) {
-      console.log(`Checking history for Feishu Chat ${chatId} / Codex Thread ${session.threadId}...`);
-      try {
-        // Fetch thread history
-        const result = await adapter.request('thread/resume', { threadId: session.threadId });
-        const turns = result?.thread?.turns || [];
-        
-        // Find the most recent completed or failed turn
-        let latestCompletedTurn = null;
-        for (let i = turns.length - 1; i >= 0; i--) {
-          const turn = turns[i];
-          if (turn.status === 'completed' || turn.status === 'failed') {
-            latestCompletedTurn = turn;
-            break;
-          }
-        }
+  let sessionsChanged = false;
+  let pushedTurnsChanged = false;
 
-        if (latestCompletedTurn) {
-          // Check if this turn has already been pushed globally
-          if (pushedTurns.has(latestCompletedTurn.id)) {
-            console.log(`History turn ${latestCompletedTurn.id} for thread ${session.threadId} was already pushed globally. Skipping push.`);
-            session.lastPushedTurnId = latestCompletedTurn.id;
-            saveSessions(sessionDb);
-            continue;
-          }
-
-          console.log(`Found latest completed turn ${latestCompletedTurn.id} for thread ${session.threadId}. Pushing to Feishu...`);
-          
-          const activeTurn = parseCodexTurnToActiveTurn(chatId, session.threadId, latestCompletedTurn);
-          const finalLayout = createCardKitFinalLayout(activeTurn);
-          
-          // Send to Feishu
-          const cardId = await createCardKitCard(finalLayout);
-          const messageId = await sendCardKitMessage(chatId, cardId);
-          
-          if (messageId) {
-            console.log(`Successfully pushed history turn ${latestCompletedTurn.id} to Feishu Message ${messageId}`);
-            // Save state
-            session.lastPushedTurnId = latestCompletedTurn.id;
-            saveSessions(sessionDb);
-            // Save globally
-            pushedTurns.add(latestCompletedTurn.id);
-            savePushedTurns(pushedTurns);
-          }
-        } else {
-          console.log(`No completed/failed turns found in history for thread ${session.threadId}`);
-          // Set to a placeholder so we don't query it repeatedly on every start
-          session.lastPushedTurnId = 'none';
-          saveSessions(sessionDb);
+  const promises = Object.entries(sessionDb).map(async ([chatId, session]) => {
+    console.log(`Checking history for Feishu Chat ${chatId} / Codex Thread ${session.threadId}...`);
+    try {
+      // Fetch thread history
+      const result = await adapter.request('thread/resume', { threadId: session.threadId });
+      const turns = result?.thread?.turns || [];
+      
+      // Find the most recent completed or failed turn
+      let latestCompletedTurn = null;
+      for (let i = turns.length - 1; i >= 0; i--) {
+        const turn = turns[i];
+        if (turn.status === 'completed' || turn.status === 'failed') {
+          latestCompletedTurn = turn;
+          break;
         }
-      } catch (e) {
-        console.error(`Failed to push history for thread ${session.threadId}:`, e);
       }
-    } else {
-      console.log(`History already pushed for Feishu Chat ${chatId} / Codex Thread ${session.threadId} (lastPushedTurnId: ${session.lastPushedTurnId})`);
+
+      if (latestCompletedTurn) {
+        // If we've already pushed this turn or it matches the last pushed turn, skip
+        if (session.lastPushedTurnId === latestCompletedTurn.id || pushedTurns.has(latestCompletedTurn.id)) {
+          console.log(`History turn ${latestCompletedTurn.id} for thread ${session.threadId} is already pushed. Skipping.`);
+          if (session.lastPushedTurnId !== latestCompletedTurn.id) {
+            session.lastPushedTurnId = latestCompletedTurn.id;
+            sessionsChanged = true;
+          }
+          return;
+        }
+
+        console.log(`Found latest completed turn ${latestCompletedTurn.id} for thread ${session.threadId}. Pushing to Feishu...`);
+        
+        const activeTurn = parseCodexTurnToActiveTurn(chatId, session.threadId, latestCompletedTurn);
+        if (result?.model) {
+          activeTurn.stats.model = result.model;
+        }
+        const finalLayout = createCardKitFinalLayout(activeTurn);
+        
+        // Send to Feishu
+        const cardId = await createCardKitCard(finalLayout);
+        const messageId = await sendCardKitMessage(chatId, cardId);
+        
+        if (messageId) {
+          console.log(`Successfully pushed history turn ${latestCompletedTurn.id} to Feishu Message ${messageId}`);
+          // Save state
+          session.lastPushedTurnId = latestCompletedTurn.id;
+          sessionsChanged = true;
+          // Save globally
+          pushedTurns.add(latestCompletedTurn.id);
+          pushedTurnsChanged = true;
+        }
+      } else {
+        console.log(`No completed/failed turns found in history for thread ${session.threadId}`);
+        if (session.lastPushedTurnId !== null && session.lastPushedTurnId !== undefined) {
+          session.lastPushedTurnId = undefined;
+          sessionsChanged = true;
+        }
+      }
+    } catch (e) {
+      console.error(`Failed to push history for thread ${session.threadId}:`, e);
+    }
+  });
+
+  await Promise.all(promises);
+
+  if (sessionsChanged) {
+    saveSessions(sessionDb);
+  }
+  if (pushedTurnsChanged) {
+    savePushedTurns(pushedTurns);
+  }
+}
+
+let isReconnecting = false;
+let reconnectAttempts = 0;
+
+async function connectWithRetry() {
+  if (isReconnecting) return;
+  isReconnecting = true;
+
+  while (true) {
+    try {
+      console.log(`Connecting to Codex App Server (attempt ${reconnectAttempts + 1})...`);
+      await adapter.connect();
+      console.log('Codex App Server connection established.');
+      reconnectAttempts = 0;
+      isReconnecting = false;
+      
+      // Run history check asynchronously
+      checkAndPushHistory().catch(e => {
+        console.error('Failed to run startup history check:', e);
+      });
+      break;
+    } catch (err: any) {
+      reconnectAttempts++;
+      const delay = Math.min(30000, 1000 * Math.pow(2, reconnectAttempts));
+      console.error(`Connection to Codex failed: ${err.message || err}. Retrying in ${delay}ms...`);
+      await new Promise(resolve => setTimeout(resolve, delay));
     }
   }
 }
 
 // Connect to Codex App Server
 async function initCodex() {
-  console.log('Connecting to Codex App Server...');
-  await adapter.connect();
-  console.log('Codex App Server connection established.');
-
-  // Run history check asynchronously
-  checkAndPushHistory().catch(e => {
-    console.error('Failed to run startup history check:', e);
-  });
-
   adapter.onExit(() => {
     console.warn('Codex App Server disconnected.');
     const snapshot = Array.from(activeTurns.entries());
@@ -2556,14 +2805,30 @@ async function initCodex() {
     threadToActiveTurnId.clear();
     for (const [turnId, turn] of snapshot) {
       turn.status = 'failed';
-      turn.logs.push('Codex App Server disconnected unexpectedly.');
-      updateLogCard(turn).catch(e => console.error('Failed to update log card on exit:', e));
+      const errorMsg = `\n⚠️ *[System]*: Codex App Server disconnected unexpectedly.`;
+      turn.reasoning = (turn.reasoning || "") + errorMsg;
+      if (turn.cardId) {
+        const finalLayout = createCardKitFinalLayout(turn);
+        finalizeCardKitCard(turn.cardId, finalLayout, turn).catch(e =>
+          console.error('Failed to finalize card on exit:', e)
+        );
+      }
     }
+
+    // Automatically trigger reconnect loop on exit
+    connectWithRetry().catch(e => {
+      console.error('Reconnection loop encountered a fatal error:', e);
+    });
   });
 
-  adapter.onNotification((msg) => {
-    // Log the notification
-    console.log(`[Codex Notification]:`, JSON.stringify(msg));
+  // Start the initial connection flow
+  await connectWithRetry();
+
+  adapter.onNotification(async (msg) => {
+    // Log the notification (skip high-frequency deltas to keep console I/O fast)
+    if (msg.method !== 'item/reasoning/delta' && msg.method !== 'item/agentMessage/delta') {
+      console.log(`[Codex Notification]:`, redactSecrets(JSON.stringify(msg)));
+    }
 
     const params = msg.params || {};
 
@@ -2590,30 +2855,62 @@ async function initCodex() {
       
       const chatId = threadId ? getChatIdForThread(threadId) : undefined;
       if (chatId) {
-        console.log(`[Approval Request] Intercepted approval request ${msg.id} for thread ${threadId} (isIpc: ${!!msg.isIpc}). Sending Feishu card...`);
-        
-        activeApprovals.set(approvalId, {
-          requestId: msg.id,
-          chatId,
-          threadId: threadId || "",
-          turnId: turnId || "",
-          approvalType: type,
-          summary,
-          cwd,
-          reason: params.reason || "",
-          isIpc: !!msg.isIpc,
-          approvalMethod: msg.method,
-          createdAt: Date.now()
-        });
-        saveApprovals(activeApprovals);
-
         (async () => {
           try {
+            // Check approvalsReviewer first
+            if (threadId) {
+              const resumeRes = await adapter.request('thread/resume', { threadId });
+              let reviewer = resumeRes?.approvalsReviewer || 'user';
+              if (resumeRes?.thread?.turns && Array.isArray(resumeRes.thread.turns) && resumeRes.thread.turns.length > 0) {
+                const lastTurn = resumeRes.thread.turns[resumeRes.thread.turns.length - 1];
+                if (lastTurn?.params?.approvalsReviewer) {
+                  reviewer = lastTurn.params.approvalsReviewer;
+                }
+              }
+              if (reviewer !== 'user') {
+                console.log(`[Approval Request] approvalsReviewer is "${reviewer}" (not "user"), skipping Feishu card for request ${msg.id}.`);
+                return;
+              }
+            }
+
+            console.log(`[Approval Request] Intercepted approval request ${msg.id} for thread ${threadId} (isIpc: ${!!msg.isIpc}). Sending Feishu card...`);
+            
+            activeApprovals.set(approvalId, {
+              requestId: msg.id,
+              chatId,
+              threadId: threadId || "",
+              turnId: turnId || "",
+              approvalType: type,
+              summary,
+              cwd,
+              reason: params.reason || "",
+              isIpc: !!msg.isIpc,
+              approvalMethod: msg.method,
+              createdAt: Date.now()
+            });
+            saveApprovals(activeApprovals);
+
             const appCard = createApprovalCard(approvalId, type, cwd, summary, params.reason);
             const cardId = await createCardKitCard(appCard);
             await sendCardKitMessage(chatId, cardId);
           } catch (e) {
-            console.error('Failed to send approval card:', e);
+            console.error('Failed to process approval request:', e);
+            activeApprovals.delete(approvalId);
+            saveApprovals(activeApprovals);
+            try {
+              if (msg.isIpc && (adapter as any).respondIpcApproval) {
+                await (adapter as any).respondIpcApproval({
+                  threadId: threadId || "",
+                  requestId: msg.id,
+                  method: msg.method,
+                  decision: 'reject'
+                });
+              } else {
+                adapter.respond(msg.id, { decision: 'reject' });
+              }
+            } catch (respondErr) {
+              console.error('Failed to reject failed approval request:', respondErr);
+            }
           }
         })();
       }
@@ -2623,20 +2920,27 @@ async function initCodex() {
     let turn = getActiveTurnForNotification(msg);
 
     if (!turn) {
-      // Check if this is a turn/started event on a bound thread
-      if (msg.method === 'turn/started' && params.threadId) {
-        const chatId = getChatIdForThread(params.threadId);
-        const turnId = (params.turn && params.turn.id) || params.turnId;
+      // Check if this event belongs to an active turn on a bound thread
+      const threadId = params.threadId || (params.turn && params.turn.threadId);
+      const turnId = params.turnId || (params.turn && params.turn.id);
+      
+      const isTurnEvent = msg.method === 'turn/started' || 
+                          msg.method === 'turn/completed' || 
+                          (msg.method && msg.method.startsWith('item/')) || 
+                          (msg.method && msg.method.startsWith('agent/'));
+
+      if (isTurnEvent && threadId && turnId) {
+        const chatId = getChatIdForThread(threadId);
         
-        if (chatId && turnId) {
+        if (chatId) {
           // Check if there is already an active running turn on this thread (e.g. triggered by Feishu)
-          const activeTurnId = threadToActiveTurnId.get(params.threadId);
+          const activeTurnId = threadToActiveTurnId.get(threadId);
           const existingTurn = activeTurnId ? activeTurns.get(activeTurnId) : undefined;
           
-          if (existingTurn && existingTurn.status === 'running') {
+          if (existingTurn && existingTurn.status === 'running' && activeTurnId && activeTurnId.startsWith('temp-')) {
             console.log(`[Turn Transition] Adopting new turnId ${turnId} for existing active turn (old: ${activeTurnId})`);
             activeTurns.set(turnId, existingTurn);
-            threadToActiveTurnId.set(params.threadId, turnId);
+            threadToActiveTurnId.set(threadId, turnId);
             
             // Clean up old ID mapping if different
             if (activeTurnId && activeTurnId !== turnId) {
@@ -2647,9 +2951,9 @@ async function initCodex() {
             turn = existingTurn;
           } else {
             // This is a true reverse push from Codex Desktop UI, create a new card
-            console.log(`[Reverse Push] Detected new turn ${turnId} started on bound thread ${params.threadId}. Creating Feishu message card...`);
+            console.log(`[Reverse Push] Detected turn ${turnId} activity on bound thread ${threadId}. Creating Feishu message card...`);
             
-            let desktopPrompt = "Desktop Input 💻";
+            let desktopPrompt = msg.method === 'turn/started' ? "Desktop Input 💻" : "Resumed from Desktop 💻";
             let desktopSkillName = "";
             const turnData = params.turn || {};
             if (Array.isArray(turnData.input)) {
@@ -2669,9 +2973,9 @@ async function initCodex() {
               chatId,
               messageId: "",
               cardId: "",
-              threadId: params.threadId,
+              threadId: threadId,
               prompt: desktopPrompt,
-              logs: ["Starting execution from Codex Desktop..."],
+              logs: ["Synchronizing execution state from Codex..."],
               status: 'running',
               dirty: false,
               startedAt: Date.now(),
@@ -2683,11 +2987,22 @@ async function initCodex() {
             };
 
             activeTurns.set(turnId, reverseTurn);
-            threadToActiveTurnId.set(params.threadId, turnId);
+            threadToActiveTurnId.set(threadId, turnId);
 
             // Trigger asynchronous Feishu message creation
             (async () => {
               try {
+                // Proactively subscribe to thread events on WebSocket connection and sync model info
+                try {
+                  const result = await adapter.request('thread/resume', { threadId });
+                  if (result && result.model && !reverseTurn.stats.model) {
+                    reverseTurn.stats.model = result.model;
+                    reverseTurn.dirty = true;
+                  }
+                } catch (wsErr) {
+                  console.warn(`[Reverse Push] WS subscription fallback failed for thread ${threadId}:`, wsErr);
+                }
+
                 const initialLayout = createCardKitInitialLayout(reverseTurn);
                 const cardId = await createCardKitCard(initialLayout);
                 reverseTurn.cardId = cardId;
@@ -2699,9 +3014,12 @@ async function initCodex() {
                   queueTurnTask(turnId, async () => {
                     await streamUpdateCardKit(reverseTurn);
                   });
+                } else {
+                  cleanupTurn(turnId, threadId);
                 }
               } catch (e) {
                 console.error('[Reverse Push] Failed to create reverse card:', e);
+                cleanupTurn(turnId, threadId);
               }
             })();
             
@@ -2732,9 +3050,26 @@ async function initCodex() {
 
     // Extract stats dynamically if present in parameters
     const stats = extractStatsFromParams(params);
-    turn.stats = { ...turn.stats, ...stats };
+    const jsonStr = JSON.stringify(params);
+    if (jsonStr.match(/token/i)) {
+      try {
+        const fs = require('fs');
+        fs.writeFileSync('/Users/jiang/work/ai/codex/bridge/params_debug_stats.json', JSON.stringify({ method: msg.method, params, extractedStats: stats }, null, 2));
+      } catch (e) {}
+    }
+    for (const key of Object.keys(stats)) {
+      if ((stats as any)[key] !== undefined) {
+        (turn.stats as any)[key] = (stats as any)[key];
+      }
+    }
 
     if (msg.method === 'turn/completed') {
+      try {
+        const fs = require('fs');
+        fs.writeFileSync('/Users/jiang/work/ai/codex/bridge/params_debug.json', JSON.stringify(params, null, 2));
+      } catch (e) {
+        // ignore
+      }
       console.log(`Turn completed for thread ${turn.threadId}`);
       let finalStatus: 'success' | 'failed' | 'interrupted' = 'success';
       if (params.turn && params.turn.status === 'interrupted') {
@@ -2744,14 +3079,17 @@ async function initCodex() {
       }
 
       if (finalStatus === 'interrupted') {
-        turn.logs.push('[System]: Turn was manually interrupted/canceled by the user.');
+        const errorMsg = `\n⚠️ *[System]*: Turn was manually interrupted/canceled by the user.`;
+        turn.reasoning = (turn.reasoning || "") + errorMsg;
       } else if (params.error) {
-        turn.logs.push(`[Error]: ${params.error.message || JSON.stringify(params.error)}`);
-      } else {
-        turn.logs.push('Turn execution finished.');
+        const errorMsg = `\n❌ *[Error]*: ${params.error.message || JSON.stringify(params.error)}`;
+        turn.reasoning = (turn.reasoning || "") + errorMsg;
       }
       turn.dirty = true;
       turn.completedAt = Date.now();
+      
+      // Set status synchronously to avoid race condition in async finalize
+      turn.status = finalStatus;
       
       // Finalize CardKit Card
       const rawTurnId = params.turnId || (params.turn && params.turn.id);
@@ -2770,30 +3108,58 @@ async function initCodex() {
         if (turn.cardId) {
           const cId = turn.cardId;
           queueTurnTask(finalTargetTurnId, async () => {
-            // Perform one last stream update to flush any remaining dirty changes
-            await streamUpdateCardKit(turn);
-            // Set final status to stop periodic polling
-            turn.status = finalStatus;
-            // Calculate dynamic delay based on remaining text length
-            // Typing speed is 30ms per 3 characters (10ms per character).
-            // Add 500ms safety buffer.
-            const totalLength = (turn.reasoning || "").length + (turn.answer || "").length;
-            const delayMs = Math.min(8000, Math.max(1000, (totalLength * 10) + 500));
-            console.log(`Waiting ${delayMs}ms for typewriter animation to catch up (total chars: ${totalLength})...`);
-            await new Promise(resolve => setTimeout(resolve, delayMs));
-            // Finalize
-            const finalLayout = createCardKitFinalLayout(turn);
-            await finalizeCardKitCard(cId, finalLayout, turn);
-            cleanupTurn(finalTargetTurnId, turn.threadId);
+            try {
+              // Fetch rate limits to append to the footer
+              await fetchRateLimitsForTurn(turn);
+
+              // Perform one last stream update to flush any remaining dirty changes
+              await streamUpdateCardKit(turn);
+            } finally {
+              // Set final status and remove from active turns mapping immediately to unlock the thread
+              turn.status = finalStatus;
+              cleanupTurn(finalTargetTurnId, turn.threadId);
+            }
           });
+
+          // Perform the finalization asynchronously outside the queue to avoid blocking
+          (async () => {
+            try {
+              const totalLength = (turn.reasoning || "").length + (turn.answer || "").length;
+              const delayMs = Math.min(8000, Math.max(1000, (totalLength * 10) + 500));
+              console.log(`[Async Finalize] Waiting ${delayMs}ms for typewriter animation to catch up (total chars: ${totalLength})...`);
+              await new Promise(resolve => setTimeout(resolve, delayMs));
+              const finalLayout = createCardKitFinalLayout(turn);
+              await finalizeCardKitCard(cId, finalLayout, turn);
+              console.log(`[Async Finalize] Card ${cId} finalized successfully.`);
+            } catch (finalizeErr) {
+              console.error('Asynchronous card finalization failed:', finalizeErr);
+            }
+          })();
         } else {
           turn.status = finalStatus;
           cleanupTurn(finalTargetTurnId, turn.threadId);
+          
+          // P1-13: If cardId is empty, send a fallback text message notification
+          try {
+            const statusText = finalStatus === 'success' ? '✅ 执行成功' : (finalStatus === 'interrupted' ? '🛑 已中断' : '❌ 执行失败');
+            const summary = turn.prompt ? `"${turn.prompt.substring(0, 50)}${turn.prompt.length > 50 ? '...' : ''}"` : '本地任务';
+            const statusMsg = `Codex 任务执行完成 (${statusText})：\n输入: ${summary}`;
+            await larkClient.im.message.create({
+              params: { receive_id_type: 'chat_id' },
+              data: {
+                receive_id: turn.chatId,
+                msg_type: 'text',
+                content: JSON.stringify({ text: statusMsg })
+              }
+            });
+          } catch (sendErr) {
+            console.error('Failed to send fallback text notification for turn completion:', sendErr);
+          }
         }
       }
       
       // Retrieve the turnId
-      const turnId = params.turnId || (params.turn && params.turn.id);
+      const turnId = rawTurnId;
       if (turnId) {
         // Add to global pushed turns
         pushedTurns.add(turnId);
@@ -2809,18 +3175,43 @@ async function initCodex() {
         }
       }
     } else if (msg.method === 'turn/started') {
-      turn.logs.push('Execution started...');
       turn.dirty = true;
+      turn.lastRateLimitQueryAt = Date.now();
+      fetchRateLimitsForTurn(turn);
+      // Proactively subscribe to thread events and sync model info
+      (async () => {
+        try {
+          const result = await adapter.request('thread/resume', { threadId: turn.threadId });
+          if (result && result.model && !turn.stats.model) {
+            turn.stats.model = result.model;
+            turn.dirty = true;
+          }
+        } catch (err) {
+          console.warn(`Failed to subscribe to thread ${turn.threadId} on WS in turn/started:`, err);
+        }
+      })();
     } else if (msg.method === 'item/agentMessage/delta') {
       const delta = params.delta;
       if (delta) {
-        turn.answer = (turn.answer || "") + delta;
-        turn.activeStream = 'answer';
+        if (turn.activeStream === 'reasoning') {
+          if (turn.pendingReasoningHeader) {
+            turn.reasoning = (turn.reasoning || "") + turn.pendingReasoningHeader;
+            turn.pendingReasoningHeader = undefined;
+          }
+          turn.reasoning = (turn.reasoning || "") + delta;
+        } else {
+          turn.answer = (turn.answer || "") + delta;
+          turn.activeStream = 'answer';
+        }
         turn.dirty = true;
       }
     } else if (msg.method === 'item/reasoning/delta') {
       const delta = params.delta;
       if (delta) {
+        if (turn.pendingReasoningHeader) {
+          turn.reasoning = (turn.reasoning || "") + turn.pendingReasoningHeader;
+          turn.pendingReasoningHeader = undefined;
+        }
         turn.reasoning = (turn.reasoning || "") + delta;
         turn.activeStream = 'reasoning';
         turn.dirty = true;
@@ -2841,38 +3232,100 @@ async function initCodex() {
           turn.prompt = contentStr;
           turn.dirty = true;
         }
-      } else if (item.type === 'agentMessage' && item.text) {
+      } else if (item.type === 'agentMessage') {
         if (item.phase === 'commentary') {
-          turn.reasoning = item.text;
+          if (msg.method === 'item/started') {
+            const timeStr = get24HourTimeStr();
+            const separator = turn.reasoning ? `\n\n---\n⏱️ *[${timeStr}] 阶段推理*\n` : `⏱️ *[${timeStr}] 阶段推理*\n`;
+            if (item.text) {
+              turn.reasoning = (turn.reasoning || "") + separator + item.text;
+              turn.pendingReasoningHeader = undefined;
+            } else {
+              turn.pendingReasoningHeader = separator;
+            }
+          }
           turn.activeStream = msg.method === 'item/started' ? 'reasoning' : undefined;
         } else {
-          turn.answer = item.text;
+          if (msg.method === 'item/started') {
+            const timeStr = get24HourTimeStr();
+            const separator = turn.answer ? `\n\n---\n⏱️ *[${timeStr}] 阶段输出*\n` : `⏱️ *[${timeStr}] 阶段输出*\n`;
+            turn.answer = (turn.answer || "") + separator + (item.text || "");
+          }
           turn.activeStream = msg.method === 'item/started' ? 'answer' : undefined;
         }
         turn.dirty = true;
-      } else if (item.type === 'reasoning' && item.text) {
-        turn.reasoning = item.text;
+      } else if (item.type === 'reasoning') {
+        if (msg.method === 'item/started') {
+          const timeStr = get24HourTimeStr();
+          const separator = turn.reasoning ? `\n\n---\n⏱️ *[${timeStr}] 阶段推理*\n` : `⏱️ *[${timeStr}] 阶段推理*\n`;
+          if (item.text) {
+            turn.reasoning = (turn.reasoning || "") + separator + item.text;
+            turn.pendingReasoningHeader = undefined;
+          } else {
+            turn.pendingReasoningHeader = separator;
+          }
+        }
         turn.activeStream = msg.method === 'item/started' ? 'reasoning' : undefined;
         turn.dirty = true;
       } else if (item.type === 'commandExecution') {
-        turn.activeStream = undefined;
+        const cmdCount = turn.commandExecutionCount || 0;
+        if (msg.method === 'item/started') {
+          turn.commandExecutionCount = cmdCount + 1;
+          if (cmdCount === 0) {
+            const timeStr = get24HourTimeStr();
+            let cmdDisplay = item.command || '';
+            if (cmdDisplay.length > 120) {
+              cmdDisplay = cmdDisplay.substring(0, 120) + '...';
+            }
+            const separator = turn.reasoning ? `\n\n---\n` : ``;
+            const cmdLog = `${separator}🛠️ *[${timeStr}] 运行命令*: \`${cmdDisplay}\``;
+            turn.reasoning = (turn.reasoning || "") + cmdLog;
+            turn.activeStream = 'reasoning';
+          } else if (cmdCount === 1 && !turn.hasLoggedFoldMessage) {
+            turn.hasLoggedFoldMessage = true;
+            turn.reasoning = (turn.reasoning || "") + `\n\n---\n📎 *后续执行指令已自动折叠*`;
+          }
+        } else if (msg.method === 'item/completed') {
+          if (turn.commandExecutionCount === 1) {
+            const timeStr = get24HourTimeStr();
+            const exitStatus = item.exitCode === 0 ? "成功" : `失败 (Exit Code: ${item.exitCode})`;
+            let outputLog = "";
+            if (item.aggregatedOutput && typeof item.aggregatedOutput === 'string' && item.aggregatedOutput.trim()) {
+              let out = item.aggregatedOutput.trim();
+              const limit = 800;
+              if (out.length > limit) {
+                out = out.substring(0, limit / 2) + '\n... (truncated) ...\n' + out.substring(out.length - limit / 2);
+              }
+              outputLog = `\n\`\`\`text\n${out}\n\`\`\``;
+            }
+            const endLog = `\n📌 *[${timeStr}] 命令执行结束*: ${exitStatus}${outputLog}`;
+            turn.reasoning = (turn.reasoning || "") + endLog;
+            turn.activeStream = undefined;
+          }
+        }
         turn.dirty = true;
       }
-    } else if (msg.method === 'agent/stderr') {
-      const chunk = params.chunk;
-      if (chunk) {
-        turn.logs.push(chunk.toString());
-        turn.dirty = true;
+    } else if (msg.method === 'agent/stderr' || msg.method === 'agent/stdout') {
+      // Ignore raw stdout/stderr to keep the Feishu card logs clean and within size limits.
+    } else if (msg.method === 'thread/tokenUsage/updated') {
+      turn.dirty = true;
+      if (turn.status !== 'running' && turn.cardId) {
+        const cId = turn.cardId;
+        const targetTurnId = params.turnId || (params.turn && params.turn.id) || turn.threadId;
+        queueTurnTask(targetTurnId, async () => {
+          try {
+            const finalLayout = createCardKitFinalLayout(turn);
+            await finalizeCardKitCard(cId, finalLayout, turn);
+          } catch (e) {
+            console.error('Failed to update finalized card with late stats:', e);
+          }
+        });
       }
     } else {
-      // General output capture
-      const chunk = params.chunk || params.text || params.output || params.message || (msg.result && msg.result.chunk);
-      if (chunk) {
-        turn.logs.push(chunk.toString());
-        turn.dirty = true;
-      } else if (msg.method && msg.method.startsWith('agent/')) {
+      if (msg.method && msg.method.startsWith('agent/') && msg.method !== 'agent/stdout' && msg.method !== 'agent/stderr') {
         const details = params.output || params.delta || JSON.stringify(params);
-        turn.logs.push(`[${msg.method}]: ${details}`);
+        const separator = turn.reasoning ? `\n` : ``;
+        turn.reasoning = (turn.reasoning || "") + separator + `*[${msg.method}]*: ${details}`;
         turn.dirty = true;
       }
     }
@@ -2880,7 +3333,7 @@ async function initCodex() {
 }
 
 // Message Card Builders
-function createBindingCard(threads: CodexThread[]) {
+async function createBindingCard(threads: CodexThread[]) {
   const homeDir = os.homedir();
 
   // Read Codex global state to get active projects and projectless threads
@@ -2889,13 +3342,17 @@ function createBindingCard(threads: CodexThread[]) {
   let workspaceLabels: Record<string, string> = {};
   let projectlessThreadIds: string[] = [];
 
-  if (fs.existsSync(globalStatePath)) {
-    try {
-      const globalState = JSON.parse(fs.readFileSync(globalStatePath, 'utf8'));
+  try {
+    const stats = await fs.promises.stat(globalStatePath);
+    if (stats.isFile()) {
+      const globalStateStr = await fs.promises.readFile(globalStatePath, 'utf8');
+      const globalState = JSON.parse(globalStateStr);
       savedWorkspaces = globalState['electron-saved-workspace-roots'] || globalState['project-order'] || [];
       workspaceLabels = globalState['electron-workspace-root-labels'] || {};
       projectlessThreadIds = globalState['projectless-thread-ids'] || [];
-    } catch (e) {
+    }
+  } catch (e: any) {
+    if (e.code !== 'ENOENT') {
       console.error('Failed to parse .codex-global-state.json:', e);
     }
   }
@@ -3498,77 +3955,6 @@ function createBoundSuccessCard(threadName: string, threadId: string) {
   };
 }
 
-function createLogCard(turn: ActiveTurn) {
-  let statusText = "Running ⏳";
-  let headerTemplate = "orange";
-  if (turn.status === "success") {
-    statusText = "Completed Successfully ✅";
-    headerTemplate = "green";
-  } else if (turn.status === "failed") {
-    statusText = "Failed ❌";
-    headerTemplate = "red";
-  }
-
-  // Format log content
-  let logContent = turn.logs.join("\n");
-  if (!logContent.trim()) {
-    logContent = "Initializing execution...";
-  }
-
-  // Truncate logs if they are too long for Feishu card limits
-  const maxChars = 3000;
-  if (logContent.length > maxChars) {
-    logContent = "... (truncated) ...\n" + logContent.substring(logContent.length - maxChars);
-  }
-
-  const elements: any[] = [
-    {
-      tag: "markdown",
-      content: `**Prompt**: ${turn.prompt}`
-    },
-    {
-      tag: "markdown",
-      content: `**Status**: ${statusText}`
-    }
-  ];
-
-  if (turn.answer) {
-    elements.push({
-      tag: "markdown",
-      content: `**Answer**:\n${turn.answer}`
-    });
-  }
-
-  elements.push(
-    {
-      tag: "hr"
-    },
-    {
-      tag: "div",
-      text: {
-        tag: "lark_md",
-        content: `**Execution Logs**:\n\`\`\`text\n${logContent}\n\`\`\``
-      }
-    }
-  );
-
-  return {
-    schema: "2.0",
-    config: {
-      wide_screen_mode: true
-    },
-    header: {
-      template: headerTemplate,
-      title: {
-        tag: "plain_text",
-        content: `Codex Remote Control`
-      }
-    },
-    body: {
-      elements: elements
-    }
-  };
-}
 
 function updateEnvFile(appId: string, appSecret: string) {
   const envPath = path.join(process.cwd(), '.env');

@@ -1,0 +1,17 @@
+{
+  "threadId": "019ed5e9-08fc-7be2-b700-0d1ce316ec68",
+  "turn": {
+    "id": "0b7597a0-9e7e-4d61-b160-b8e0d3a1c38b",
+    "items": [],
+    "itemsView": "notLoaded",
+    "status": "failed",
+    "error": {
+      "message": "Codex ran out of room in the model's context window. Start a new thread or clear earlier history before retrying.",
+      "codexErrorInfo": "contextWindowExceeded",
+      "additionalDetails": null
+    },
+    "startedAt": 1782152324,
+    "completedAt": 1782152447,
+    "durationMs": 122729
+  }
+}

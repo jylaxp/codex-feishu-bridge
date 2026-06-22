@@ -1,0 +1,18 @@
+{
+  "method": "thread/goal/updated",
+  "params": {
+    "threadId": "019ed5e9-08fc-7be2-b700-0d1ce316ec68",
+    "turnId": null,
+    "goal": {
+      "threadId": "019ed5e9-08fc-7be2-b700-0d1ce316ec68",
+      "objective": "开始实施开发计划",
+      "status": "blocked",
+      "tokenBudget": null,
+      "tokensUsed": 18588325,
+      "timeUsedSeconds": 33593,
+      "createdAt": 1782113474,
+      "updatedAt": 1782152447
+    }
+  },
+  "extractedStats": {}
+}

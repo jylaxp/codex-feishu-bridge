@@ -2,6 +2,8 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as net from 'net';
+import * as http from 'http';
+import * as ws from 'ws';
 import { LocalAppServerAdapter } from '../src/adapter';
 
 process.env.NODE_ENV = 'test';
@@ -19,9 +21,99 @@ async function runTests() {
   if (fs.existsSync(dummySocketPath)) {
     fs.unlinkSync(dummySocketPath);
   }
-  const dummyServer = net.createServer((socket) => {
-    socket.on('data', () => {});
+
+  const dummyServer = http.createServer((req, res) => {
+    res.writeHead(200);
+    res.end();
   });
+
+  const wss = new ws.WebSocketServer({ noServer: true });
+
+  dummyServer.on('upgrade', (request, socket, head) => {
+    wss.handleUpgrade(request, socket, head, (webSocket) => {
+      wss.emit('connection', webSocket, request);
+    });
+  });
+
+  wss.on('connection', (webSocket) => {
+    webSocket.on('message', (message) => {
+      try {
+        const req = JSON.parse(message.toString());
+        if (req.method === 'initialize') {
+          webSocket.send(JSON.stringify({
+            jsonrpc: '2.0',
+            id: req.id,
+            result: {
+              userAgent: 'mock-codex/1.0.0',
+              codexHome: '/Users/dummy/.codex',
+              platformFamily: 'unix',
+              platformOs: 'macos'
+            }
+          }));
+        } else if (req.method === 'thread/list') {
+          webSocket.send(JSON.stringify({
+            jsonrpc: '2.0',
+            id: req.id,
+            result: {
+              data: [
+                { id: 'thread-123', name: 'Test Session', preview: 'Last message' }
+              ]
+            }
+          }));
+        } else if (req.method === 'thread/resume') {
+          webSocket.send(JSON.stringify({
+            jsonrpc: '2.0',
+            id: req.id,
+            result: {
+              thread: {
+                id: req.params.threadId,
+                name: 'Mock Thread',
+                turns: []
+              }
+            }
+          }));
+        } else if (req.method === 'turn/start') {
+          webSocket.send(JSON.stringify({
+            jsonrpc: '2.0',
+            id: req.id,
+            result: {
+              turn: {
+                id: 'turn-456'
+              }
+            }
+          }));
+
+          // Simulate notifications
+          setTimeout(() => {
+            webSocket.send(JSON.stringify({
+              jsonrpc: '2.0',
+              method: 'turn/started',
+              params: { threadId: req.params.threadId, turnId: 'turn-456' }
+            }));
+          }, 20);
+
+          setTimeout(() => {
+            webSocket.send(JSON.stringify({
+              jsonrpc: '2.0',
+              method: 'agent/stdout',
+              params: { threadId: req.params.threadId, turnId: 'turn-456', chunk: 'Mock log line 1' }
+            }));
+          }, 40);
+
+          setTimeout(() => {
+            webSocket.send(JSON.stringify({
+              jsonrpc: '2.0',
+              method: 'turn/completed',
+              params: { threadId: req.params.threadId, turnId: 'turn-456' }
+            }));
+          }, 60);
+        }
+      } catch (e) {
+        console.error('Mock WS server parse error:', e);
+      }
+    });
+  });
+
   await new Promise<void>((resolve) => {
     dummyServer.listen(dummySocketPath, () => resolve());
   });
@@ -57,27 +149,41 @@ async function runTests() {
     console.log('✅ Test 1 Passed.');
 
     // -------------------------------------------------------------
-    // Test 2: Spawning App Server proxy when socket file DOES exist
+    // Test 1.5: Spawning App Server with invalid binary (ENOENT)
     // -------------------------------------------------------------
-    console.log('\n[Test 2] Testing proxy connection (socket exists)...');
+    console.log('\n[Test 1.5] Testing spawn failure with invalid binary (ENOENT)...');
+    
+    process.env.CODEX_BIN = 'non-existent-codex-binary';
+    const adapter1_5 = new LocalAppServerAdapter({ socketPath: nonExistentSocket });
+    let errorThrown = false;
+    try {
+      await adapter1_5.connect();
+    } catch (e: any) {
+      errorThrown = true;
+      console.log('Successfully caught expected spawn error:', e.message || e);
+      assert.ok(e.code === 'ENOENT' || (e.message && e.message.includes('ENOENT')), 'Should fail with ENOENT');
+    } finally {
+      delete process.env.CODEX_BIN;
+      adapter1_5.disconnect();
+    }
+    assert.ok(errorThrown, 'Should throw error when binary is missing');
+    console.log('✅ Test 1.5 Passed.');
+
+    // -------------------------------------------------------------
+    // Test 2: Connecting directly to App Server via WebSocket when socket exists
+    // -------------------------------------------------------------
+    console.log('\n[Test 2] Testing direct WebSocket connection (socket exists)...');
     
     const adapter2 = new LocalAppServerAdapter({ socketPath: dummySocketPath });
-    let spawnedArgs2 = '';
-
-    adapter2.onNotification((msg) => {
-      if (msg.method === 'agent/stderr' && msg.params?.chunk?.includes('MOCK_CODEX_ARGS:')) {
-        spawnedArgs2 = msg.params.chunk;
-      }
-    });
+    let connected = false;
 
     await adapter2.connect();
+    connected = true;
     
     // Give it a brief moment
-    await new Promise(r => setTimeout(r, 200));
+    await new Promise(r => setTimeout(r, 100));
 
-    console.log('Spawned arguments observed:', spawnedArgs2);
-    assert.ok(spawnedArgs2.includes('app-server proxy --sock'), 'Should spawn proxy command');
-    assert.ok(spawnedArgs2.includes(dummySocketPath), 'Should pass correct socket path');
+    assert.ok(connected, 'Should connect successfully to the mock WebSocket server');
     adapter2.disconnect();
     console.log('✅ Test 2 Passed.');
 

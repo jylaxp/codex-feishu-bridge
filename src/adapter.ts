@@ -9,6 +9,12 @@ import * as crypto from 'crypto';
 
 const IS_LITTLE_ENDIAN = os.endianness() === 'LE';
 
+export function get24HourTimeStr(): string {
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
 export interface CodexThread {
   id: string;
   name: string;
@@ -32,6 +38,7 @@ export interface CodexThreadAdapter {
     collaborationMode?: string | null;
     personality?: string | null;
   }): Promise<string>;
+  cleanupThreadState?(threadId: string): void;
 }
 
 export class LocalAppServerAdapter implements CodexThreadAdapter {
@@ -42,6 +49,7 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
   private nextId = 1;
   private notificationHandlers: Array<(message: any) => void> = [];
   private exitHandlers: Array<() => void> = [];
+  private cleanupCalled = false;
 
   private ipcClient: net.Socket | null = null;
   private ipcClientId: string | null = null;
@@ -50,13 +58,62 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
     timeout: NodeJS.Timeout;
   }>();
   private ipcConnectionPromise: Promise<net.Socket | null> | null = null;
+  private connectingIpcClient: net.Socket | null = null;
+  private ipcReconnectTimeout: NodeJS.Timeout | null = null;
   private threadStates = new Map<string, any>();
+  private currentPermissions: any = null;
   private lastAgentMessageTexts = new Map<string, string>();
   private lastCommandOutputs = new Map<string, string>();
+  private pendingRequestNotifications = new Map<string, NodeJS.Timeout>();
+  private processedRequests = new Set<string>();
 
   constructor(private options: { socketPath?: string } = {}) {}
 
+  private queueApprovalRequest(requestVal: any, threadId: string) {
+    if (!requestVal || !requestVal.id || !requestVal.method) return;
+    if (requestVal.status === 'completed' || requestVal.decision !== undefined) return;
+    const state = this.threadStates.get(threadId);
+    if (state && Array.isArray(state.turns) && state.turns.length > 0) {
+      const lastTurn = state.turns[state.turns.length - 1];
+      const reviewer = lastTurn?.params?.approvalsReviewer;
+      if (reviewer && reviewer !== 'user') {
+        console.log(`[Adapter] approvalsReviewer is "${reviewer}" (not "user"), skipping Feishu card for request ${requestVal.id}.`);
+        return;
+      }
+    }
+    
+    if (this.pendingRequestNotifications.has(requestVal.id)) return;
+    if (this.processedRequests.has(requestVal.id)) return;
+
+    const timeout = setTimeout(() => {
+      this.pendingRequestNotifications.delete(requestVal.id);
+      this.processedRequests.add(requestVal.id);
+      this.emitNotification({
+        id: requestVal.id,
+        method: requestVal.method,
+        params: {
+          ...requestVal.params,
+          threadId: threadId
+        },
+        isIpc: true
+      });
+    }, 1500);
+    
+    this.pendingRequestNotifications.set(requestVal.id, timeout);
+  }
+
+  private cancelPendingApprovalRequest(requestId: string) {
+    if (!requestId) return;
+    const timeout = this.pendingRequestNotifications.get(requestId);
+    if (timeout) {
+      clearTimeout(timeout);
+      this.pendingRequestNotifications.delete(requestId);
+      this.processedRequests.add(requestId);
+    }
+  }
+
   async connect(): Promise<void> {
+    this.cleanupCalled = false;
     const defaultSocketPath = path.join(os.homedir(), '.codex', 'app-server-control', 'app-server-control.sock');
     const socketPath = this.options.socketPath || defaultSocketPath;
 
@@ -83,6 +140,8 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
         }
       }
     }
+
+    let spawnErrorPromise: Promise<never> | null = null;
 
     if (isSocketAlive) {
       console.log(`Connecting to existing socket via WebSocket: ${socketPath}`);
@@ -117,11 +176,43 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
         });
       });
     } else {
-      console.log(`Socket not found or dead at ${socketPath}. Launching standalone App Server...`);
-      this.childProcess = spawn('codex', ['app-server', '--listen', 'stdio://']);
+      let codexBin = process.env.CODEX_BIN || 'codex';
+      if (codexBin === 'codex' && process.env.NODE_ENV !== 'test') {
+        const commonPaths = [
+          '/Applications/Codex.app/Contents/Resources/codex',
+          '/opt/homebrew/bin/codex',
+          '/usr/local/bin/codex',
+          path.join(os.homedir(), '.npm-global', 'bin', 'codex'),
+          path.join(os.homedir(), '.local', 'bin', 'codex')
+        ];
+        for (const p of commonPaths) {
+          if (fs.existsSync(p)) {
+            codexBin = p;
+            break;
+          }
+        }
+      }
 
-      this.childProcess.on('error', (err) => {
-        console.error('Failed to start codex subprocess:', err);
+      console.log(`Socket not found or dead at ${socketPath}. Launching standalone App Server via "${codexBin}"...`);
+      this.childProcess = spawn(codexBin, ['app-server', '--listen', 'stdio://']);
+
+      let onSpawnError: ((err: any) => void) | null = null;
+      spawnErrorPromise = new Promise<never>((_, reject) => {
+        onSpawnError = (err) => reject(err);
+      });
+
+      this.childProcess.on('error', (err: any) => {
+        if (onSpawnError) {
+          onSpawnError(err);
+        }
+        if (err.code === 'ENOENT') {
+          console.error(`\n❌ [Error] 无法启动 Codex 命令行程序 (spawn "${codexBin}" ENOENT)。`);
+          console.error(`- 请确保已全局安装 Codex 命令行程序并在 shell 中可执行。`);
+          console.error(`- 如果 codex 已安装但没有在 PATH 中，可通过配置环境变量 CODEX_BIN 指定其路径，例如：`);
+          console.error(`  export CODEX_BIN=/path/to/codex\n`);
+        } else {
+          console.error('Failed to start codex subprocess:', err);
+        }
       });
 
       this.childProcess.stderr?.on('data', (data) => {
@@ -153,7 +244,7 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
 
     // Send initialize request to the App Server
     try {
-      await this.request('initialize', {
+      const initPromise = this.request('initialize', {
         clientInfo: {
           name: 'feishu-bridge',
           title: 'Feishu Bot Bridge',
@@ -165,7 +256,14 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
           optOutNotificationMethods: []
         }
       });
+
+      if (spawnErrorPromise) {
+        await Promise.race([initPromise, spawnErrorPromise]);
+      } else {
+        await initPromise;
+      }
       console.log('Codex App Server initialized.');
+      this.startIpcConnectionLoop();
     } catch (e: any) {
       console.error('Failed to initialize Codex App Server:', e);
       this.cleanup();
@@ -173,8 +271,27 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
     }
   }
 
+  private startIpcConnectionLoop() {
+    if (this.cleanupCalled) return;
+    
+    this.getIpcClient().then((client) => {
+      if (!client && !this.cleanupCalled) {
+        if (this.ipcReconnectTimeout) clearTimeout(this.ipcReconnectTimeout);
+        this.ipcReconnectTimeout = setTimeout(() => this.startIpcConnectionLoop(), 5000);
+      }
+    }).catch((err: any) => {
+      logToFile(`[IPC] Loop error: ${err?.message || err}`);
+      if (!this.cleanupCalled) {
+        if (this.ipcReconnectTimeout) clearTimeout(this.ipcReconnectTimeout);
+        this.ipcReconnectTimeout = setTimeout(() => this.startIpcConnectionLoop(), 5000);
+      }
+    });
+  }
+
   disconnect(): void {
     this.cleanup();
+    this.exitHandlers = [];
+    this.notificationHandlers = [];
   }
 
   onExit(handler: () => void): void {
@@ -219,6 +336,8 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
   }
 
   private cleanup(): void {
+    if (this.cleanupCalled) return;
+    this.cleanupCalled = true;
     if (this.ws) {
       try {
         this.ws.close();
@@ -246,6 +365,12 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
       } catch (e) {}
       this.ipcClient = null;
     }
+    if (this.connectingIpcClient) {
+      try {
+        this.connectingIpcClient.destroy();
+      } catch (e) {}
+      this.connectingIpcClient = null;
+    }
     this.ipcClientId = null;
     for (const [reqId, pending] of this.pendingIpcRequests.entries()) {
       clearTimeout(pending.timeout);
@@ -253,6 +378,10 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
     }
     this.pendingIpcRequests.clear();
     this.ipcConnectionPromise = null;
+    if (this.ipcReconnectTimeout) {
+      clearTimeout(this.ipcReconnectTimeout);
+      this.ipcReconnectTimeout = null;
+    }
 
     // Trigger and clear exit handlers
     const handlers = this.exitHandlers;
@@ -260,6 +389,20 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
     handlers.forEach(h => {
       try { h(); } catch (e) { console.error('Error in exit handler:', e); }
     });
+  }
+
+  cleanupThreadState(threadId: string): void {
+    this.threadStates.delete(threadId);
+    for (const key of this.lastAgentMessageTexts.keys()) {
+      if (key.startsWith(threadId + '-')) {
+        this.lastAgentMessageTexts.delete(key);
+      }
+    }
+    for (const key of this.lastCommandOutputs.keys()) {
+      if (key.startsWith(threadId + '-')) {
+        this.lastCommandOutputs.delete(key);
+      }
+    }
   }
 
   async request(method: string, params: Record<string, unknown>, timeoutMs = 30000): Promise<any> {
@@ -385,10 +528,16 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
 
       logToFile(`[IPC] Connecting to Desktop IPC socket: ${socketPath}`);
       const client = net.createConnection(socketPath);
-      let rxBuffer = Buffer.alloc(0);
+      this.connectingIpcClient = client;
+      let chunks: Buffer[] = [];
+      let chunksLen = 0;
       let expectedLen: number | null = null;
 
+      let isResolved = false;
       const connectionTimeout = setTimeout(() => {
+        if (isResolved) return;
+        isResolved = true;
+        this.connectingIpcClient = null;
         logToFile('[IPC] Connection to Desktop IPC socket timed out.');
         client.destroy();
         this.ipcConnectionPromise = null;
@@ -398,6 +547,7 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
       const writeMessage = (obj: any) => this.writeIpcMessage(client, obj);
 
       client.on('connect', () => {
+        if (isResolved) return;
         clearTimeout(connectionTimeout);
         logToFile('[IPC] Connected to Desktop IPC socket. Sending initialize...');
         writeMessage({
@@ -408,37 +558,63 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
         });
       });
 
+      let dataCount = 0;
       client.on('data', (data) => {
-        rxBuffer = Buffer.concat([rxBuffer, data]);
+        dataCount++;
+        chunks.push(data);
+        chunksLen += data.length;
+
         while (true) {
           if (expectedLen === null) {
-            if (rxBuffer.length < 4) break;
+            if (chunksLen < 4) break;
+            const tempBuf = Buffer.concat(chunks, chunksLen);
             if (IS_LITTLE_ENDIAN) {
-              expectedLen = rxBuffer.readUInt32LE(0);
+              expectedLen = tempBuf.readUInt32LE(0);
             } else {
-              expectedLen = rxBuffer.readUInt32BE(0);
+              expectedLen = tempBuf.readUInt32BE(0);
             }
-            rxBuffer = rxBuffer.subarray(4);
+            const remaining = tempBuf.subarray(4);
+            chunks = remaining.length > 0 ? [remaining] : [];
+            chunksLen = remaining.length;
           }
-          if (rxBuffer.length < expectedLen) break;
-          const msgBytes = rxBuffer.subarray(0, expectedLen);
-          rxBuffer = rxBuffer.subarray(expectedLen);
+
+          if (chunksLen < expectedLen) {
+            break;
+          }
+
+          const tempBuf = Buffer.concat(chunks, chunksLen);
+          const msgBytes = tempBuf.subarray(0, expectedLen);
+          const remaining = tempBuf.subarray(expectedLen);
+          chunks = remaining.length > 0 ? [remaining] : [];
+          chunksLen = remaining.length;
           expectedLen = null;
           
           const msgStr = msgBytes.toString('utf8');
           try {
             const msg = JSON.parse(msgStr);
-            logToFile(`[IPC Received]: ${msgStr}`);
+            if (msg.method !== 'thread-stream-state-changed') {
+              logToFile(`[IPC Received]: ${msgStr}`);
+            }
             
             if (msg.type === 'response' && msg.method === 'initialize') {
+              if (isResolved) {
+                client.destroy();
+                return;
+              }
               if (msg.resultType === 'success' && msg.result?.clientId) {
+                isResolved = true;
+                this.connectingIpcClient = null;
                 this.ipcClientId = msg.result.clientId;
                 this.ipcClient = client;
                 this.ipcConnectionPromise = null;
                 logToFile(`[IPC] Initialized successfully. clientId: ${this.ipcClientId}`);
                 resolve(client);
               } else {
+                isResolved = true;
+                this.connectingIpcClient = null;
                 logToFile(`[IPC] Initialize failed: ${JSON.stringify(msg)}`);
+                this.ipcConnectionPromise = null;
+                resolve(null);
                 client.destroy();
               }
             } else if (msg.type === 'response' && msg.requestId) {
@@ -466,7 +642,9 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
       client.on('error', (err) => {
         logToFile(`[IPC] Socket error: ${err.message}`);
         clearTimeout(connectionTimeout);
-        if (this.ipcConnectionPromise) {
+        if (!isResolved) {
+          isResolved = true;
+          this.connectingIpcClient = null;
           this.ipcConnectionPromise = null;
           resolve(null);
         }
@@ -485,9 +663,17 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
         
         this.ipcClient = null;
         this.ipcClientId = null;
-        if (this.ipcConnectionPromise) {
-          this.ipcConnectionPromise = null;
+        this.ipcConnectionPromise = null;
+        if (!isResolved) {
+          isResolved = true;
+          this.connectingIpcClient = null;
           resolve(null);
+        }
+
+        // Trigger reconnection loop
+        if (!this.cleanupCalled) {
+          if (this.ipcReconnectTimeout) clearTimeout(this.ipcReconnectTimeout);
+          this.ipcReconnectTimeout = setTimeout(() => this.startIpcConnectionLoop(), 5000);
         }
       });
     });
@@ -644,38 +830,68 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
       // Populate text and command output tracking from snapshot to avoid duplication
       if (Array.isArray(conversationState.turns)) {
         conversationState.turns.forEach((turn: any, turnIdx: number) => {
-          if (turn && Array.isArray(turn.items)) {
-            turn.items.forEach((item: any, itemIdx: number) => {
-              if (item) {
-                if (item.type === 'agentMessage' && typeof item.text === 'string') {
-                  const textKey = `${threadId}-${turnIdx}-${itemIdx}`;
-                  this.lastAgentMessageTexts.set(textKey, item.text);
-                } else if (item.type === 'reasoning' && typeof item.text === 'string') {
-                  const textKey = `${threadId}-${turnIdx}-${itemIdx}`;
-                  this.lastAgentMessageTexts.set(textKey, item.text);
-                } else if (item.type === 'commandExecution' && typeof item.aggregatedOutput === 'string') {
-                  const outputKey = `${threadId}-${turnIdx}-${itemIdx}`;
-                  this.lastCommandOutputs.set(outputKey, item.aggregatedOutput);
-                }
-              }
+          const turnId = turn.turnId || turn.id;
+          if (turn.status === 'inProgress') {
+            // Emitting turn/started so the bridge recreates the Feishu card
+            this.emitNotification({
+              method: 'turn/started',
+              params: { threadId, turnId, turn }
             });
+            if (Array.isArray(turn.items)) {
+              turn.items.forEach((item: any, itemIdx: number) => {
+                if (item) {
+                  if (item.type === 'agentMessage' && typeof item.text === 'string') {
+                    const textKey = `${threadId}-${turnId}-${itemIdx}`;
+                    this.lastAgentMessageTexts.set(textKey, item.text);
+                    this.emitNotification({
+                      method: 'item/started',
+                      params: { threadId, turnId, item: { type: 'agentMessage', text: item.text, phase: item.phase } }
+                    });
+                  } else if (item.type === 'reasoning') {
+                    const rawReasoningText = this.extractReasoningText(item);
+                    const textKey = `${threadId}-${turnId}-${itemIdx}`;
+                    this.lastAgentMessageTexts.set(textKey, rawReasoningText);
+                    const timeStr = get24HourTimeStr();
+                    const reasoningText = rawReasoningText.replace(/\n\[STEP_BOUNDARY\]\n/g, `\n\n---\n⏱️ *[${timeStr}] 阶段*\n`);
+                    this.emitNotification({
+                      method: 'item/started',
+                      params: { threadId, turnId, item: { type: 'reasoning', text: reasoningText } }
+                    });
+                  } else if (item.type === 'commandExecution' && typeof item.aggregatedOutput === 'string') {
+                    const outputKey = `${threadId}-${turnId}-${itemIdx}`;
+                    this.lastCommandOutputs.set(outputKey, item.aggregatedOutput);
+                    this.emitNotification({
+                      method: 'agent/stderr',
+                      params: { threadId, turnId, chunk: item.aggregatedOutput }
+                    });
+                  }
+                }
+              });
+            }
+          } else {
+            // Just populate tracking variables for completed turns
+            if (turn && Array.isArray(turn.items)) {
+              turn.items.forEach((item: any, itemIdx: number) => {
+                if (item) {
+                  if (item.type === 'agentMessage' && typeof item.text === 'string') {
+                    const textKey = `${threadId}-${turnId}-${itemIdx}`;
+                    this.lastAgentMessageTexts.set(textKey, item.text);
+                  } else if (item.type === 'reasoning') {
+                    const textKey = `${threadId}-${turnId}-${itemIdx}`;
+                    this.lastAgentMessageTexts.set(textKey, this.extractReasoningText(item));
+                  } else if (item.type === 'commandExecution' && typeof item.aggregatedOutput === 'string') {
+                    const outputKey = `${threadId}-${turnId}-${itemIdx}`;
+                    this.lastCommandOutputs.set(outputKey, item.aggregatedOutput);
+                  }
+                }
+              });
+            }
           }
         });
       }
       if (Array.isArray(conversationState.requests)) {
         conversationState.requests.forEach((requestVal: any) => {
-          if (requestVal && requestVal.method && requestVal.id !== undefined) {
-            logToFile(`[IPC Snapshot] Intercepted request: ${JSON.stringify(requestVal)}`);
-            this.emitNotification({
-              id: requestVal.id,
-              method: requestVal.method,
-              params: {
-                ...requestVal.params,
-                threadId: threadId
-              },
-              isIpc: true
-            });
-          }
+          this.queueApprovalRequest(requestVal, threadId);
         });
       }
     } else if (change.type === 'patches' && Array.isArray(change.patches)) {
@@ -683,47 +899,40 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
         if (!patch || !Array.isArray(patch.path)) continue;
         
         const path = patch.path;
-        if (path[0] === 'requests') {
-          if (patch.op === 'add') {
-            const requestVal = patch.value;
-            if (requestVal && requestVal.method && requestVal.id !== undefined) {
-              logToFile(`[IPC Patch add] Intercepted requests: ${JSON.stringify(requestVal)}`);
-              this.emitNotification({
-                id: requestVal.id,
-                method: requestVal.method,
-                params: {
-                  ...requestVal.params,
-                  threadId: threadId
-                },
-                isIpc: true
-              });
-            }
-          } else if (patch.op === 'replace' && Array.isArray(patch.value)) {
-            patch.value.forEach((requestVal: any) => {
-              if (requestVal && requestVal.method && requestVal.id !== undefined) {
-                logToFile(`[IPC Patch replace] Intercepted requests: ${JSON.stringify(requestVal)}`);
-                this.emitNotification({
-                  id: requestVal.id,
-                  method: requestVal.method,
-                  params: {
-                    ...requestVal.params,
-                    threadId: threadId
-                  },
-                  isIpc: true
-                });
-              }
-            });
-          }
+        let beforeTurn = null;
+        let turnIndex = -1;
+        if (path[0] === 'turns' && typeof path[1] === 'number') {
+          turnIndex = path[1];
+          beforeTurn = state.turns[turnIndex] ? { ...state.turns[turnIndex] } : null;
         }
 
-        if (path[0] === 'turns' && typeof path[1] === 'number') {
-          const turnIndex = path[1];
-          const beforeTurn = state.turns[turnIndex] ? { ...state.turns[turnIndex] } : null;
+        this.applyJsonPatch(state, patch);
 
-          this.applyJsonPatch(state, patch);
-
+        // Process global requests
+        if (Array.isArray(state.requests)) {
+          state.requests.forEach((req: any) => {
+             if (req && (req.status === 'completed' || req.decision !== undefined)) {
+                this.cancelPendingApprovalRequest(req.id);
+             } else {
+                this.queueApprovalRequest(req, threadId);
+             }
+          });
+        }
+        
+        if (turnIndex !== -1) {
           const afterTurn = state.turns[turnIndex];
           if (!afterTurn) continue;
+
+          // Process turn-specific requests
+          if (Array.isArray(afterTurn.requests)) {
+             afterTurn.requests.forEach((req: any) => {
+                if (req && (req.status === 'completed' || req.decision !== undefined)) {
+                   this.cancelPendingApprovalRequest(req.id);
+                } else {
+                   this.queueApprovalRequest(req, threadId);
+                }
+             });
+          }
 
           const turnId = afterTurn.turnId || afterTurn.id;
 
@@ -772,14 +981,14 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
                     error: afterTurn.error || (afterStatus === 'failed' ? { message: 'Turn execution failed' } : null)
                   }
                 });
-                // Clean up tracking for this turn to prevent memory leak
+                 // Clean up tracking for this turn to prevent memory leak
                 for (const key of this.lastAgentMessageTexts.keys()) {
-                  if (key.startsWith(`${threadId}-${turnIndex}-`)) {
+                  if (key.startsWith(`${threadId}-${turnId}-`)) {
                     this.lastAgentMessageTexts.delete(key);
                   }
                 }
                 for (const key of this.lastCommandOutputs.keys()) {
-                  if (key.startsWith(`${threadId}-${turnIndex}-`)) {
+                  if (key.startsWith(`${threadId}-${turnId}-`)) {
                     this.lastCommandOutputs.delete(key);
                   }
                 }
@@ -806,14 +1015,22 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
             }
           }
 
-          if (path[2] === 'items' && typeof path[3] === 'number' && path[4] === 'text') {
+          if (path[2] === 'items' && typeof path[3] === 'number') {
             const itemIndex = path[3];
             const item = afterTurn.items[itemIndex];
             if (item) {
-              if (item.type === 'agentMessage') {
-                const textKey = `${threadId}-${turnIndex}-${itemIndex}`;
+              if (item.type === 'agentMessage' && typeof item.text === 'string') {
+                const textKey = `${threadId}-${turnId}-${itemIndex}`;
                 const oldText = this.lastAgentMessageTexts.get(textKey) || '';
-                const newText = patch.value || '';
+                const newText = item.text || '';
+                
+                if (oldText === '' && newText.length > 0) {
+                  this.emitNotification({
+                    method: 'item/started',
+                    params: { threadId, turnId, item: { type: 'agentMessage', text: '', phase: item.phase } }
+                  });
+                }
+                
                 if (newText.length > oldText.length) {
                   const delta = newText.slice(oldText.length);
                   this.lastAgentMessageTexts.set(textKey, newText);
@@ -830,76 +1047,36 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
                   }
                 }
               } else if (item.type === 'reasoning') {
-                const textKey = `${threadId}-${turnIndex}-${itemIndex}`;
+                const textKey = `${threadId}-${turnId}-${itemIndex}`;
                 const oldText = this.lastAgentMessageTexts.get(textKey) || '';
-                const newText = patch.value || '';
+                const newText = this.extractReasoningText(item) || '';
+                
+                if (oldText === '' && newText.length > 0) {
+                  this.emitNotification({
+                    method: 'item/started',
+                    params: { threadId, turnId, item: { type: 'reasoning', text: '' } }
+                  });
+                }
+                
                 if (newText.length > oldText.length) {
-                  const delta = newText.slice(oldText.length);
                   this.lastAgentMessageTexts.set(textKey, newText);
+                  
+                  const formatReasoning = (text: string) => {
+                    const timeStr = get24HourTimeStr();
+                    return text.replace(/\n\[STEP_BOUNDARY\]\n/g, `\n\n---\n⏱️ *[${timeStr}] 阶段*\n`);
+                  };
+                  
+                  const oldFormatted = formatReasoning(oldText);
+                  const newFormatted = formatReasoning(newText);
+                  const delta = newFormatted.slice(oldFormatted.length);
+                  
                   this.emitNotification({
                     method: 'item/reasoning/delta',
                     params: { threadId, turnId, delta }
                   });
                 }
-              }
-            }
-          }
-
-          if (path[2] === 'items' && typeof path[3] === 'number' && path[4] === 'aggregatedOutput') {
-            const itemIndex = path[3];
-            const item = afterTurn.items[itemIndex];
-            if (item && item.type === 'commandExecution') {
-              const outputKey = `${threadId}-${turnIndex}-${itemIndex}`;
-              const oldOutput = this.lastCommandOutputs.get(outputKey) || '';
-              const newOutput = patch.value || '';
-              if (newOutput.length > oldOutput.length) {
-                const delta = newOutput.slice(oldOutput.length);
-                this.lastCommandOutputs.set(outputKey, newOutput);
-                this.emitNotification({
-                  method: 'agent/stderr',
-                  params: { chunk: delta }
-                });
-              }
-            }
-          }
-
-          if (path[2] === 'items' && typeof path[3] === 'number' && path.length === 4) {
-            const itemIndex = path[3];
-            const item = patch.value;
-            if (item) {
-              if (item.type === 'agentMessage' && item.text) {
-                const textKey = `${threadId}-${turnIndex}-${itemIndex}`;
-                const oldText = this.lastAgentMessageTexts.get(textKey) || '';
-                const newText = item.text || '';
-                if (newText.length > oldText.length) {
-                  const delta = newText.slice(oldText.length);
-                  this.lastAgentMessageTexts.set(textKey, newText);
-                  if (item.phase === 'commentary') {
-                    this.emitNotification({
-                      method: 'item/reasoning/delta',
-                      params: { threadId, turnId, delta }
-                    });
-                  } else {
-                    this.emitNotification({
-                      method: 'item/agentMessage/delta',
-                      params: { threadId, turnId, delta }
-                    });
-                  }
-                }
-              } else if (item.type === 'reasoning' && item.text) {
-                const textKey = `${threadId}-${turnIndex}-${itemIndex}`;
-                const oldText = this.lastAgentMessageTexts.get(textKey) || '';
-                const newText = item.text || '';
-                if (newText.length > oldText.length) {
-                  const delta = newText.slice(oldText.length);
-                  this.lastAgentMessageTexts.set(textKey, newText);
-                  this.emitNotification({
-                    method: 'item/reasoning/delta',
-                    params: { threadId, turnId, delta }
-                  });
-                }
-              } else if (item.type === 'commandExecution' && item.aggregatedOutput) {
-                const outputKey = `${threadId}-${turnIndex}-${itemIndex}`;
+              } else if (item.type === 'commandExecution' && typeof item.aggregatedOutput === 'string') {
+                const outputKey = `${threadId}-${turnId}-${itemIndex}`;
                 const oldOutput = this.lastCommandOutputs.get(outputKey) || '';
                 const newOutput = item.aggregatedOutput || '';
                 if (newOutput.length > oldOutput.length) {
@@ -907,7 +1084,7 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
                   this.lastCommandOutputs.set(outputKey, newOutput);
                   this.emitNotification({
                     method: 'agent/stderr',
-                    params: { chunk: delta }
+                    params: { threadId, turnId, chunk: delta }
                   });
                 }
               }
@@ -925,27 +1102,35 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
     let curr = obj;
     for (let i = 0; i < path.length - 1; i++) {
       const key = path[i];
+      if (!curr || typeof curr !== 'object') return;
       if (curr[key] === undefined) {
         const nextKey = path[i + 1];
-        curr[key] = typeof nextKey === 'number' ? [] : {};
+        curr[key] = (typeof nextKey === 'number' || nextKey === '-') ? [] : {};
       }
       curr = curr[key];
     }
     
+    if (!curr || typeof curr !== 'object') return;
     const lastKey = path[path.length - 1];
     if (patch.op === 'add') {
-      if (Array.isArray(curr) && typeof lastKey === 'number') {
-        curr.splice(lastKey, 0, patch.value);
+      if (Array.isArray(curr)) {
+        if (lastKey === '-') {
+          curr.push(patch.value);
+        } else if (typeof lastKey === 'number') {
+          curr.splice(lastKey, 0, patch.value);
+        } else {
+          curr[lastKey as any] = patch.value;
+        }
       } else {
-        curr[lastKey] = patch.value;
+        curr[lastKey as any] = patch.value;
       }
     } else if (patch.op === 'replace') {
-      curr[lastKey] = patch.value;
+      curr[lastKey as any] = patch.value;
     } else if (patch.op === 'remove') {
       if (Array.isArray(curr) && typeof lastKey === 'number') {
         curr.splice(lastKey, 1);
       } else {
-        delete curr[lastKey];
+        delete curr[lastKey as any];
       }
     }
   }
@@ -994,7 +1179,7 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
       }, 10000);
 
       this.pendingIpcRequests.set(reqId, {
-        resolve: () => {
+        resolve: (turnId: string | null) => {
           resolve(true);
         },
         timeout
@@ -1035,17 +1220,83 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
       }
     });
   }
+  private extractSlateText(nodes: any[]): string {
+    if (!Array.isArray(nodes)) return '';
+    return nodes.map(node => {
+      if (!node) return '';
+      if (typeof node === 'string') return node;
+      if (typeof node.text === 'string') return node.text;
+      if (Array.isArray(node.children)) return this.extractSlateText(node.children);
+      return '';
+    }).join('');
+  }
+
+  private extractReasoningText(item: any): string {
+    if (typeof item.text === 'string') return item.text;
+    const parts: string[] = [];
+    if (Array.isArray(item.summary)) {
+      parts.push(...item.summary.map((s: any) => this.extractSlateText([s])));
+    }
+    if (Array.isArray(item.content)) {
+      parts.push(...item.content.map((c: any) => this.extractSlateText([c])));
+    }
+    return parts.filter(p => p.trim().length > 0).join('\n[STEP_BOUNDARY]\n');
+  }
+}
+
+export function redactSecrets(text: string): string {
+  if (!text) return text;
+  let clean = text;
+  
+  // 1. Patterns that need a prefix captured and kept (i.e. replacement is $1[REDACTED])
+  const prefixPatterns = [
+    /(authorization:\s*bearer\s+)[^\s'"]+/gi,
+    /(token=)[^&\s]+/gi,
+    /(api[_-]?key=)[^&\s]+/gi,
+    /(secret=)[^&\s]+/gi,
+    /(password=)[^&\s]+/gi,
+    /(passwd=)[^&\s]+/gi,
+    /(openai[_-]?api[_-]?key=)[^&\s]+/gi,
+    /(\b(?:openai[_-]?)?api[_-]?key\b\s*[:=]\s*['"]?)[a-zA-Z0-9_-]+/gi,
+    /(\bpassword\b\s*[:=]\s*['"]?)[a-zA-Z0-9_-]+/gi,
+  ];
+  for (const pattern of prefixPatterns) {
+    clean = clean.replace(pattern, "$1[REDACTED]");
+  }
+
+  // 2. Patterns to replace entirely with [REDACTED]
+  const fullPatterns = [
+    /sk-[a-zA-Z0-9_-]{20,}/gi,
+  ];
+  for (const pattern of fullPatterns) {
+    clean = clean.replace(pattern, "[REDACTED]");
+  }
+  return clean;
 }
 
 export function logToFile(msg: string) {
   try {
     const logPath = path.join(os.homedir(), '.codex', 'bridge_debug.log');
     const MAX_SIZE = 10 * 1024 * 1024; // 10MB
+    
+    // Ensure parent directory exists with restrictive permissions (0o700)
+    const logDir = path.dirname(logPath);
+    if (!fs.existsSync(logDir)) {
+      fs.mkdirSync(logDir, { recursive: true, mode: 0o700 });
+    }
+    
     try {
       if (fs.existsSync(logPath) && fs.statSync(logPath).size > MAX_SIZE) {
         fs.renameSync(logPath, logPath + '.old');
       }
     } catch (_) {}
-    fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${msg}\n`);
+    
+    const redacted = redactSecrets(msg);
+    fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${redacted}\n`, { mode: 0o600 });
+    
+    // Explicitly enforce restrictive permission
+    try {
+      fs.chmodSync(logPath, 0o600);
+    } catch (_) {}
   } catch (e) {}
 }

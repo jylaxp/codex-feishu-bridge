@@ -52,6 +52,9 @@ switch (command) {
 APP_SECRET=YOUR_FEISHU_APP_SECRET
 ALLOWED_SHELL_COMMANDS=ls,git,pwd,cd,node,npm,yarn,cat,grep,find
 CODEX_CWD=
+
+# 若无法在 PATH 中找到 codex，可在此指定 Codex 桌面端内置的可执行程序路径
+# CODEX_BIN=/Applications/Codex.app/Contents/Resources/codex
 `;
       fs.writeFileSync(envPath, defaultEnv, 'utf8');
       console.log('✅ 成功创建默认 .env 配置文件。请编辑该文件填入您的飞书 APP_ID 与 APP_SECRET。');
