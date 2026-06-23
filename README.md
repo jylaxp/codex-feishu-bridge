@@ -163,6 +163,7 @@ Codex-飞书网桥 (Codex-Feishu Bridge) 是一个本地桥接程序，用于将
 | `/goal clear` 或 `/goal -c` | 清除当前会话的目标任务 | `/goal clear` |
 | `/usage` 或 `/quota` | 获取当前账户的短期 (5h) / 长期 (168h) 窗口用量统计及 24 小时制重置刷新时间 | `/usage` |
 | `/mcp` | 展示本地所有 MCP 服务及认证连接状态 | `/mcp` |
+| `/model` 或 `/model [名称]` | 交互式选择或直接设定当前会话使用的大模型（如 o3-mini 等） | `/model o3-mini` |
 | `/personality [friendly\|pragmatic\|none]` | 设置或查询回复风格（friendly: 亲和, pragmatic: 务实, none: 默认） | `/personality pragmatic` |
 | `/compact` 或 `/compress` | 压缩当前会话的上下文窗口（主动释放历史 Token） | `/compact` |
 | `/fork [新名称]` | 派生复制当前会话，并将当前飞书群聊自动绑定至新派生的会话 | `/fork 分支测试` |
