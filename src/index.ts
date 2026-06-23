@@ -3549,25 +3549,28 @@ async function createBindingCard(threads: CodexThread[]) {
   const options = sortedThreads.map(t => {
     const isGlobal = t.id && projectlessThreadIds.includes(t.id);
     
-    let prefix = "🌐 全局会话 ➜ ";
-    if (!isGlobal && t.cwd) {
-      // Find the matched workspace to get the proper label/basename
-      const matchedWorkspace = savedWorkspaces.find(w => {
-        const normW = path.normalize(w).toLowerCase();
-        const normC = path.normalize(t.cwd || "").toLowerCase();
-        return normC === normW || normC.startsWith(normW + path.sep);
-      });
-
+    let content = "";
+    if (isGlobal) {
+      content = `🌐 ${t.name} (全局)`;
+    } else {
       let dirName = "";
-      if (matchedWorkspace) {
-        dirName = workspaceLabels[matchedWorkspace] || path.basename(matchedWorkspace);
-      } else {
-        dirName = path.basename(t.cwd);
+      if (t.cwd) {
+        // Find the matched workspace to get the proper label/basename
+        const matchedWorkspace = savedWorkspaces.find(w => {
+          const normW = path.normalize(w).toLowerCase();
+          const normC = path.normalize(t.cwd || "").toLowerCase();
+          return normC === normW || normC.startsWith(normW + path.sep);
+        });
+
+        if (matchedWorkspace) {
+          dirName = workspaceLabels[matchedWorkspace] || path.basename(matchedWorkspace);
+        } else {
+          dirName = path.basename(t.cwd);
+        }
       }
-      prefix = dirName ? `📁 ${dirName} ➜ ` : "";
+      content = dirName ? `💬 ${t.name} (📁 ${dirName})` : `💬 ${t.name}`;
     }
     
-    const content = `${prefix}${t.name}`;
     const cleanContent = content.length > 100 ? content.substring(0, 97) + "..." : content;
     
     return {
