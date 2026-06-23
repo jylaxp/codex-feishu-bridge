@@ -1036,8 +1036,8 @@ function createCardKitFinalLayout(turn: ActiveTurn) {
       title: {
         tag: "plain_text",
         content: turn.isHistory
-          ? (turn.status === "success" ? "📜 [历史] ✅ Codex 执行成功" : (turn.status === "interrupted" ? "📜 [历史] 🛑 Codex 执行已取消" : "📜 [历史] ❌ Codex 执行失败"))
-          : (turn.status === "success" ? "✅ Codex 执行成功" : (turn.status === "interrupted" ? "🛑 Codex 执行已取消" : "❌ Codex 执行失败"))
+          ? (turn.status === "success" ? "📜 [历史] ✅ Codex 执行成功" : (turn.status === "interrupted" ? "📜 [历史] 🛑 Codex 执行已取消" : (turn.status === "running" ? "📜 [历史] 🌌 Codex 执行中..." : "📜 [历史] ❌ Codex 执行失败")))
+          : (turn.status === "success" ? "✅ Codex 执行成功" : (turn.status === "interrupted" ? "🛑 Codex 执行已取消" : (turn.status === "running" ? "🌌 Codex 执行中..." : "❌ Codex 执行失败")))
       }
     },
     body: {
