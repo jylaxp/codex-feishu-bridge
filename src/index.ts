@@ -8,8 +8,37 @@ import * as os from 'os';
 import { exec, execFile } from 'child_process';
 import { LocalAppServerAdapter, CodexThread, redactSecrets, get24HourTimeStr } from './adapter';
 
+// Ensure the config directory and .env file exist before loading
+const configDir = path.join(os.homedir(), '.codex-feishu-bridge');
+const envPath = path.join(configDir, '.env');
+
+if (!fs.existsSync(configDir)) {
+  fs.mkdirSync(configDir, { recursive: true });
+}
+if (!fs.existsSync(path.join(configDir, 'logs'))) {
+  fs.mkdirSync(path.join(configDir, 'logs'), { recursive: true });
+}
+if (!fs.existsSync(envPath)) {
+  const defaultEnv = `LARK_APP_ID=YOUR_FEISHU_APP_ID
+LARK_APP_SECRET=YOUR_FEISHU_APP_SECRET
+ALLOWED_APPROVERS=
+
+# Rate limits querying interval in milliseconds (default: 300000 ms / 5 minutes)
+RATE_LIMIT_QUERY_INTERVAL_MS=300000
+
+# Path to the Codex CLI binary on macOS (using Desktop App bundled resources version)
+CODEX_BIN=/Applications/Codex.app/Contents/Resources/codex
+
+# Switch to output logs to a file instead of stdout (true/false)
+LOG_TO_FILE=false
+LOG_FILE_PATH=bridge.log
+`;
+  fs.writeFileSync(envPath, defaultEnv, 'utf8');
+  console.log(`Created default .env config file at: ${envPath}`);
+}
+
 // Load environmental variables from ~/.codex-feishu-bridge/.env
-dotenv.config({ path: path.join(os.homedir(), '.codex-feishu-bridge', '.env') });
+dotenv.config({ path: envPath });
 
 // Configure file logging if enabled or silence logs if disabled
 function setupLogging() {
