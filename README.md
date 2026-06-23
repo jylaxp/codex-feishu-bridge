@@ -1,6 +1,6 @@
-# 🔌 Feishu-Codex Bridge (飞书-Codex 网桥)
+# 🔌 Codex-Feishu Bridge (Codex-飞书网桥)
 
-飞书-Codex 网桥是一个本地桥接程序，用于将飞书机器人服务（Feishu Bot）桥接至本地的 Codex 桌面客户端或 App Server。
+Codex-飞书网桥 (Codex-Feishu Bridge) 是一个本地桥接程序，用于将飞书机器人服务（Feishu Bot）桥接至本地的 Codex 桌面客户端或 App Server。
 
 通过对 Codex 桌面端及其服务底层的反向工程与反编译分析，我们整理了完整的通信协议、私有套接字接口以及飞书高级 CardKit 消息卡片的实时流式渲染方案。
 
@@ -318,7 +318,7 @@ this.ws = new WebSocket('ws://codex-app-server/', {
 
 ## 🚀 第三部分：从零实现一个一模一样的网桥 (Step-by-Step Guide)
 
-如果其他开发者希望复刻本项目，实现完全一致的飞书-Codex 联动效果，可按照以下步骤进行：
+如果其他开发者希望复刻本项目，实现完全一致的 Codex-飞书联动效果，可按照以下步骤进行：
 
 ### 第一步：开启本地通讯代理
 1. 连接本地 `~/.codex/app-server-control/app-server-control.sock`，或直接使用 `spawn('codex', ['app-server', '--listen', 'stdio://'])` 作为子进程管道。
