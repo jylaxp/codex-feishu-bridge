@@ -109,6 +109,33 @@
 
 ---
 
+## 💬 飞书机器人交互指令说明 (Feishu Bot Interactive Commands)
+
+在飞书聊天群或单聊中绑定会话后，直接发送日常对话即可与本地 Codex 交互推理。同时，网桥提供了丰富的快捷斜杠指令（Slash Commands）来辅助管理会话与状态：
+
+| 快捷指令 | 功能说明 | 示例 / 参数 |
+| :--- | :--- | :--- |
+| `/help` 或 `/h` | 获取所有支持的快捷指令和使用帮助卡片 | `/help` |
+| `/list` | 拉取本地 Codex 活跃会话列表，用于选择并绑定当前聊天 | `/list` |
+| `/new [名称]` 或 `/create [名称]` | 快速在本地启动一个新会话并自动与当前聊天绑定 | `/new 我的新项目` |
+| `/cwd [路径]` 或 `/workspace [路径]` | 查询或动态修改当前已绑定会话的工作目录 (CWD) | `/cwd /Users/workspace/project` |
+| `/cmd [命令]` 或 `/run [命令]` | 在本地 macOS 的当前工作目录下执行经过安全过滤允许的命令 | `/cmd git status` |
+| `/goal [目标内容]` | 为当前会话设定一个长期自主任务并自动开始执行 | `/goal 编写完整的单元测试` |
+| `/goal` | 查询当前会话的任务目标内容、执行进度与消耗 | `/goal` |
+| `/goal clear` 或 `/goal -c` | 清除当前会话的目标任务 | `/goal clear` |
+| `/usage` 或 `/quota` | 获取当前账户的短期 (5h) / 长期 (7d) 窗口用量统计及下次重置刷新时间 | `/usage` |
+| `/mcp` | 展示本地所有 MCP 服务及认证连接状态 | `/mcp` |
+| `/personality [friendly\|pragmatic\|none]` | 设置或查询回复风格（friendly: 亲和, pragmatic: 务实, none: 默认） | `/personality pragmatic` |
+| `/compact` 或 `/compress` | 压缩当前会话的上下文窗口（主动释放历史 Token） | `/compact` |
+| `/fork [新名称]` | 派生复制当前会话，并将当前飞书群聊自动绑定至新派生的会话 | `/fork 分支测试` |
+| `/plan [on\|off]` | 开启或关闭“计划模式”。开启后日常指令执行前必须由您审批计划 | `/plan on` |
+| `/status` | 综合展示面板（包含会话名称、ID、当前 CWD、个性设定、计划模式及目标详情） | `/status` |
+| `/skills` | 列出当前工作区下可用的所有技能（Skills） | `/skills` |
+| `@技能名称 [输入内容]` | 在日常对话中通过提及调用特定的技能服务 | `@excel-parser 读取数据.xlsx` |
+| `/delete` 或 `/archive` | 将当前聊天与 Codex 会话解绑，并在本地归档该会话 | `/delete` |
+
+---
+
 ## 🛠️ 第一部分：反向工程与底层通信原理 (Core Communication Channels)
 
 网桥与本地 Codex 主要通过以下两条底层数据通道交互：
