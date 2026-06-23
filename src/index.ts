@@ -1593,7 +1593,7 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
       } catch (e: any) {
         console.error('Failed to send help card:', e);
         const allowedCommands = getAllowedCommands();
-        await sendSimpleStatusCard(chatId, "💡 Codex 飞书助手指令指南 (备用)", "blue", `支持的指令：\n- /list: 绑定/列出会话\n- /new [名称] 或 /create: 新建并绑定新会话\n- /cwd [工作目录] 或 /workspace: 查询或切换工作目录\n- /cmd [命令] 或 /run: 执行本地终端命令 (当前支持: ${allowedCommands.join(', ')})\n- /goal [目标内容]: 设置并启动目标模式\n- /goal: 查看当前目标状态\n- /goal clear: 清除当前目标\n- /mcp: 查看 MCP 服务及认证状态\n- /personality [friendly|pragmatic|none]: 设置或查询回复风格\n- /compact: 压缩当前会话上下文\n- /fork [新名称]: 派生并绑定新会话\n- /plan: 开启或关闭计划模式 (Plan Mode)\n- /status: 展示当前会话综合状态\n- /skills: 列出当前工作区可用技能\n- 在日常对话中通过 @技能名称 提及并调用特定技能 (例如: @Ce Debug 为什么编译报错)\n- /usage 或 /quota: 获取当前账户的短期/长期窗口用量及重置时间\n- /delete 或 /archive: 归档并解绑会话\n- /help 或 /h: 获取此帮助卡片`);
+        await sendSimpleStatusCard(chatId, "💡 Codex 飞书助手指令指南 (备用)", "blue", `支持的指令：\n- /list: 绑定/列出会话\n- /ll: 绑定/列出会话 (表格 Table 视图)\n- /new [名称] 或 /create: 新建并绑定新会话\n- /cwd [工作目录] 或 /workspace: 查询或切换工作目录\n- /cmd [命令] 或 /run: 执行本地终端命令 (当前支持: ${allowedCommands.join(', ')})\n- /goal [目标内容]: 设置并启动目标模式\n- /goal: 查看当前目标状态\n- /goal clear: 清除当前目标\n- /mcp: 查看 MCP 服务及认证状态\n- /personality [friendly|pragmatic|none]: 设置或查询回复风格\n- /compact: 压缩当前会话上下文\n- /fork [新名称]: 派生并绑定新会话\n- /plan: 开启或关闭计划模式 (Plan Mode)\n- /status: 展示当前会话综合状态\n- /skills: 列出当前工作区可用技能\n- 在日常对话中通过 @技能名称 提及并调用特定技能 (例如: @Ce Debug 为什么编译报错)\n- /usage 或 /quota: 获取当前账户的短期/长期窗口用量及重置时间\n- /delete 或 /archive: 归档并解绑会话\n- /help 或 /h: 获取此帮助卡片`);
       }
       return;
     }
@@ -1613,6 +1613,26 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
         await sendCardKitMessage(chatId, cardId);
       } catch (e: any) {
         console.error('Failed to list threads or send card:', e);
+        await sendSimpleStatusCard(chatId, "🚫 获取会话列表失败", "red", `Failed to bind Codex session: ${e.message || e}`);
+      }
+      return;
+    }
+
+    // 1.2. Handle /ll command (Table View)
+    if (text.startsWith('/ll')) {
+      try {
+        console.log(`Fetching Codex threads for /ll (Table View)...`);
+        const threads = await adapter.listThreads();
+        if (threads.length === 0) {
+          await sendSimpleStatusCard(chatId, "⚠️ 未发现活跃会话", "orange", "No active Codex sessions found. Please open Codex Desktop client first.");
+          return;
+        }
+
+        const bindingCard = await createTableBindingCard(threads);
+        const cardId = await createCardKitCard(bindingCard);
+        await sendCardKitMessage(chatId, cardId);
+      } catch (e: any) {
+        console.error('Failed to list threads in table view or send card:', e);
         await sendSimpleStatusCard(chatId, "🚫 获取会话列表失败", "red", `Failed to bind Codex session: ${e.message || e}`);
       }
       return;
@@ -3622,6 +3642,185 @@ async function createBindingCard(threads: CodexThread[]) {
   };
 }
 
+async function createTableBindingCard(threads: CodexThread[]) {
+  const homeDir = os.homedir();
+
+  // Read Codex global state to get active projects and projectless threads
+  const globalStatePath = path.join(homeDir, '.codex', '.codex-global-state.json');
+  let savedWorkspaces: string[] = [];
+  let workspaceLabels: Record<string, string> = {};
+  let projectlessThreadIds: string[] = [];
+
+  try {
+    const stats = await fs.promises.stat(globalStatePath);
+    if (stats.isFile()) {
+      const globalStateStr = await fs.promises.readFile(globalStatePath, 'utf8');
+      const globalState = JSON.parse(globalStateStr);
+      savedWorkspaces = globalState['electron-saved-workspace-roots'] || globalState['project-order'] || [];
+      workspaceLabels = globalState['electron-workspace-root-labels'] || {};
+      projectlessThreadIds = globalState['projectless-thread-ids'] || [];
+    }
+  } catch (e: any) {
+    if (e.code !== 'ENOENT') {
+      console.error('Failed to parse .codex-global-state.json:', e);
+    }
+  }
+
+  // 1. Filter out threads belonging to deleted projects or deleted global threads (like 'q')
+  const filteredThreads = threads.filter(t => {
+    const isValidProjectless = t.id && projectlessThreadIds.includes(t.id);
+    if (isValidProjectless) {
+      return true;
+    }
+    const isSavedWorkspace = t.cwd && savedWorkspaces.some(w => {
+      const normW = path.normalize(w).toLowerCase();
+      const normC = path.normalize(t.cwd || "").toLowerCase();
+      return normC === normW || normC.startsWith(normW + path.sep);
+    });
+    return isSavedWorkspace;
+  });
+
+  // 2. Sort threads so global/no-project threads are at the top, followed by projects grouped by cwd
+  const getDirName = (t: any) => {
+    if (!t.cwd) return "";
+    const matchedWorkspace = savedWorkspaces.find(w => {
+      const normW = path.normalize(w).toLowerCase();
+      const normC = path.normalize(t.cwd || "").toLowerCase();
+      return normC === normW || normC.startsWith(normW + path.sep);
+    });
+    if (matchedWorkspace) {
+      return workspaceLabels[matchedWorkspace] || path.basename(matchedWorkspace);
+    }
+    return path.basename(t.cwd);
+  };
+
+  const sortedThreads = [...filteredThreads].sort((a, b) => {
+    const isGlobalA = a.id && projectlessThreadIds.includes(a.id);
+    const isGlobalB = b.id && projectlessThreadIds.includes(b.id);
+    if (isGlobalA && !isGlobalB) return -1;
+    if (!isGlobalA && isGlobalB) return 1;
+    if (isGlobalA && isGlobalB) {
+      const nameA = a.name || "";
+      const nameB = b.name || "";
+      return nameA.localeCompare(nameB, 'zh-CN', { numeric: true });
+    }
+    const dirA = getDirName(a);
+    const dirB = getDirName(b);
+    const dirComp = dirA.localeCompare(dirB, 'zh-CN', { numeric: true });
+    if (dirComp !== 0) {
+      return dirComp;
+    }
+    const nameA = a.name || "";
+    const nameB = b.name || "";
+    return nameA.localeCompare(nameB, 'zh-CN', { numeric: true });
+  });
+
+  // 3. Build Table columns and rows
+  const columns = [
+    {
+      name: "col_idx",
+      display_name: "序号",
+      data_type: "text"
+    },
+    {
+      name: "col_name",
+      display_name: "会话名称",
+      data_type: "text"
+    },
+    {
+      name: "col_project",
+      display_name: "所属项目",
+      data_type: "text"
+    }
+  ];
+
+  const rows = sortedThreads.map((t, index) => {
+    const isGlobal = t.id && projectlessThreadIds.includes(t.id);
+    let dirName = "🌐 全局会话";
+    if (!isGlobal && t.cwd) {
+      const matchedWorkspace = savedWorkspaces.find(w => {
+        const normW = path.normalize(w).toLowerCase();
+        const normC = path.normalize(t.cwd || "").toLowerCase();
+        return normC === normW || normC.startsWith(normW + path.sep);
+      });
+      if (matchedWorkspace) {
+        dirName = workspaceLabels[matchedWorkspace] || path.basename(matchedWorkspace);
+      } else {
+        dirName = path.basename(t.cwd);
+      }
+    }
+
+    return {
+      col_idx: String(index + 1),
+      col_name: t.name || "",
+      col_project: dirName
+    };
+  });
+
+  // 4. Map to dropdown options for selection
+  const selectOptions = sortedThreads.map((t, index) => {
+    const content = `#${index + 1} ➜ ${t.name}`;
+    const cleanContent = content.length > 100 ? content.substring(0, 97) + "..." : content;
+    return {
+      text: {
+        tag: "plain_text",
+        content: cleanContent
+      },
+      value: t.id
+    };
+  });
+
+  const elements: any[] = [
+    {
+      tag: "div",
+      text: {
+        tag: "lark_md",
+        content: "请查看下方的活跃会话列表，并在底部的下拉菜单中选择对应序号以绑定至当前聊天。"
+      }
+    },
+    {
+      tag: "table",
+      page_size: 10,
+      row_height: "low",
+      header_style: {
+        bold: true,
+        text_align: "left"
+      },
+      columns: columns,
+      rows: rows
+    },
+    {
+      tag: "select_static",
+      element_id: "bind_select_dropdown",
+      placeholder: {
+        tag: "plain_text",
+        content: "选择要绑定的会话序号..."
+      },
+      value: {
+        action: "bind_select_thread"
+      },
+      options: selectOptions.slice(0, 99)
+    }
+  ];
+
+  return {
+    schema: "2.0",
+    config: {
+      wide_screen_mode: true
+    },
+    header: {
+      template: "indigo",
+      title: {
+        tag: "plain_text",
+        content: "📂 Codex 绑定会话 (Table 视图)"
+      }
+    },
+    body: {
+      elements: elements
+    }
+  };
+}
+
 function createGoalCard(goal: any) {
   if (!goal) {
     return {
@@ -3979,7 +4178,7 @@ function createHelpCard() {
           tag: "div",
           text: {
             tag: "lark_md",
-            content: "🔍 **会话绑定**\n- `'/list'`\n  拉取本地 Codex 活跃会话列表，提供下拉菜单供当前聊天选择并绑定。"
+            content: "🔍 **会话绑定**\n- `'/list'`\n  拉取本地 Codex 活跃会话列表，提供下拉菜单选择绑定。\n- `'/ll'`\n  拉取本地 Codex 活跃会话列表（Table 表格视图，完美防止会话名在客户端被截断）。"
           }
         },
         {
