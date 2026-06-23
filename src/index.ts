@@ -4115,8 +4115,11 @@ function updateEnvFile(appId: string, appSecret: string) {
 }
 
 async function ensureCredentials(): Promise<{ appId: string; appSecret: string }> {
-  const curAppId = process.env.LARK_APP_ID || process.env.APP_ID;
-  const curAppSecret = process.env.LARK_APP_SECRET || process.env.APP_SECRET;
+  const rawAppId = process.env.LARK_APP_ID || process.env.APP_ID || '';
+  const rawAppSecret = process.env.LARK_APP_SECRET || process.env.APP_SECRET || '';
+
+  const curAppId = rawAppId.trim();
+  const curAppSecret = rawAppSecret.trim();
 
   if (
     curAppId && 
@@ -4126,6 +4129,12 @@ async function ensureCredentials(): Promise<{ appId: string; appSecret: string }
   ) {
     return { appId: curAppId, appSecret: curAppSecret };
   }
+
+  // Clear placeholders/empty values from process.env to prevent conflicts in Lark.registerApp
+  delete process.env.LARK_APP_ID;
+  delete process.env.APP_ID;
+  delete process.env.LARK_APP_SECRET;
+  delete process.env.APP_SECRET;
 
   console.log('\n==================================================================');
   console.log('⚠️  LARK_APP_ID and LARK_APP_SECRET are not configured.');
