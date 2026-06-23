@@ -735,12 +735,14 @@ function getStatsFooterText(turn: ActiveTurn): string {
     parts.push(`API ${turn.stats.apiCalls}`);
   }
 
+  const baseFooter = parts.join(" · ");
   if (turn.rateLimitStr) {
-    parts.push(`用量: ${turn.rateLimitStr}`);
+    return `${baseFooter}\n窗口用量: ${turn.rateLimitStr}`;
   }
 
-  return parts.join(" · ");
+  return baseFooter;
 }
+
 
 async function fetchRateLimitsForTurn(turn: ActiveTurn): Promise<void> {
   try {
@@ -2682,7 +2684,7 @@ function parseCodexTurnToActiveTurn(chatId: string, threadId: string, turn: any)
     dirty: false,
     startedAt: turn.startedAt ? turn.startedAt * 1000 : undefined,
     completedAt: turn.completedAt ? turn.completedAt * 1000 : undefined,
-    stats: {},
+    stats: extractStatsFromParams(turn),
     sequence: 1,
     isHistory: true,
     skillName: skillName || undefined,
@@ -2730,6 +2732,7 @@ async function checkAndPushHistory() {
         if (result?.model) {
           activeTurn.stats.model = result.model;
         }
+        await fetchRateLimitsForTurn(activeTurn);
         const finalLayout = createCardKitFinalLayout(activeTurn);
         
         // Send to Feishu
