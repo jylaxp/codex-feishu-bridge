@@ -3503,16 +3503,46 @@ async function createBindingCard(threads: CodexThread[]) {
   });
 
   // 2. Sort threads so global/no-project threads are at the top, followed by projects grouped by cwd
+  const getDirName = (t: any) => {
+    if (!t.cwd) return "";
+    const matchedWorkspace = savedWorkspaces.find(w => {
+      const normW = path.normalize(w).toLowerCase();
+      const normC = path.normalize(t.cwd || "").toLowerCase();
+      return normC === normW || normC.startsWith(normW + path.sep);
+    });
+    if (matchedWorkspace) {
+      return workspaceLabels[matchedWorkspace] || path.basename(matchedWorkspace);
+    }
+    return path.basename(t.cwd);
+  };
+
   const sortedThreads = [...filteredThreads].sort((a, b) => {
     const isGlobalA = a.id && projectlessThreadIds.includes(a.id);
     const isGlobalB = b.id && projectlessThreadIds.includes(b.id);
     
+    // 1. Global sessions always at the top
     if (isGlobalA && !isGlobalB) return -1;
     if (!isGlobalA && isGlobalB) return 1;
     
-    const cwdA = a.cwd || "";
-    const cwdB = b.cwd || "";
-    return cwdA.localeCompare(cwdB);
+    // 2. If both are global, sort by session name ascending
+    if (isGlobalA && isGlobalB) {
+      const nameA = a.name || "";
+      const nameB = b.name || "";
+      return nameA.localeCompare(nameB, 'zh-CN', { numeric: true });
+    }
+    
+    // 3. For project sessions, first sort by project directory name (dirName)
+    const dirA = getDirName(a);
+    const dirB = getDirName(b);
+    const dirComp = dirA.localeCompare(dirB, 'zh-CN', { numeric: true });
+    if (dirComp !== 0) {
+      return dirComp;
+    }
+    
+    // 4. If directory name is the same, sort by session name ascending
+    const nameA = a.name || "";
+    const nameB = b.name || "";
+    return nameA.localeCompare(nameB, 'zh-CN', { numeric: true });
   });
 
   // 3. Map to dropdown options
