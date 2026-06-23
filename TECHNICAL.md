@@ -56,15 +56,20 @@ this.ws = new WebSocket('ws://codex-app-server/', {
 ```
 
 ##### 常用 RPC 方法列表
+* **`initialize`**：连接初始化握手，用于声明客户端标识（如 `feishu-bridge`）以及所需的能力。
 * **`thread/list`**：检索未归档的活跃会话。
 * **`thread/start`**：创建新的 Codex 会话。
+* **`thread/resume`**：断线重连或重新挂载活跃会话状态，激活流式事件订阅。
 * **`thread/name/set`**：设置会话名。
 * **`thread/fork`**：基于已有会话派生新分支。
 * **`thread/archive`**：归档解绑会话。
 * **`thread/compact/start`**：手动整理并压缩当前上下文窗口。
 * **`thread/goal/set`** / **`thread/goal/clear`** / **`thread/goal/get`**：长期任务目标模式的操作接口。
-* **`skills/list`**：检索当前工作区下所有可用技能的声明。
+* **`turn/start`**：在指定会话（Thread）中启动一次执行任务（Turn），传入 Prompt、CWD 及计划协作模式。
 * **`turn/interrupt`**：中断或取消当前正在运行的任务 (Active Turn)。
+* **`account/rateLimits/read`**：查询账户使用额度和配额消耗情况（包含短期/长期窗口已用量及重置时间）。
+* **`skills/list`**：检索当前工作区下所有可用技能的声明。
+* **`mcpServerStatus/list`**：检索当前会话绑定的 MCP（Model Context Protocol）服务器列表、启用状态及认证状态。
 
 ---
 
