@@ -59,6 +59,7 @@ function showHelp() {
   start      在后台启动网桥服务 (Detached 守护进程模式)
   stop       停止后台运行的网桥服务
   status     查看网桥服务当前运行状态
+  rebind     重置飞书应用凭证以重新扫码绑定新机器人
   help       展示此帮助指南
   `);
 }
@@ -179,6 +180,36 @@ switch (command) {
       console.log(`- 错误日志: ~/.codex-feishu-bridge/logs/bridge_stderr.log`);
     } else {
       console.log('🔴 网桥服务当前未运行 (PID 对应的进程已退出)。');
+    }
+    break;
+  }
+
+  case 'rebind': {
+    const envPath = path.join(configDir, '.env');
+    if (!fs.existsSync(envPath)) {
+      console.log(`⚠️ .env 配置文件不存在，无需重置。您可以直接运行 codex-feishu-bridge run 启动绑定。`);
+      break;
+    }
+
+    try {
+      let content = fs.readFileSync(envPath, 'utf8');
+      
+      const resetEnvVar = (envStr: string, key: string, placeholder: string) => {
+        const regex = new RegExp(`^${key}=.*$`, 'm');
+        if (regex.test(envStr)) {
+          return envStr.replace(regex, `${key}=${placeholder}`);
+        }
+        return envStr + `\n${key}=${placeholder}`;
+      };
+
+      content = resetEnvVar(content, 'LARK_APP_ID', 'YOUR_FEISHU_APP_ID');
+      content = resetEnvVar(content, 'LARK_APP_SECRET', 'YOUR_FEISHU_APP_SECRET');
+
+      fs.writeFileSync(envPath, content, 'utf8');
+      console.log(`✅ 成功重置飞书应用凭证！已保留其他自定义配置。`);
+      console.log(`👉 现在您可以运行 codex-feishu-bridge run 重新扫码绑定新机器人。`);
+    } catch (e: any) {
+      console.error(`❌ 重置飞书应用凭证失败:`, e.message || e);
     }
     break;
   }

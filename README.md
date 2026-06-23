@@ -86,6 +86,12 @@ Codex-飞书网桥 (Codex-Feishu Bridge) 是一个本地桥接程序，用于将
   codex-feishu-bridge run
   ```
 
+* **重新绑定飞书应用凭证 (Rebind Credentials)**：
+  ```bash
+  codex-feishu-bridge rebind
+  ```
+  该命令会安全重置 `~/.codex-feishu-bridge/.env` 中的 `LARK_APP_ID` 和 `LARK_APP_SECRET` 凭证为初始状态，并保留您在配置文件中自定义的其他任何环境变量。重置后，下次启动网桥时会再次展示自动注册机器人的授权二维码。
+
 ---
 
 ## ⚙️ 配置文件与存储说明 (Configuration & Storage Guide)
