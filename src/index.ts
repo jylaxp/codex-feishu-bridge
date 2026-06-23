@@ -6,7 +6,7 @@ import * as qrcode from 'qrcode-terminal';
 import * as crypto from 'crypto';
 import * as os from 'os';
 import { exec, execFile } from 'child_process';
-import { LocalAppServerAdapter, CodexThread, redactSecrets, get24HourTimeStr } from './adapter';
+import { LocalAppServerAdapter, CodexThread, redactSecrets, get24HourTimeStr, formatDateTime24h } from './adapter';
 
 // Ensure the config directory and .env file exist before loading
 const configDir = path.join(os.homedir(), '.codex-feishu-bridge');
@@ -1200,11 +1200,11 @@ function createApprovalDecidedCard(
 
   let statusContent = "";
   if (isAccepted) {
-    statusContent = `✅ **审批已批准** (已于 **${new Date().toLocaleString()}** 被批准执行一次)`;
+    statusContent = `✅ **审批已批准** (已于 **${formatDateTime24h(new Date())}** 被批准执行一次)`;
   } else if (isAlways) {
-    statusContent = `🛡️ **已总是批准该操作** (已于 **${new Date().toLocaleString()}** 批准在本次会话中不再询问)`;
+    statusContent = `🛡️ **已总是批准该操作** (已于 **${formatDateTime24h(new Date())}** 批准在本次会话中不再询问)`;
   } else {
-    statusContent = `❌ **审批已拒绝** (已于 **${new Date().toLocaleString()}** 被拒绝执行。Codex 将停止该步骤的执行。)`;
+    statusContent = `❌ **审批已拒绝** (已于 **${formatDateTime24h(new Date())}** 被拒绝执行。Codex 将停止该步骤的执行。)`;
   }
 
   const elements: any[] = [
@@ -1927,14 +1927,14 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
           const used = codexLimits.primary.usedPercent ?? 0;
           const windowHours = Math.round(codexLimits.primary.windowDurationMins / 60);
           const resetTime = new Date(codexLimits.primary.resetsAt * 1000);
-          msg += `**短期窗口 (${windowHours}h) 使用量**:\n• 已用: ${used}%\n• 重置时间: ${resetTime.toLocaleString()}\n\n`;
+          msg += `**短期窗口 (${windowHours}h) 使用量**:\n• 已用: ${used}%\n• 重置时间: ${formatDateTime24h(resetTime)}\n\n`;
         }
 
         if (codexLimits.secondary) {
           const used = codexLimits.secondary.usedPercent ?? 0;
           const windowHours = Math.round(codexLimits.secondary.windowDurationMins / 60);
           const resetTime = new Date(codexLimits.secondary.resetsAt * 1000);
-          msg += `**长期窗口 (${windowHours}h) 使用量**:\n• 已用: ${used}%\n• 重置时间: ${resetTime.toLocaleString()}\n\n`;
+          msg += `**长期窗口 (${windowHours}h) 使用量**:\n• 已用: ${used}%\n• 重置时间: ${formatDateTime24h(resetTime)}\n\n`;
         }
         
         if (codexLimits.credits && codexLimits.credits.hasCredits) {
@@ -3639,8 +3639,8 @@ function createGoalCard(goal: any) {
     headerTemplate = "red";
   }
 
-  const createdTime = goal.createdAt ? new Date(goal.createdAt * 1000).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) : '未知';
-  const updatedTime = goal.updatedAt ? new Date(goal.updatedAt * 1000).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) : '未知';
+  const createdTime = goal.createdAt ? formatDateTime24h(new Date(goal.createdAt * 1000)) : '未知';
+  const updatedTime = goal.updatedAt ? formatDateTime24h(new Date(goal.updatedAt * 1000)) : '未知';
 
   return {
     schema: "2.0",
