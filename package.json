@@ -7,7 +7,7 @@
     "codex-feishu-bridge": "./dist/cli.js"
   },
   "scripts": {
-    "prepare": "npm run build",
+    "prepare": "(git rev-parse HEAD > build-commit.txt 2>/dev/null || echo unknown > build-commit.txt) && npm run build",
     "build": "tsc",
     "start": "ts-node src/index.ts",
     "test": "ts-node test/test.ts"

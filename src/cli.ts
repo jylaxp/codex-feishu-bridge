@@ -231,9 +231,31 @@ switch (command) {
   }
 
   case 'update': {
-    console.log('🔄 正在从 GitHub 远程仓库拉取最新版本并更新...');
+    console.log('🔄 正在检查 GitHub 上的最新版本...');
     try {
       const { execSync } = require('child_process');
+      const fs = require('fs');
+      const path = require('path');
+      
+      let localCommit = 'unknown';
+      try {
+        // When running globally, __dirname is .../codex-feishu-bridge/dist
+        localCommit = fs.readFileSync(path.join(__dirname, '../build-commit.txt'), 'utf8').trim();
+      } catch (e) {}
+
+      // Get remote commit hash for main branch
+      const remoteCommitOutput = execSync('git ls-remote https://github.com/jylaxp/codex-feishu-bridge.git HEAD', { stdio: 'pipe' }).toString();
+      const remoteCommit = remoteCommitOutput.split('\t')[0].trim();
+
+      const force = process.argv.includes('--force') || process.argv.includes('-f');
+
+      if (localCommit === remoteCommit && remoteCommit !== 'unknown' && !force) {
+        console.log('✅ 当前已是最新版本，无需更新！');
+        console.log('（如果你想强制重新拉取编译，请添加 --force 参数：codex-feishu-bridge update --force）');
+        process.exit(0);
+      }
+
+      console.log('🔄 发现新版本（或强制更新），正在从 GitHub 远程仓库拉取并编译...');
       // Execute npm install from github repo
       execSync('npm install -g git+https://github.com/jylaxp/codex-feishu-bridge.git', { stdio: 'inherit' });
       
