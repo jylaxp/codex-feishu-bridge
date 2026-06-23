@@ -2,7 +2,12 @@ node_modules/
 dist/
 .env
 sessions.json
+approvals.json
+pushed_turns.json
+params_debug*.json
+profile_result.txt
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .DS_Store
+
