@@ -4118,7 +4118,12 @@ async function ensureCredentials(): Promise<{ appId: string; appSecret: string }
   const curAppId = process.env.LARK_APP_ID || process.env.APP_ID;
   const curAppSecret = process.env.LARK_APP_SECRET || process.env.APP_SECRET;
 
-  if (curAppId && curAppSecret) {
+  if (
+    curAppId && 
+    curAppSecret && 
+    curAppId !== 'YOUR_FEISHU_APP_ID' && 
+    curAppSecret !== 'YOUR_FEISHU_APP_SECRET'
+  ) {
     return { appId: curAppId, appSecret: curAppSecret };
   }
 
