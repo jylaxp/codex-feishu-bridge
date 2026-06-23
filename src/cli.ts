@@ -57,6 +57,7 @@ function showHelp() {
   init       在当前工作目录初始化默认 .env 配置文件
   run        在前台启动网桥服务 (控制台流输出，适合调试)
   start      在后台启动网桥服务 (Detached 守护进程模式)
+  restart    重启后台网桥服务
   stop       停止后台运行的网桥服务
   status     查看网桥服务当前运行状态
   rebind     重置飞书应用凭证以重新扫码绑定新机器人
@@ -163,6 +164,50 @@ switch (command) {
     } catch (e: any) {
       console.error(`❌ 停止服务失败: ${e.message || e}`);
     }
+    break;
+  }
+
+  case 'restart': {
+    console.log('🔄 正在重启网桥服务...');
+    // 1. Stop if running
+    if (fs.existsSync(pidFile)) {
+      const pid = parseInt(fs.readFileSync(pidFile, 'utf8').trim(), 10);
+      if (pid && isPidRunning(pid)) {
+        try {
+          process.kill(pid, 'SIGTERM');
+          let killed = false;
+          for (let i = 0; i < 10; i++) {
+            if (!isPidRunning(pid)) { killed = true; break; }
+            const start = Date.now(); while (Date.now() - start < 100) {}
+          }
+          if (!killed) process.kill(pid, 'SIGKILL');
+          fs.unlinkSync(pidFile);
+        } catch (e) {}
+      }
+    }
+    
+    // 2. Start
+    const indexPath = path.resolve(__dirname, 'index.js');
+    if (!fs.existsSync(indexPath)) {
+      console.error(`❌ 错误：找不到网桥主程序 "${indexPath}"，请确认项目是否已运行 npm run build 进行编译。`);
+      process.exit(1);
+    }
+
+    const out = fs.openSync(outLogFile, 'a');
+    const err = fs.openSync(errLogFile, 'a');
+    const child = spawn(process.execPath, [indexPath], {
+      cwd: process.cwd(),
+      detached: true,
+      stdio: ['ignore', out, err]
+    });
+
+    if (!child.pid) {
+      console.error('❌ 启动后台网桥进程失败：无法获取进程 PID。');
+      process.exit(1);
+    }
+    child.unref();
+    fs.writeFileSync(pidFile, child.pid.toString(), 'utf8');
+    console.log(`✅ 成功在后台重启网桥服务 (PID: ${child.pid})。`);
     break;
   }
 
