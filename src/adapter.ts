@@ -47,6 +47,7 @@ export interface CodexThreadAdapter {
     workspaceKind?: 'project' | 'projectless';
     input?: any[];
     collaborationMode?: string | null;
+    model?: string | null;
     personality?: string | null;
   }): Promise<string>;
   cleanupThreadState?(threadId: string): void;
@@ -699,6 +700,7 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
     workspaceKind?: 'project' | 'projectless';
     input?: any[];
     collaborationMode?: string | null;
+    model?: string | null;
     personality?: string | null;
   }): Promise<string | null> {
     if (process.env.NODE_ENV === 'test') {
@@ -728,7 +730,7 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
       approvalPolicy: 'on-request',
       approvalsReviewer: 'user',
       permissions: null,
-      model: null,
+      model: options.model || null,
       serviceTier: null,
       effort: null,
       summary: 'none',
@@ -776,6 +778,7 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
     workspaceKind?: 'project' | 'projectless';
     input?: any[];
     collaborationMode?: string | null;
+    model?: string | null;
     personality?: string | null;
   }): Promise<string> {
     // Proactively resume/load the thread first on WS to ensure we subscribe to its event stream

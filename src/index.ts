@@ -117,6 +117,7 @@ interface SessionDb {
     lastPushedTurnId?: string; // Add this field
     personality?: 'friendly' | 'pragmatic' | 'none';
     planMode?: boolean;
+    model?: string;
     activeSkill?: { name: string; path: string } | null;
     lastSkillsCardMessageId?: string | null;
   };
@@ -1721,6 +1722,7 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
                 cwd: bound.cwd || process.env.CODEX_CWD || process.cwd() || os.homedir(),
                 prompt: `开始执行目标：${commandArg}`,
                 collaborationMode: bound.planMode ? "plan" : null,
+                model: bound.model || null,
                 personality: bound.personality || null
               });
 
@@ -1774,6 +1776,77 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
       } catch (e: any) {
         console.error('Failed to execute mcp command:', e);
         await sendSimpleStatusCard(chatId, "🔌 获取 MCP 状态失败", "red", `${e.message || e}`);
+      }
+      return;
+    }
+
+    // 1.4.1.5 Handle /model command
+    if (text.startsWith('/model')) {
+      const bound = sessionDb[chatId];
+      if (!bound) {
+        await sendSimpleStatusCard(chatId, "⚠️ 未绑定会话", "orange", "当前飞书群聊未绑定 any Codex 会话，请先使用 `/list` 选择一个会话，或者使用 `/new` 指令创建一个会话。");
+        return;
+      }
+
+      const parts = text.split(/\s+/);
+      const modelName = parts.slice(1).join(" ").trim();
+
+      if (!modelName) {
+        // Show interactive list of models
+        const modelsCachePath = path.join(os.homedir(), '.codex', 'models_cache.json');
+        if (fs.existsSync(modelsCachePath)) {
+          try {
+            const cache = JSON.parse(fs.readFileSync(modelsCachePath, 'utf8'));
+            if (cache.models && Array.isArray(cache.models)) {
+              const elements: any[] = [];
+              elements.push({
+                tag: "markdown",
+                content: "请从以下列表中选择一个模型，该模型将应用于当前会话："
+              });
+              
+              const options = cache.models.map((m: any) => ({
+                text: { tag: "plain_text", content: `${m.display_name} (${m.slug})` },
+                value: m.slug
+              }));
+
+              elements.push({
+                tag: "select_static",
+                placeholder: {
+                  tag: "plain_text",
+                  content: "点击下拉选择模型..."
+                },
+                options: options,
+                value: {
+                  action: "set_model"
+                }
+              });
+
+              const card = {
+                schema: "2.0",
+                config: { wide_screen_mode: true },
+                header: {
+                  template: "blue",
+                  title: { tag: "plain_text", content: "🤖 选择大模型" }
+                },
+                body: { elements }
+              };
+              await larkClient.im.message.create({
+                params: { receive_id_type: 'chat_id' },
+                data: { receive_id: chatId, msg_type: 'interactive', content: JSON.stringify(card) }
+              });
+            } else {
+              await sendSimpleStatusCard(chatId, "⚠️ 读取失败", "orange", "本地 models_cache.json 格式不符合预期，请手动使用 `/model <名称>` 指定。");
+            }
+          } catch (e: any) {
+            await sendSimpleStatusCard(chatId, "⚠️ 读取失败", "orange", `解析 models_cache.json 失败: ${e.message}\n请手动使用 \`/model <名称>\` 指定。`);
+          }
+        } else {
+          await sendSimpleStatusCard(chatId, "⚠️ 缓存未找到", "orange", "未找到 Codex 的模型缓存文件。请手动使用 `/model <名称>` 指定。");
+        }
+      } else {
+        bound.model = modelName;
+        saveSessions(sessionDb);
+        await sendSimpleStatusCard(chatId, "🤖 模型设定", "green", `当前会话使用的模型已成功设定为：**${modelName}**。\n接下来发送给 Codex 的消息将应用该模型。`);
       }
       return;
     }
@@ -2349,6 +2422,7 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
             workspaceKind: isProjectless ? 'projectless' : 'project',
             input: turnInput,
             collaborationMode: bound.planMode ? "plan" : null,
+            model: bound.model || null,
             personality: bound.personality || null
           });
 
@@ -2503,6 +2577,23 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
           console.error('Failed to update skills card with selected skill:', e);
         }
       }
+      return;
+    }
+    
+    // 1.5 Handle set_model
+    if (action.action_id === 'set_model' || actionValue.action === 'set_model') {
+      const selectedModel = action.option || actionValue.model;
+      if (!selectedModel) return;
+
+      const bound = sessionDb[chatId];
+      if (!bound) {
+        await sendSimpleStatusCard(chatId, "⚠️ 未绑定会话", "orange", "当前群聊未绑定 Codex 会话。");
+        return;
+      }
+      bound.model = selectedModel;
+      saveSessions(sessionDb);
+
+      await sendSimpleStatusCard(chatId, "🤖 模型设定", "green", `当前会话使用的模型已成功设定为：**${selectedModel}**。\n接下来发送给 Codex 的消息将应用该模型。`);
       return;
     }
     
