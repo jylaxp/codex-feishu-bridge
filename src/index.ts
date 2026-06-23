@@ -934,7 +934,10 @@ async function processMarkdownImages(md: string): Promise<string> {
       filePath = filePath.substring(7);
     }
 
-    if (fs.existsSync(filePath)) {
+    const validExts = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg'];
+    const isImageExt = validExts.some(ext => filePath.toLowerCase().endsWith(ext));
+
+    if (isImageExt && fs.existsSync(filePath)) {
       if (!imageUploadCache[filePath]) {
         imageUploadCache[filePath] = (async () => {
           try {
