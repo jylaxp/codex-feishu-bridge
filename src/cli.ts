@@ -231,31 +231,44 @@ switch (command) {
   }
 
   case 'update': {
-    console.log('🔄 正在检查 GitHub 上的最新版本...');
+    console.log('🔄 正在检查远程 Release 版本号...');
     try {
       const { execSync } = require('child_process');
       const fs = require('fs');
       const path = require('path');
       
-      let localCommit = 'unknown';
+      let localVersion = 'unknown';
       try {
-        // When running globally, __dirname is .../codex-feishu-bridge/dist
-        localCommit = fs.readFileSync(path.join(__dirname, '../build-commit.txt'), 'utf8').trim();
+        const localPkg = JSON.parse(fs.readFileSync(path.join(__dirname, '../package.json'), 'utf8'));
+        localVersion = localPkg.version;
       } catch (e) {}
 
-      // Get remote commit hash for main branch
-      const remoteCommitOutput = execSync('git ls-remote https://github.com/jylaxp/codex-feishu-bridge.git HEAD', { stdio: 'pipe' }).toString();
-      const remoteCommit = remoteCommitOutput.split('\t')[0].trim();
+      const remotePkgStr = execSync('curl -s https://raw.githubusercontent.com/jylaxp/codex-feishu-bridge/main/package.json', { encoding: 'utf8' });
+      const remotePkg = JSON.parse(remotePkgStr);
+      const remoteVersion = remotePkg.version;
 
       const force = process.argv.includes('--force') || process.argv.includes('-f');
 
-      if (localCommit === remoteCommit && remoteCommit !== 'unknown' && !force) {
-        console.log('✅ 当前已是最新版本，无需更新！');
+      const isNewer = (remote: string, local: string) => {
+        if (remote === 'unknown' || local === 'unknown') return true;
+        const rParts = remote.split('.').map(Number);
+        const lParts = local.split('.').map(Number);
+        for (let i = 0; i < Math.max(rParts.length, lParts.length); i++) {
+          const r = rParts[i] || 0;
+          const l = lParts[i] || 0;
+          if (r > l) return true;
+          if (r < l) return false;
+        }
+        return false;
+      };
+
+      if (!isNewer(remoteVersion, localVersion) && !force) {
+        console.log(`✅ 当前版本 (v${localVersion}) 已是最新，无需更新！`);
         console.log('（如果你想强制重新拉取编译，请添加 --force 参数：codex-feishu-bridge update --force）');
         process.exit(0);
       }
 
-      console.log('🔄 发现新版本（或强制更新），正在从 GitHub 远程仓库拉取并编译...');
+      console.log(`🔄 发现新版本 (本地 v${localVersion} -> 远程 v${remoteVersion})，正在拉取并编译...`);
       // Execute npm install from github repo
       execSync('npm install -g git+https://github.com/jylaxp/codex-feishu-bridge.git', { stdio: 'inherit' });
       
