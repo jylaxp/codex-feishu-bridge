@@ -40,27 +40,36 @@ Codex-飞书网桥 (Codex-Feishu Bridge) 是一个本地桥接程序，用于将
 
 网桥提供了**免手动创建应用、免手动填秘钥**的极致体验，支持直接使用**飞书 App 扫码自动注册机器人**。
 
-* **扫码自动配置（强烈推荐）**：
-  1. 在空白目录中直接执行初始化：
-     ```bash
-     codex-feishu-bridge init
-     ```
-  2. **直接在前台启动网桥**以显示二维码：
+> [!TIP]
+> **全自动模式**：在全新的部署环境中，您可以**直接执行启动命令 `codex-feishu-bridge run`**。网桥会自动检测并同步在用户目录中生成所需的配置文件，并立即渲染出扫码注册二维码。您并不强制需要先运行 `init` 命令。
+
+* **扫码自动配置一站式启动（最方便）**：
+  1. 直接在前台启动网桥以触发自动初始化和渲染二维码：
      ```bash
      codex-feishu-bridge run
      ```
-  3. 控制台检测到配置为空，会自动调用飞书 API 并在终端渲染出一个**授权二维码**：
+  2. 控制台检测到配置为空或为占位符时，会自动调用飞书 API 并在终端渲染出一个**授权二维码**：
      - 打开您手机上的飞书 App，扫描终端里的二维码并确认授权。
      - 授权通过后，系统会**自动在您的企业中创建对应的自建应用、开通机器人权限并订阅 WebSocket 长连接事件**。
-     - 生成的 `LARK_APP_ID` 与 `LARK_APP_SECRET` 会**自动写入 `~/.codex-feishu-bridge/.env` 配置文件中**。
-     - 终端显示 `Feishu WebSocket Client started` 即代表注册及连接成功。您可以按 `Ctrl + C` 终止前台进程，然后进入第三步使用后台常驻模式。
+     - 生成的正式 `LARK_APP_ID` 与 `LARK_APP_SECRET` 会**自动写入并覆盖 `~/.codex-feishu-bridge/.env` 配置文件**。
+     - 终端显示 `Feishu WebSocket Client started` 即代表注册及连接成功。您可以按 `Ctrl + C` 终止前台进程，然后使用后台常驻模式。
 
-* **手动配置（备用）**：
-  如果您想使用已有的自建应用，可以直接编辑生成的 `~/.codex-feishu-bridge/.env` 配置文件，填入您的飞书凭证：
-  ```env
-  LARK_APP_ID=YOUR_FEISHU_APP_ID
-  LARK_APP_SECRET=YOUR_FEISHU_APP_SECRET
-  ```
+* **使用已有机器人（手动配置）**：
+  如果您想使用已有的自建应用，而不是注册新应用：
+  1. 运行初始化命令生成空白配置文件模板：
+     ```bash
+     codex-feishu-bridge init
+     ```
+  2. 编辑生成的 `~/.codex-feishu-bridge/.env` 配置文件，填入您已有的飞书凭证和白名单限制：
+     ```env
+     LARK_APP_ID=您的飞书应用AppID
+     LARK_APP_SECRET=您的飞书应用AppSecret
+     ALLOWED_APPROVERS=批准者OpenID列表（以逗号分隔）
+     ```
+  3. 配置完成后，直接运行后台启动命令即可：
+     ```bash
+     codex-feishu-bridge start
+     ```
 
 ### 3. 运行网桥服务
 * **后台常驻启动 (守护进程模式)**：
