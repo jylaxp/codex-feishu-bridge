@@ -744,6 +744,31 @@ function getStatsFooterText(turn: ActiveTurn): string {
 }
 
 
+function formatResetTime(timestampSec?: number): string {
+  if (!timestampSec) return '';
+  const date = new Date(timestampSec * 1000);
+  const now = new Date();
+  
+  const isToday = date.toDateString() === now.toDateString();
+  
+  const tomorrow = new Date(now);
+  tomorrow.setDate(now.getDate() + 1);
+  const isTomorrow = date.toDateString() === tomorrow.toDateString();
+  
+  const hh = String(date.getHours()).padStart(2, '0');
+  const mm = String(date.getMinutes()).padStart(2, '0');
+  
+  if (isToday) {
+    return `${hh}:${mm}`;
+  } else if (isTomorrow) {
+    return `明天 ${hh}:${mm}`;
+  } else {
+    const month = date.getMonth() + 1;
+    const day = date.getDate();
+    return `${month}月${day}日`;
+  }
+}
+
 async function fetchRateLimitsForTurn(turn: ActiveTurn): Promise<void> {
   try {
     const res = await adapter.request('account/rateLimits/read', {});
@@ -751,10 +776,20 @@ async function fetchRateLimitsForTurn(turn: ActiveTurn): Promise<void> {
     if (codexLimits) {
       let limitStrs = [];
       if (codexLimits.primary) {
-        limitStrs.push(`5h: ${codexLimits.primary.usedPercent ?? 0}%`);
+        let str = `5h: ${codexLimits.primary.usedPercent ?? 0}%`;
+        const resetStr = formatResetTime(codexLimits.primary.resetsAt);
+        if (resetStr) {
+          str += ` (${resetStr})`;
+        }
+        limitStrs.push(str);
       }
       if (codexLimits.secondary) {
-        limitStrs.push(`7d: ${codexLimits.secondary.usedPercent ?? 0}%`);
+        let str = `7d: ${codexLimits.secondary.usedPercent ?? 0}%`;
+        const resetStr = formatResetTime(codexLimits.secondary.resetsAt);
+        if (resetStr) {
+          str += ` (${resetStr})`;
+        }
+        limitStrs.push(str);
       }
       if (codexLimits.credits && codexLimits.credits.hasCredits) {
         limitStrs.push(`点数: ${codexLimits.credits.balance}`);
