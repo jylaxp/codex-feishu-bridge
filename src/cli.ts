@@ -4,12 +4,16 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-const logDir = path.join(os.homedir(), '.codex');
-const pidFile = path.join(logDir, 'bridge.pid');
+const configDir = path.join(os.homedir(), '.codex-feishu-bridge');
+const logDir = path.join(configDir, 'logs');
+const pidFile = path.join(configDir, 'bridge.pid');
 const outLogFile = path.join(logDir, 'bridge_stdout.log');
 const errLogFile = path.join(logDir, 'bridge_stderr.log');
 
 function ensureLogDir() {
+  if (!fs.existsSync(configDir)) {
+    fs.mkdirSync(configDir, { recursive: true });
+  }
   if (!fs.existsSync(logDir)) {
     fs.mkdirSync(logDir, { recursive: true });
   }
@@ -44,20 +48,27 @@ const command = process.argv[2];
 
 switch (command) {
   case 'init': {
-    const envPath = path.join(process.cwd(), '.env');
+    const envPath = path.join(configDir, '.env');
     if (fs.existsSync(envPath)) {
-      console.log('⚠️ .env 配置文件在当前工作目录已存在，跳过初始化。');
+      console.log(`⚠️ .env 配置文件在 ${configDir} 已存在，跳过初始化。`);
     } else {
-      const defaultEnv = `APP_ID=YOUR_FEISHU_APP_ID
-APP_SECRET=YOUR_FEISHU_APP_SECRET
-ALLOWED_SHELL_COMMANDS=ls,git,pwd,cd,node,npm,yarn,cat,grep,find
-CODEX_CWD=
+      ensureLogDir();
+      const defaultEnv = `LARK_APP_ID=YOUR_FEISHU_APP_ID
+LARK_APP_SECRET=YOUR_FEISHU_APP_SECRET
+ALLOWED_APPROVERS=
 
-# 若无法在 PATH 中找到 codex，可在此指定 Codex 桌面端内置的可执行程序路径
-# CODEX_BIN=/Applications/Codex.app/Contents/Resources/codex
+# Rate limits querying interval in milliseconds (default: 300000 ms / 5 minutes)
+RATE_LIMIT_QUERY_INTERVAL_MS=300000
+
+# Path to the Codex CLI binary on macOS (using Desktop App bundled resources version)
+CODEX_BIN=/Applications/Codex.app/Contents/Resources/codex
+
+# Switch to output logs to a file instead of stdout (true/false)
+LOG_TO_FILE=false
+LOG_FILE_PATH=bridge.log
 `;
       fs.writeFileSync(envPath, defaultEnv, 'utf8');
-      console.log('✅ 成功创建默认 .env 配置文件。请编辑该文件填入您的飞书 APP_ID 与 APP_SECRET。');
+      console.log(`✅ 成功在目录 ${configDir} 下创建默认 .env 配置文件。请编辑该文件填入您的飞书 APP_ID 与 APP_SECRET。`);
     }
     break;
   }
@@ -105,8 +116,8 @@ CODEX_CWD=
     fs.writeFileSync(pidFile, child.pid.toString(), 'utf8');
     console.log(`✅ 成功在后台启动网桥服务。`);
     console.log(`- PID: ${child.pid}`);
-    console.log(`- 运行日志: tail -f ~/.codex/bridge_stdout.log`);
-    console.log(`- 错误日志: tail -f ~/.codex/bridge_stderr.log`);
+    console.log(`- 运行日志: tail -f ~/.codex-feishu-bridge/logs/bridge_stdout.log`);
+    console.log(`- 错误日志: tail -f ~/.codex-feishu-bridge/logs/bridge_stderr.log`);
     break;
   }
 
@@ -160,8 +171,8 @@ CODEX_CWD=
     if (pid && isPidRunning(pid)) {
       console.log(`🟢 网桥服务正在运行中。`);
       console.log(`- PID: ${pid}`);
-      console.log(`- 运行日志: ~/.codex/bridge_stdout.log`);
-      console.log(`- 错误日志: ~/.codex/bridge_stderr.log`);
+      console.log(`- 运行日志: ~/.codex-feishu-bridge/logs/bridge_stdout.log`);
+      console.log(`- 错误日志: ~/.codex-feishu-bridge/logs/bridge_stderr.log`);
     } else {
       console.log('🔴 网桥服务当前未运行 (PID 对应的进程已退出)。');
     }

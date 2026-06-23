@@ -8,8 +8,8 @@ import * as os from 'os';
 import { exec, execFile } from 'child_process';
 import { LocalAppServerAdapter, CodexThread, redactSecrets, get24HourTimeStr } from './adapter';
 
-// Load environmental variables
-dotenv.config();
+// Load environmental variables from ~/.codex-feishu-bridge/.env
+dotenv.config({ path: path.join(os.homedir(), '.codex-feishu-bridge', '.env') });
 
 // Configure file logging if enabled or silence logs if disabled
 function setupLogging() {
@@ -17,9 +17,10 @@ function setupLogging() {
   const originalError = console.error;
 
   if (LOG_TO_FILE) {
-    const logFilePath = path.isAbsolute(process.env.LOG_FILE_PATH || 'bridge.log')
-      ? (process.env.LOG_FILE_PATH || 'bridge.log')
-      : path.join(process.cwd(), process.env.LOG_FILE_PATH || 'bridge.log');
+    const defaultLogPath = path.join(os.homedir(), '.codex-feishu-bridge', 'logs', 'bridge.log');
+    const logFilePath = process.env.LOG_FILE_PATH
+      ? (path.isAbsolute(process.env.LOG_FILE_PATH) ? process.env.LOG_FILE_PATH : path.join(os.homedir(), '.codex-feishu-bridge', 'logs', process.env.LOG_FILE_PATH))
+      : defaultLogPath;
     
     // Ensure the directory exists
     const logDir = path.dirname(logFilePath);
