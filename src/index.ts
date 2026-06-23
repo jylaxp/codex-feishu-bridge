@@ -607,6 +607,7 @@ async function sendSimpleStatusCard(chatId: string, title: string, template: str
 
 async function streamCardKitElement(cardId: string, elementId: string, content: string, sequence: number, turn?: ActiveTurn) {
   try {
+    const processedContent = await processMarkdownImages(content || " ");
     const token = await getTenantAccessToken();
     const res = await fetch(`https://open.feishu.cn/open-apis/cardkit/v1/cards/${encodeURIComponent(cardId)}/elements/${encodeURIComponent(elementId)}/content`, {
       method: "PUT",
@@ -615,7 +616,7 @@ async function streamCardKitElement(cardId: string, elementId: string, content: 
         "Authorization": `Bearer ${token}`
       },
       body: JSON.stringify({
-        content: content || " ",
+        content: processedContent,
         sequence: sequence
       })
     });
@@ -917,8 +918,53 @@ function getTurnMetadataContent(turn: ActiveTurn): string | null {
   return parts.join(" ｜ ");
 }
 
+const imageUploadCache: Record<string, Promise<string>> = {};
+
+async function processMarkdownImages(md: string): Promise<string> {
+  if (!md) return md;
+  const regex = /!\[([^\]]*)\]\(((?:\/|file:\/\/)[^)]+)\)/g;
+  let newMd = md;
+  const matches = [...md.matchAll(regex)];
+  for (const m of matches) {
+    const fullMatch = m[0];
+    const alt = m[1];
+    let filePath = m[2];
+    
+    if (filePath.startsWith('file://')) {
+      filePath = filePath.substring(7);
+    }
+
+    if (fs.existsSync(filePath)) {
+      if (!imageUploadCache[filePath]) {
+        imageUploadCache[filePath] = (async () => {
+          try {
+            const res = await larkClient.im.v1.image.create({
+              data: {
+                image_type: 'message',
+                image: fs.readFileSync(filePath)
+              }
+            });
+            if (res?.image_key) {
+              return res.image_key;
+            }
+          } catch (e) {
+            console.error(`Failed to upload local image ${filePath} to Lark:`, e);
+          }
+          return filePath;
+        })();
+      }
+      
+      const imageKeyOrPath = await imageUploadCache[filePath];
+      if (imageKeyOrPath !== filePath) {
+        newMd = newMd.replace(fullMatch, `![${alt}](${imageKeyOrPath})`);
+      }
+    }
+  }
+  return newMd;
+}
+
 // --- CardKit Layout Constructors ---
-function createCardKitInitialLayout(turn: ActiveTurn) {
+async function createCardKitInitialLayout(turn: ActiveTurn) {
   const footer = getStatsFooterText(turn);
   const metadataContent = getTurnMetadataContent(turn);
   
@@ -942,30 +988,30 @@ function createCardKitInitialLayout(turn: ActiveTurn) {
       elements: [
         {
           tag: "markdown",
-          content: `**📥 输入 Prompt**\n> ${turn.prompt}`,
+          content: await processMarkdownImages(`**📥 输入 Prompt**\n> ${turn.prompt}`),
           element_id: "codex_prompt"
         },
         ...(getTurnMetadataContent(turn) ? [{
           tag: "markdown",
-          content: getTurnMetadataContent(turn)!,
+          content: await processMarkdownImages(getTurnMetadataContent(turn)!),
           element_id: "codex_metadata"
         }] : []),
         { tag: "hr" },
         {
           tag: "markdown",
-          content: `🧠 **模型推理过程**\n等待开始...`,
+          content: await processMarkdownImages(`🧠 **模型推理过程**\n等待开始...`),
           element_id: "codex_reasoning"
         },
         { tag: "hr" },
         {
           tag: "markdown",
-          content: `✨ **最终结果输出**\n等待中...`,
+          content: await processMarkdownImages(`✨ **最终结果输出**\n等待中...`),
           element_id: "codex_output"
         },
         { tag: "hr" },
         {
           tag: "markdown",
-          content: `📊 ${footer}`,
+          content: await processMarkdownImages(`📊 ${footer}`),
           element_id: "codex_footer"
         }
       ]
@@ -973,7 +1019,7 @@ function createCardKitInitialLayout(turn: ActiveTurn) {
   };
 }
 
-function createCardKitFinalLayout(turn: ActiveTurn) {
+async function createCardKitFinalLayout(turn: ActiveTurn) {
   const headerTemplate = turn.status === "failed" 
     ? "red" 
     : (turn.status === "interrupted" 
@@ -995,7 +1041,7 @@ function createCardKitFinalLayout(turn: ActiveTurn) {
   const elements: any[] = [
     {
       tag: "markdown",
-      content: `**📥 输入 Prompt**\n> ${turn.prompt}`
+      content: await processMarkdownImages(`**📥 输入 Prompt**\n> ${turn.prompt}`)
     }
   ];
 
@@ -1003,7 +1049,7 @@ function createCardKitFinalLayout(turn: ActiveTurn) {
   if (metadata) {
     elements.push({
       tag: "markdown",
-      content: metadata
+      content: await processMarkdownImages(metadata)
     });
   }
 
@@ -1012,7 +1058,7 @@ function createCardKitFinalLayout(turn: ActiveTurn) {
       { tag: "hr" },
       {
         tag: "markdown",
-        content: `🧠 **模型推理过程**\n${turn.reasoning}`
+        content: await processMarkdownImages(`🧠 **模型推理过程**\n${turn.reasoning}`)
       }
     );
   }
@@ -1021,12 +1067,12 @@ function createCardKitFinalLayout(turn: ActiveTurn) {
     { tag: "hr" },
     {
       tag: "markdown",
-      content: `✨ **最终结果输出**\n${turn.answer || '无最终文本输出'}`
+      content: await processMarkdownImages(`✨ **最终结果输出**\n${turn.answer || '无最终文本输出'}`)
     },
     { tag: "hr" },
     {
       tag: "markdown",
-      content: `📊 ${footer}`
+      content: await processMarkdownImages(`📊 ${footer}`)
     }
   );
 
@@ -1324,7 +1370,7 @@ async function streamUpdateCardKit(turn: ActiveTurn) {
     turn.lastFullUpdateAt = now;
     
     try {
-      const fullLayout = createCardKitFinalLayout(turn);
+      const fullLayout = await createCardKitFinalLayout(turn);
       const token = await getTenantAccessToken();
       const updateRes = await fetch(`https://open.feishu.cn/open-apis/cardkit/v1/cards/${encodeURIComponent(turn.cardId)}`, {
         method: "PUT",
@@ -1700,7 +1746,7 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
             personality: bound.personality || null
           };
 
-          const initialLayout = createCardKitInitialLayout(initialTurn);
+          const initialLayout = await createCardKitInitialLayout(initialTurn);
           const cardId = await createCardKitCard(initialLayout);
           initialTurn.cardId = cardId;
 
@@ -1743,7 +1789,7 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
               initialTurn.status = 'failed';
               initialTurn.logs.push(`Failed to trigger goal turn: ${e.message || e}`);
               if (initialTurn.cardId) {
-                const finalLayout = createCardKitFinalLayout(initialTurn);
+                const finalLayout = await createCardKitFinalLayout(initialTurn);
                 finalizeCardKitCard(initialTurn.cardId, finalLayout, initialTurn).catch(finalizeErr => {
                   console.error('Failed to finalize goal error card asynchronously:', finalizeErr);
                 });
@@ -2382,7 +2428,7 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
         personality: bound.personality || null
       };
       
-      const initialLayout = createCardKitInitialLayout(initialTurn);
+      const initialLayout = await createCardKitInitialLayout(initialTurn);
       const cardId = await createCardKitCard(initialLayout);
       initialTurn.cardId = cardId;
 
@@ -2971,7 +3017,7 @@ async function checkAndPushHistory() {
           activeTurn.stats.model = result.model;
         }
         await fetchRateLimitsForTurn(activeTurn);
-        const finalLayout = createCardKitFinalLayout(activeTurn);
+        const finalLayout = await createCardKitFinalLayout(activeTurn);
         
         // Send to Feishu
         const cardId = await createCardKitCard(finalLayout);
@@ -3039,7 +3085,7 @@ async function connectWithRetry() {
 
 // Connect to Codex App Server
 async function initCodex() {
-  adapter.onExit(() => {
+  adapter.onExit(async () => {
     console.warn('Codex App Server disconnected.');
     const snapshot = Array.from(activeTurns.entries());
     activeTurns.clear();
@@ -3049,7 +3095,7 @@ async function initCodex() {
       const errorMsg = `\n⚠️ *[System]*: Codex App Server disconnected unexpectedly.`;
       turn.reasoning = (turn.reasoning || "") + errorMsg;
       if (turn.cardId) {
-        const finalLayout = createCardKitFinalLayout(turn);
+        const finalLayout = await createCardKitFinalLayout(turn);
         finalizeCardKitCard(turn.cardId, finalLayout, turn).catch(e =>
           console.error('Failed to finalize card on exit:', e)
         );
@@ -3244,7 +3290,7 @@ async function initCodex() {
                   console.warn(`[Reverse Push] WS subscription fallback failed for thread ${threadId}:`, wsErr);
                 }
 
-                const initialLayout = createCardKitInitialLayout(reverseTurn);
+                const initialLayout = await createCardKitInitialLayout(reverseTurn);
                 const cardId = await createCardKitCard(initialLayout);
                 reverseTurn.cardId = cardId;
                 
@@ -3369,7 +3415,7 @@ async function initCodex() {
               const delayMs = Math.min(8000, Math.max(1000, (totalLength * 10) + 500));
               console.log(`[Async Finalize] Waiting ${delayMs}ms for typewriter animation to catch up (total chars: ${totalLength})...`);
               await new Promise(resolve => setTimeout(resolve, delayMs));
-              const finalLayout = createCardKitFinalLayout(turn);
+              const finalLayout = await createCardKitFinalLayout(turn);
               await finalizeCardKitCard(cId, finalLayout, turn);
               console.log(`[Async Finalize] Card ${cId} finalized successfully.`);
             } catch (finalizeErr) {
@@ -3555,7 +3601,7 @@ async function initCodex() {
         const targetTurnId = params.turnId || (params.turn && params.turn.id) || turn.threadId;
         queueTurnTask(targetTurnId, async () => {
           try {
-            const finalLayout = createCardKitFinalLayout(turn);
+            const finalLayout = await createCardKitFinalLayout(turn);
             await finalizeCardKitCard(cId, finalLayout, turn);
           } catch (e) {
             console.error('Failed to update finalized card with late stats:', e);
