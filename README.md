@@ -143,6 +143,12 @@ Codex-飞书网桥 (Codex-Feishu Bridge) 是一个本地桥接程序，用于将
 | `CODEX_BIN` | 本地 Codex 命令行工具的绝对路径（用于辅助调起后台服务） | `/Applications/Codex.app/Contents/Resources/codex` |
 | `LOG_TO_FILE` | 是否写 info 日志 | `false` (默认不开启) |
 | `LOG_FILE_PATH` | 日志文件名或绝对路径。 | `bridge.log` |
+| `ENABLE_AUTO_FILE_UPLOAD` | 自动上传本地文件（如 `/tmp/data.csv`）至飞书 | `false` (默认关闭以保护隐私) |
+
+### 自动图片与文件上传支持
+网桥内置了强大的**资源过滤与静默上传引擎**：
+- **图片自动上传**：当 Codex 返回了本地生成的图片（如 `![](/private/tmp/ui.png)`），网桥会自动静默将其作为合法 `image_key` 上传至飞书并完美内嵌在 CardKit 卡片中。
+- **普通文件自动提取**：对于常规数据文件（如 `.csv`, `.pdf`），网桥同样可以在配置 `ENABLE_AUTO_FILE_UPLOAD=true` 授权后，于后台任务完成时自动提取路径并上传发送至飞书聊天框，方便一键下载。
 
 ---
 
