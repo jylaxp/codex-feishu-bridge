@@ -141,8 +141,8 @@ Codex-飞书网桥 (Codex-Feishu Bridge) 是一个本地桥接程序，用于将
 | `ALLOWED_APPROVERS` | 允许审批终端命令执行的飞书用户 Open ID 列表，用英文逗号分隔 | `ou_f490a33f34ee...` |
 | `RATE_LIMIT_QUERY_INTERVAL_MS` | 5h/7d 剩余窗口用量的轮询刷新间隔时间（单位：毫秒） | `300000` (默认 5 分钟) |
 | `CODEX_BIN` | 本地 Codex 命令行工具的绝对路径（用于辅助调起后台服务） | `/Applications/Codex.app/Contents/Resources/codex` |
-| `LOG_TO_FILE` | 是否启用日志文件写入。设置为 `true` 时，普通的 `INFO`/`WARN` 控制台日志将通过覆盖全局控制台函数的方式写入日志文件，不再输出到终端，以保持标准输出整洁 | `false` (默认不开启) |
-| `LOG_FILE_PATH` | 写入日志文件的名称或绝对路径，启用日志文件写入后生效（默认保存在 `logs` 目录下） | `bridge.log` |
+| `LOG_TO_FILE` | 是否将普通日志（INFO/WARN）写入日志文件。 | `false` (默认不开启) |
+| `LOG_FILE_PATH` | 日志文件名或绝对路径。 | `bridge.log` |
 
 ---
 
