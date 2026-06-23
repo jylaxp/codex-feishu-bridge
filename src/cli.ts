@@ -17,6 +17,25 @@ function ensureLogDir() {
   if (!fs.existsSync(logDir)) {
     fs.mkdirSync(logDir, { recursive: true });
   }
+  const envPath = path.join(configDir, '.env');
+  if (!fs.existsSync(envPath)) {
+    const defaultEnv = `LARK_APP_ID=YOUR_FEISHU_APP_ID
+LARK_APP_SECRET=YOUR_FEISHU_APP_SECRET
+ALLOWED_APPROVERS=
+
+# Rate limits querying interval in milliseconds (default: 300000 ms / 5 minutes)
+RATE_LIMIT_QUERY_INTERVAL_MS=300000
+
+# Path to the Codex CLI binary on macOS (using Desktop App bundled resources version)
+CODEX_BIN=/Applications/Codex.app/Contents/Resources/codex
+
+# Switch to output logs to a file instead of stdout (true/false)
+LOG_TO_FILE=false
+LOG_FILE_PATH=bridge.log
+`;
+    fs.writeFileSync(envPath, defaultEnv, 'utf8');
+    console.log(`✅ 成功在目录 ${configDir} 下创建默认 .env 配置文件。`);
+  }
 }
 
 function isPidRunning(pid: number): boolean {
@@ -53,27 +72,12 @@ switch (command) {
       console.log(`⚠️ .env 配置文件在 ${configDir} 已存在，跳过初始化。`);
     } else {
       ensureLogDir();
-      const defaultEnv = `LARK_APP_ID=YOUR_FEISHU_APP_ID
-LARK_APP_SECRET=YOUR_FEISHU_APP_SECRET
-ALLOWED_APPROVERS=
-
-# Rate limits querying interval in milliseconds (default: 300000 ms / 5 minutes)
-RATE_LIMIT_QUERY_INTERVAL_MS=300000
-
-# Path to the Codex CLI binary on macOS (using Desktop App bundled resources version)
-CODEX_BIN=/Applications/Codex.app/Contents/Resources/codex
-
-# Switch to output logs to a file instead of stdout (true/false)
-LOG_TO_FILE=false
-LOG_FILE_PATH=bridge.log
-`;
-      fs.writeFileSync(envPath, defaultEnv, 'utf8');
-      console.log(`✅ 成功在目录 ${configDir} 下创建默认 .env 配置文件。请编辑该文件填入您的飞书 APP_ID 与 APP_SECRET。`);
     }
     break;
   }
 
   case 'run': {
+    ensureLogDir();
     console.log('Starting bridge in the foreground...');
     // Load the main index compiled code directly
     require('./index');
