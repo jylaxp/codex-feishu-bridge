@@ -52,14 +52,14 @@
   3. 控制台检测到配置为空，会自动调用飞书 API 并在终端渲染出一个**授权二维码**：
      - 打开您手机上的飞书 App，扫描终端里的二维码并确认授权。
      - 授权通过后，系统会**自动在您的企业中创建对应的自建应用、开通机器人权限并订阅 WebSocket 长连接事件**。
-     - 生成的 `APP_ID` 与 `APP_SECRET` 会**自动写入本地的 `.env` 配置文件中**。
+     - 生成的 `LARK_APP_ID` 与 `LARK_APP_SECRET` 会**自动写入 `~/.codex-feishu-bridge/.env` 配置文件中**。
      - 终端显示 `Feishu WebSocket Client started` 即代表注册及连接成功。您可以按 `Ctrl + C` 终止前台进程，然后进入第三步使用后台常驻模式。
 
 * **手动配置（备用）**：
-  如果您想使用已有的自建应用，可以直接编辑生成的 `.env` 配置文件，填入您的飞书凭证：
+  如果您想使用已有的自建应用，可以直接编辑生成的 `~/.codex-feishu-bridge/.env` 配置文件，填入您的飞书凭证：
   ```env
-  APP_ID=YOUR_FEISHU_APP_ID
-  APP_SECRET=YOUR_FEISHU_APP_SECRET
+  LARK_APP_ID=YOUR_FEISHU_APP_ID
+  LARK_APP_SECRET=YOUR_FEISHU_APP_SECRET
   ```
 
 ### 3. 运行网桥服务
@@ -67,9 +67,9 @@
   ```bash
   codex-feishu-bridge start
   ```
-  网桥会在后台静默运行，并自动生成 \`~/.codex/bridge.pid\`。所有的控制台日志将重定向至本地：
-  - 标准日志：\`tail -f ~/.codex/bridge_stdout.log\`
-  - 错误日志：\`tail -f ~/.codex/bridge_stderr.log\`
+  网桥会在后台静默运行，并自动生成 `~/.codex-feishu-bridge/bridge.pid`。所有的控制台日志将重定向至：
+  - 标准日志：`tail -f ~/.codex-feishu-bridge/logs/bridge_stdout.log`
+  - 错误日志：`tail -f ~/.codex-feishu-bridge/logs/bridge_stderr.log`
 
 * **查看运行状态**：
   ```bash
@@ -85,6 +85,27 @@
   ```bash
   codex-feishu-bridge run
   ```
+
+---
+
+## ⚙️ 配置文件与存储说明 (Configuration & Storage Guide)
+
+网桥的所有配置与日志均存储于用户主目录下的专属目录 `~/.codex-feishu-bridge/` 中：
+
+* **配置文件路径**：`~/.codex-feishu-bridge/.env`
+* **日志文件路径**：`~/.codex-feishu-bridge/logs/`
+
+### 配置文件 `.env` 详细参数说明：
+
+| 配置键名 | 说明 | 示例值 / 默认值 |
+| :--- | :--- | :--- |
+| `LARK_APP_ID` | 飞书开放平台自建应用的 App ID (或旧版 `APP_ID`) | `cli_aaa39297b9b95cc5` |
+| `LARK_APP_SECRET` | 飞书开放平台自建应用的 App Secret (或旧版 `APP_SECRET`) | `UGSfPt0IZcwXAKp...` |
+| `ALLOWED_APPROVERS` | 允许审批终端命令执行的飞书用户 Open ID 列表，用英文逗号分隔 | `ou_f490a33f34ee...` |
+| `RATE_LIMIT_QUERY_INTERVAL_MS` | 5h/7d 剩余窗口用量的轮询刷新间隔时间（单位：毫秒） | `300000` (默认 5 分钟) |
+| `CODEX_BIN` | 本地 Codex 命令行工具的绝对路径（用于桥接程序未在 PATH 时自动调起后台服务） | `/Applications/Codex.app/Contents/Resources/codex` |
+| `LOG_TO_FILE` | 是否开启文件日志记录开关。设置为 `true` 时，普通的控制台输出将重定向至日志文件，保持标准输出整洁 | `false` (默认不开启) |
+| `LOG_FILE_PATH` | 重定向日志文件的名称或绝对路径，开启文件日志后生效（默认保存在 `logs` 目录下） | `bridge.log` |
 
 ---
 
