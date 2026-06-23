@@ -275,10 +275,10 @@ App Server 在成功终止任务后会广播 `turn/completed` 事件，其中参
 网桥提供了 `rebind` 命令行工具。该命令能够通过正则表达式定位并精确清除 `.env` 中的凭证项，将其恢复至默认占位符，同时保留用户自定义的其余环境变量（如 `CODEX_BIN` 等），避免直接删除 `.env` 导致自定义配置丢失。
 
 ### 4. 精细化日志流管理 (LOG_TO_FILE)
-网桥支持通过 `LOG_TO_FILE` 开关控制控制台杂乱程度：
-* 当 `LOG_TO_FILE=true`：所有的普通 `INFO` / `WARN` 级日志均静默重定向至 `~/.codex-feishu-bridge/logs/bridge.log`。
-* 当 `LOG_TO_FILE=false`：系统会彻底劫持并拦截 `console.log` 等输出，保持前台/后台命令行输出极为清爽。
-* **错误级输出 (ERROR)** 拥有最高特权，在任何模式下均会**同时向本地日志文件写入并输出到终端标准错误流 stderr**，确保关键异常暴露无遗。
+网桥支持通过 `LOG_TO_FILE` 开关控制日志输出与控制台的整洁度：
+* 当 `LOG_TO_FILE=true`：系统会覆盖全局 `console.log`、`console.info`、`console.warn`，使得普通的 `INFO` / `WARN` 级日志仅写入本地日志文件 `~/.codex-feishu-bridge/logs/bridge.log` 中，而不再向终端标准输出（stdout）打印。
+* 当 `LOG_TO_FILE=false`：系统会直接将 `console.log` / `console.info` / `console.warn` 重写为空函数（`() => {}`），从而直接在进程中静默这部分普通的控制台日志，不写入文件也不向终端打印，保持命令行输出极为清爽。
+* **错误级输出 (ERROR)** 拥有最高特权：无论是哪种模式，`console.error` 都被接管为**同时向本地日志文件写入并输出到终端标准错误流 stderr**，确保关键异常暴露无遗。
 
 ---
 
