@@ -622,8 +622,9 @@ async function streamCardKitElement(cardId: string, elementId: string, content: 
     if (data.code !== 0) {
       if (data.msg && (data.msg.includes('streaming mode is closed') || data.msg.includes('streaming_mode is closed'))) {
         if (turn) turn.streamingClosed = true;
+      } else {
+        console.error(`Failed to stream CardKit element ${elementId}:`, data.msg);
       }
-      console.error(`Failed to stream CardKit element ${elementId}:`, data.msg);
     }
   } catch (e) {
     console.error(`Failed to stream element ${elementId} network request:`, e);
@@ -633,6 +634,8 @@ async function streamCardKitElement(cardId: string, elementId: string, content: 
 async function finalizeCardKitCard(cardId: string, finalContent: any, turn: ActiveTurn) {
   try {
     const token = await getTenantAccessToken();
+    
+    if (turn) turn.streamingClosed = true;
     
     // 1. Close streaming mode
     const settingsRes = await fetch(`https://open.feishu.cn/open-apis/cardkit/v1/cards/${encodeURIComponent(cardId)}/settings`, {
