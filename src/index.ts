@@ -3568,7 +3568,7 @@ async function createBindingCard(threads: CodexThread[]) {
     }
     
     const content = `${prefix}${t.name}`;
-    const cleanContent = content.length > 50 ? content.substring(0, 47) + "..." : content;
+    const cleanContent = content.length > 100 ? content.substring(0, 97) + "..." : content;
     
     return {
       text: {
