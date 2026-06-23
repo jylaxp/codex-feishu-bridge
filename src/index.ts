@@ -4317,7 +4317,7 @@ function createBoundSuccessCard(threadName: string, threadId: string) {
 
 
 function updateEnvFile(appId: string, appSecret: string) {
-  const envPath = path.join(process.cwd(), '.env');
+  const envPath = path.join(os.homedir(), '.codex-feishu-bridge', '.env');
   let envContent = '';
   if (fs.existsSync(envPath)) {
     envContent = fs.readFileSync(envPath, 'utf8');
