@@ -11,49 +11,63 @@ import { LocalAppServerAdapter, CodexThread, redactSecrets, get24HourTimeStr } f
 // Load environmental variables
 dotenv.config();
 
-// Configure file logging if enabled
-const LOG_TO_FILE = process.env.LOG_TO_FILE === 'true';
-if (LOG_TO_FILE) {
-  const logFilePath = path.isAbsolute(process.env.LOG_FILE_PATH || 'bridge.log')
-    ? (process.env.LOG_FILE_PATH || 'bridge.log')
-    : path.join(process.cwd(), process.env.LOG_FILE_PATH || 'bridge.log');
-  
-  // Ensure the directory exists
-  const logDir = path.dirname(logFilePath);
-  if (!fs.existsSync(logDir)) {
-    fs.mkdirSync(logDir, { recursive: true });
-  }
+// Configure file logging if enabled or silence logs if disabled
+function setupLogging() {
+  const LOG_TO_FILE = process.env.LOG_TO_FILE === 'true';
+  const originalError = console.error;
 
-  const logStream = fs.createWriteStream(logFilePath, { flags: 'a' });
+  if (LOG_TO_FILE) {
+    const logFilePath = path.isAbsolute(process.env.LOG_FILE_PATH || 'bridge.log')
+      ? (process.env.LOG_FILE_PATH || 'bridge.log')
+      : path.join(process.cwd(), process.env.LOG_FILE_PATH || 'bridge.log');
+    
+    // Ensure the directory exists
+    const logDir = path.dirname(logFilePath);
+    if (!fs.existsSync(logDir)) {
+      fs.mkdirSync(logDir, { recursive: true });
+    }
 
-  const formatMessage = (args: any[]) => {
-    return args.map(arg => {
-      if (arg instanceof Error) {
-        return arg.stack || arg.message;
-      } else if (typeof arg === 'object' && arg !== null) {
-        try {
-          return JSON.stringify(arg);
-        } catch {
-          return String(arg);
+    const logStream = fs.createWriteStream(logFilePath, { flags: 'a' });
+
+    const formatMessage = (args: any[]) => {
+      return args.map(arg => {
+        if (arg instanceof Error) {
+          return arg.stack || arg.message;
+        } else if (typeof arg === 'object' && arg !== null) {
+          try {
+            return JSON.stringify(arg);
+          } catch {
+            return String(arg);
+          }
         }
-      }
-      return String(arg);
-    }).join(' ');
-  };
+        return String(arg);
+      }).join(' ');
+    };
 
-  const writeLog = (level: string, args: any[]) => {
-    const timeStr = new Date().toISOString();
-    logStream.write(`[${timeStr}] [${level}] ${formatMessage(args)}\n`);
-  };
+    const writeLog = (level: string, args: any[]) => {
+      const timeStr = new Date().toISOString();
+      logStream.write(`[${timeStr}] [${level}] ${formatMessage(args)}\n`);
+    };
 
-  console.log = (...args: any[]) => writeLog('INFO', args);
-  console.info = (...args: any[]) => writeLog('INFO', args);
-  console.warn = (...args: any[]) => writeLog('WARN', args);
-  console.error = (...args: any[]) => writeLog('ERROR', args);
+    console.log = (...args: any[]) => writeLog('INFO', args);
+    console.info = (...args: any[]) => writeLog('INFO', args);
+    console.warn = (...args: any[]) => writeLog('WARN', args);
+    console.error = (...args: any[]) => {
+      writeLog('ERROR', args);
+      originalError(...args);
+    };
 
-  // Write a status line to stdout once so the user knows logs are redirected
-  process.stdout.write(`[Bridge] Logging to file enabled. Log file: ${logFilePath}\n`);
+    // Write a status line to stdout once so the user knows logs are redirected
+    process.stdout.write(`[Bridge] Logging to file enabled. Log file: ${logFilePath}\n`);
+  } else {
+    // Switch is closed: Silence log/info/warn to keep standard output clean.
+    // console.error is left unchanged to write to standard error/stdout.
+    console.log = () => {};
+    console.info = () => {};
+    console.warn = () => {};
+  }
 }
+
 
 // Credentials will be loaded dynamically in ensureCredentials()
 
@@ -4116,6 +4130,8 @@ async function ensureCredentials(): Promise<{ appId: string; appSecret: string }
 // Start everything
 async function main() {
   const creds = await ensureCredentials();
+
+  setupLogging();
 
   larkClient = new Lark.Client({
     appId: creds.appId,
