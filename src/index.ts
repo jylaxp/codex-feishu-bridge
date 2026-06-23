@@ -103,9 +103,9 @@ function setupLogging() {
 // Credentials will be loaded dynamically in ensureCredentials()
 
 // Session database path
-const SESSIONS_FILE = path.join(process.cwd(), 'sessions.json');
-const APPROVALS_FILE = path.join(process.cwd(), 'approvals.json');
-const PUSHED_TURNS_FILE = path.join(process.cwd(), 'pushed_turns.json');
+const SESSIONS_FILE = path.join(configDir, 'sessions.json');
+const APPROVALS_FILE = path.join(configDir, 'approvals.json');
+const PUSHED_TURNS_FILE = path.join(configDir, 'pushed_turns.json');
 const APPROVAL_TTL_MS = 30 * 60 * 1000; // 30 minutes
 const RATE_LIMIT_QUERY_INTERVAL_MS = parseInt(process.env.RATE_LIMIT_QUERY_INTERVAL_MS || '300000', 10);
 
