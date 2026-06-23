@@ -308,6 +308,51 @@ export function formatDateTime24h(date: Date): string {
 
 ---
 
+## 🔌 与 Codex 交互接口与 Token 统计方案
+
+在日常消息交互、`/usage` 轮询以及命令执行结果卡片组装中，网桥与 Codex 建立了紧密的接口交互与 Token 指标解析方案。
+
+### 1. 账户使用量与配额获取 (Account Rate Limits / Usage)
+* **RPC 方法**：`account/rateLimits/read`
+* **交互路径**：通过 UDS WebSocket 通道，发送标准的 JSON-RPC 2.0 请求。
+* **参数**：无。
+* **数据结构与降级解析**：
+  网桥会根据 Codex App Server 返回的使用量响应进行深度解析，支持新老版本的数据降级获取：
+  ```javascript
+  const codexLimits = res?.rateLimitsByLimitId?.codex || res?.rateLimits;
+  ```
+  从中提取并为用户卡片渲染以下关键指标：
+  * **计划类型 (`planType`)**：例如 `pro` 或 `free`。
+  * **短期用量窗口 (`primary`)**：对应 5h 的使用量。解析其 `usedPercent`（已用百分比）与 `resetsAt`（秒级重置时间戳，用于 24 小时制转换）。
+  * **长期用量窗口 (`secondary`)**：对应 168h（7d）的使用量。解析其 `usedPercent` 与 `resetsAt` 时间戳。
+  * **积分点数余额 (`credits`)**：如果账户有剩余积分，显示其 `balance`。
+
+### 2. Token 使用量统计与提取方案 (Token Usage Extraction)
+为了统计每个 Turn 实际消耗的 LLM Tokens，网桥实现了一套高兼容性的新老两代 Token 属性解析逻辑。
+
+#### A. 新版 Token 统计方案 (Explicit `tokenUsage` Object)
+新版 Codex 返回的消息参数（如在 `turn/completed` 事件，或专门的 `thread/tokenUsage/updated` 通知中）会携带一个显式的 `tokenUsage` 属性结构体。网桥会直接对其进行映射提取：
+* **单次请求消耗**：读取 `tokenUsage.last.inputTokens`（提示词 Tokens）和 `tokenUsage.last.outputTokens`（回复 Tokens）。
+* **当前上下文大小**：优先读取 `tokenUsage.last.totalTokens`；若没有，则读取整轮会话上下文的累积占用总量 `tokenUsage.total.totalTokens`。
+* **模型上下文极限**：读取 `tokenUsage.modelContextWindow` 以确定该模型的最大上下文窗口限制。
+* **所用模型名**：读取 `params.model`。
+
+#### B. 老版/备用 Token 统计方案 (Recursive Semantic Search)
+如果 Codex 事件参数中缺失显式的 `tokenUsage` 对象，网桥会自动对接收的 `params` 参数对象启动**最大深度为 8 层的深度优先递归搜索**。在递归过程中，通过键名的语义匹配进行指标降级抓取：
+* **输入 Token 数 (Prompt Tokens)**：匹配 `"input_tokens"`, `"inputTokens"`, `"prompt_tokens"`, `"promptTokens"`, `"tokens_in"`, `"tokensIn"`。
+* **输出 Token 数 (Completion Tokens)**：匹配 `"output_tokens"`, `"outputTokens"`, `"completion_tokens"`, `"completionTokens"`, `"tokens_out"`, `"tokensOut"`。
+* **总上下文 Token 数 (Total Tokens)**：匹配 `"context_tokens"`, `"contextTokens"`, `"context_used_tokens"`, `"contextUsedTokens"`, `"total_tokens"`, `"totalTokens"`。
+* **模型上下文极限 (Context Limit)**：匹配 `"context_length"`, `"contextLength"`, `"context_window"`, `"contextWindow"`, `"modelContextWindow"`, `"max_context_tokens"`, `"maxContextTokens"`。
+* **请求调用次数 (API Calls)**：匹配 `"api_calls"`, `"apiCalls"`, `"api_requests"`, `"apiRequests"`, `"request_count"`, `"requestCount"`。
+* **模型名称 (Model Name)**：匹配 `"model"`, `"model_name"`, `"modelName"`, `"model_id"`, `"modelId"`, `"toModel"`。
+
+#### C. Token 统计数据的实时更新与补录机制
+* **实时更新**：在 WebSocket 监听的所有流式或单步状态变更事件（如 `turn/step/completed`）中，网桥会自动执行 `extractStatsFromParams` 将提取的最新数据实时合并到本地的 `turn.stats` 状态，并更新卡片。
+* **延迟补录 (`thread/tokenUsage/updated` 广播事件)**：
+  部分 Token 统计信息在 Codex 引擎刚完成时可能会有几秒的计算延迟。网桥注册了专门的 `thread/tokenUsage/updated` UDS 长连接通知广播：当后台监听到此通知且会话已经停止运行时，会立刻异步将补录的最新 Token 数据再次写入飞书最终卡片，以确保展示的 Token 消耗数据 100% 准确。
+
+---
+
 ## 🛠️ 开发与复刻指引 (Development Guide)
 
 如果其他开发者希望复刻本项目，实现完全一致的 Codex-飞书联动效果，可按照以下步骤进行：
