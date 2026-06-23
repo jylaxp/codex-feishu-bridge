@@ -972,39 +972,6 @@ async function processMarkdownImages(md: string): Promise<string> {
 }
 
 // --- Auto File Upload ---
-function createFileControlCard(fileName: string, fileMessageId: string, filePath: string, msgRecalled: boolean = false, fileDeleted: boolean = false) {
-  return {
-    schema: "2.0",
-    config: { wide_screen_mode: true },
-    header: { template: "blue", title: { tag: "plain_text", content: "📁 自动文件上传" } },
-    body: {
-      elements: [
-        {
-          tag: "markdown",
-          content: `已自动将本地文件 **${fileName}** 上传至飞书。`
-        },
-        {
-          tag: "action",
-          actions: [
-            {
-              tag: "button",
-              text: { tag: "plain_text", content: msgRecalled ? "已撤回飞书消息" : "撤回飞书消息" },
-              type: msgRecalled ? "default" : "danger",
-              value: { action: "delete_file_msg", fileMessageId, filePath, msgRecalled, fileDeleted, fileName }
-            },
-            {
-              tag: "button",
-              text: { tag: "plain_text", content: fileDeleted ? "已删除本地源文件" : "删除本地源文件" },
-              type: fileDeleted ? "default" : "danger",
-              value: { action: "delete_local_file", fileMessageId, filePath, msgRecalled, fileDeleted, fileName }
-            }
-          ]
-        }
-      ]
-    }
-  };
-}
-
 async function uploadLocalFilesInMarkdown(md: string, chatId: string, replyMessageId: string) {
   if (process.env.ENABLE_AUTO_FILE_UPLOAD !== 'true') return;
   if (!md) return;
@@ -1041,7 +1008,7 @@ async function uploadLocalFilesInMarkdown(md: string, chatId: string, replyMessa
         });
 
         if (res?.file_key) {
-          const msgRes = await larkClient.im.message.create({
+          await larkClient.im.message.create({
             params: { receive_id_type: 'chat_id' },
             data: {
               receive_id: chatId,
@@ -1049,18 +1016,6 @@ async function uploadLocalFilesInMarkdown(md: string, chatId: string, replyMessa
               msg_type: 'file'
             }
           });
-
-          if (msgRes.data?.message_id) {
-            const card = createFileControlCard(fileName || require('path').basename(filePath), msgRes.data.message_id, filePath);
-            await larkClient.im.message.create({
-              params: { receive_id_type: 'chat_id' },
-              data: {
-                receive_id: chatId,
-                content: JSON.stringify(card),
-                msg_type: 'interactive'
-              }
-            });
-          }
         }
       } catch (e) {
         console.error(`Failed to auto-upload file ${filePath}:`, e);
@@ -2662,39 +2617,6 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
 
     const actionValue = action.value || {};
     
-    // Handle file upload controls
-    if (actionValue.action === 'delete_file_msg') {
-      try {
-        if (!actionValue.msgRecalled) {
-          await larkClient.im.message.delete({ path: { message_id: actionValue.fileMessageId } });
-        }
-        const updatedCard = createFileControlCard(actionValue.fileName, actionValue.fileMessageId, actionValue.filePath, true, actionValue.fileDeleted);
-        await larkClient.im.message.patch({
-          path: { message_id: messageId },
-          data: { content: JSON.stringify(updatedCard) }
-        });
-      } catch (e) {
-        console.error('Failed to delete file message or update card:', e);
-      }
-      return;
-    }
-    
-    if (actionValue.action === 'delete_local_file') {
-      try {
-        if (!actionValue.fileDeleted && fs.existsSync(actionValue.filePath)) {
-          fs.unlinkSync(actionValue.filePath);
-        }
-        const updatedCard = createFileControlCard(actionValue.fileName, actionValue.fileMessageId, actionValue.filePath, actionValue.msgRecalled, true);
-        await larkClient.im.message.patch({
-          path: { message_id: messageId },
-          data: { content: JSON.stringify(updatedCard) }
-        });
-      } catch (e) {
-        console.error('Failed to delete local file or update card:', e);
-      }
-      return;
-    }
-
     // 0. Handle skills select view
     if (actionValue.action === 'skills_select_view') {
       const selectedSkillName = action.option;
