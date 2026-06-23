@@ -90,10 +90,11 @@
 
 ## ⚙️ 配置文件与存储说明 (Configuration & Storage Guide)
 
-网桥的所有配置与日志均存储于用户主目录下的专属目录 `~/.codex-feishu-bridge/` 中：
+网桥的所有配置、运行数据库与日志均存储于用户主目录下的专属目录 `~/.codex-feishu-bridge/` 中：
 
-* **配置文件路径**：`~/.codex-feishu-bridge/.env`
-* **日志文件路径**：`~/.codex-feishu-bridge/logs/`
+* **配置文件**：`~/.codex-feishu-bridge/.env`
+* **运行数据库**：包括 `sessions.json`（会话绑定关系）、`approvals.json`（终端命令执行审批单）和 `pushed_turns.json`（防重历史推送列表），全部安全隔绝在此目录中，避免污染项目代码目录。
+* **日志输出**：`~/.codex-feishu-bridge/logs/`
 
 ### 配置文件 `.env` 详细参数说明：
 
