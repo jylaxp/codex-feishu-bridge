@@ -3720,7 +3720,8 @@ async function createTableBindingCard(threads: CodexThread[]) {
     {
       name: "col_idx",
       display_name: "序号",
-      data_type: "text"
+      data_type: "text",
+      width: "50px"
     },
     {
       name: "col_name",
