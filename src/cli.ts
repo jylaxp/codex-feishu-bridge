@@ -54,7 +54,7 @@ function showHelp() {
   codex-feishu-bridge <命令>
 
 命令:
-  init       在当前工作目录初始化默认 .env 配置文件
+  init       在全局配置目录 (~/.codex-feishu-bridge) 初始化默认 .env 配置文件
   run        在前台启动网桥服务 (控制台流输出，适合调试)
   start      在后台启动网桥服务 (Detached 守护进程模式)
   restart    重启后台网桥服务
