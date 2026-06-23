@@ -26,9 +26,9 @@ function isPidRunning(pid: number): boolean {
 
 function showHelp() {
   console.log(`
-🚀 Feishu-Codex Bridge CLI
+🚀 Codex-Feishu Bridge CLI
 用法:
-  feishu-codex-bridge <命令>
+  codex-feishu-bridge <命令>
 
 命令:
   init       在当前工作目录初始化默认 .env 配置文件
@@ -74,7 +74,7 @@ CODEX_CWD=
     if (fs.existsSync(pidFile)) {
       const existingPid = parseInt(fs.readFileSync(pidFile, 'utf8').trim(), 10);
       if (existingPid && isPidRunning(existingPid)) {
-        console.log(`⚠️ 网桥已在后台运行中，PID 为: ${existingPid}。如果您需要更新，请先运行: feishu-codex-bridge stop`);
+        console.log(`⚠️ 网桥已在后台运行中，PID 为: ${existingPid}。如果您需要更新，请先运行: codex-feishu-bridge stop`);
         process.exit(1);
       }
     }

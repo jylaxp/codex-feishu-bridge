@@ -17,7 +17,7 @@
 * **方式 A：通过 Git 仓库远程安装 (推荐，适合版本共享)**：
   如果您将源码提交到了 GitHub 或私有 Git 仓库，别人可以直接通过 Git 地址进行全局安装：
   ```bash
-  npm install -g git+https://github.com/<您的用户名>/feishu-codex-bridge.git
+  npm install -g git+https://github.com/<您的用户名>/codex-feishu-bridge.git
   ```
 
 * **方式 B：本地源码安装 (适合开发调试或局域网共享)**：
@@ -30,10 +30,10 @@
 
 * **方式 C：离线包分发安装 (打包成 .tgz 压缩文件)**：
   如果您想离线发送一个安装包给朋友：
-  1. 在您的源码根目录下运行：`npm pack`。这会生成一个类似 `feishu-codex-bridge-1.0.0.tgz` 的压缩包。
+  1. 在您的源码根目录下运行：`npm pack`。这会生成一个类似 `codex-feishu-bridge-1.0.0.tgz` 的压缩包。
   2. 把这个 `.tgz` 文件发送给您的朋友，他们在终端运行如下命令即可全局安装：
      ```bash
-     npm install -g ./feishu-codex-bridge-1.0.0.tgz
+     npm install -g ./codex-feishu-bridge-1.0.0.tgz
      ```
 
 ### 2. 初始化配置 (支持飞书扫码自动配置 🚀)
@@ -43,11 +43,11 @@
 * **扫码自动配置（强烈推荐）**：
   1. 在空白目录中直接执行初始化：
      ```bash
-     feishu-codex-bridge init
+     codex-feishu-bridge init
      ```
   2. **直接在前台启动网桥**以显示二维码：
      ```bash
-     feishu-codex-bridge run
+     codex-feishu-bridge run
      ```
   3. 控制台检测到配置为空，会自动调用飞书 API 并在终端渲染出一个**授权二维码**：
      - 打开您手机上的飞书 App，扫描终端里的二维码并确认授权。
@@ -65,7 +65,7 @@
 ### 3. 运行网桥服务
 * **后台常驻启动 (守护进程模式)**：
   ```bash
-  feishu-codex-bridge start
+  codex-feishu-bridge start
   ```
   网桥会在后台静默运行，并自动生成 \`~/.codex/bridge.pid\`。所有的控制台日志将重定向至本地：
   - 标准日志：\`tail -f ~/.codex/bridge_stdout.log\`
@@ -73,17 +73,17 @@
 
 * **查看运行状态**：
   ```bash
-  feishu-codex-bridge status
+  codex-feishu-bridge status
   ```
 
 * **停止后台运行**：
   ```bash
-  feishu-codex-bridge stop
+  codex-feishu-bridge stop
   ```
 
 * **前台调试启动 (Foreground)**：
   ```bash
-  feishu-codex-bridge run
+  codex-feishu-bridge run
   ```
 
 ---
@@ -99,7 +99,7 @@
                                       | (WebSocket Stream)
                                       v
                     +------------------------------------+
-                    |        feishu-codex-bridge         |
+                    |        codex-feishu-bridge         |
                     +----+--------------------------+----+
                          |                          |
                          | (WebSocket over UDS)     | (Length-Prefixed TCP)
