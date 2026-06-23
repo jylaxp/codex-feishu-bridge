@@ -1805,7 +1805,7 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
               });
               
               const options = cache.models.map((m: any) => ({
-                text: { tag: "plain_text", content: `${m.display_name} (${m.slug})` },
+                text: { tag: "plain_text", content: m.slug },
                 value: m.slug
               }));
 
