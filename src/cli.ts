@@ -59,6 +59,7 @@ function showHelp() {
   start      在后台启动网桥服务 (Detached 守护进程模式)
   restart    重启后台网桥服务
   stop       停止后台运行的网桥服务
+  update     从 GitHub 远程自动拉取最新代码更新并重启网桥服务
   status     查看网桥服务当前运行状态
   rebind     重置飞书应用凭证以重新扫码绑定新机器人
   help       展示此帮助指南
@@ -225,6 +226,23 @@ switch (command) {
       console.log(`- 错误日志: ~/.codex-feishu-bridge/logs/bridge_stderr.log`);
     } else {
       console.log('🔴 网桥服务当前未运行 (PID 对应的进程已退出)。');
+    }
+    break;
+  }
+
+  case 'update': {
+    console.log('🔄 正在从 GitHub 远程仓库拉取最新版本并更新...');
+    try {
+      const { execSync } = require('child_process');
+      // Execute npm install from github repo
+      execSync('npm install -g git+https://github.com/jylaxp/codex-feishu-bridge.git', { stdio: 'inherit' });
+      
+      console.log('✅ 源码拉取与编译安装完成！正在重启服务...');
+      // Restart the daemon to apply changes
+      execSync('codex-feishu-bridge restart', { stdio: 'inherit' });
+    } catch (e: any) {
+      console.error('❌ 更新失败:', e.message || e);
+      process.exit(1);
     }
     break;
   }

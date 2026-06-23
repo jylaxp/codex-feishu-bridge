@@ -7,6 +7,7 @@
     "codex-feishu-bridge": "./dist/cli.js"
   },
   "scripts": {
+    "prepare": "npm run build",
     "build": "tsc",
     "start": "ts-node src/index.ts",
     "test": "ts-node test/test.ts"
