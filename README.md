@@ -32,7 +32,7 @@ Codex-飞书网桥 (Codex-Feishu Bridge) 是一个本地桥接程序，用于将
 * **方式 A：通过 Git 仓库远程安装 (推荐，适合版本共享)**
   如果您将源码提交到了 GitHub 或私有 Git 仓库，其他人可以直接通过 Git 地址进行全局安装：
   ```bash
-  npm install -g git+https://github.com/<您的用户名>/codex-feishu-bridge.git
+  npm install -g git+https://github.com/jylaxp/codex-feishu-bridge.git
   ```
 
 * **方式 B：本地源码安装 (适合开发调试)**
