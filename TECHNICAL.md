@@ -1,6 +1,6 @@
 # Codex-Feishu Bridge 技术实现与架构方案
 
-本项目是一个用于连接飞书机器人（Feishu Bot）与本地 Codex Desktop 客户端或 App Server 的桥接服务。本技术文档详细介绍了网桥的底层通信原理、API 设计、交互逻辑以及核心的流式卡片渲染方案。
+本项目是一个用于连接飞书机器人（Feishu Bot）与本地 Codex Desktop 客户端或 App Server 的桥接服务。本技术文档详细介绍了网桥的底层通信原理、系统生命周期设计、运维管理以及核心的流式卡片渲染与交互界面方案。
 
 ---
 
@@ -229,7 +229,7 @@ App Server 在成功终止任务后会广播 `turn/completed` 事件，其中参
 网桥在后台实现了自动提取和映射 Codex 原生技能的能力：
 * **提及语法**：`@<技能名称> <实际 prompt>`（例如：`@excel-parser 读取数据.xlsx`）。
 * **匹配机制**：
-  网桥会在接收消息时，在后台通过 `skills/list` 接口获取该项目下所有 Skills，对 `@` 后的名称进行忽略大小写和连字符的模糊匹配。
+  网桥会在接收消息时，在后台通过 `skills/list` 接口获取该项目下所有 Skills，对 `@` 后的名称进行忽略大小写 and 连字符的模糊匹配。
 * **RPC 协议组装**：
   一旦匹配成功，网桥会重构 `input` 数组，将技能的 `name` 和 `path` 作为结构化对象推入 `input` 中，并剥离掉文本中的 mentions 标志：
   ```json
@@ -251,6 +251,60 @@ App Server 在成功终止任务后会广播 `turn/completed` 事件，其中参
     }
   }
   ```
+
+---
+
+## 🛠️ 系统生命周期与运维管理 (Lifecycle & Maintenance)
+
+### 1. 同步前置初始化
+为了避免后台守护进程（Detached）由于缺失配置或权限问题在后台静默崩溃，网桥 CLI 主进程在执行 `start`、`run` 和 `init` 命令的第一步，均会通过 `ensureLogDir()` 同步执行配置和目录初始化：
+* 自动创建专属的工作目录 `~/.codex-feishu-bridge/` 与 `logs/`。
+* 如果 `.env` 配置文件不存在，则同步写入默认配置模板。
+
+### 2. 凭证清理与冲突解决机制
+当自动注册飞书机器人启动时，由于环境变量可能残留有占位符（如 `YOUR_FEISHU_APP_ID`）或者因 CRLF 换行符与多余空格产生的异常格式，系统在调用飞书注册 API 之前，实现了以下加固逻辑：
+* **白边去除 (Trimming)**：对加载的凭证自动执行 `.trim()` 以滤除可能的 `\r` 换行符。
+* **安全删除环境变量**：在检测到需要走“自动注册”时，主动从 `process.env` 中 `delete` 掉空的或占位符环境变量，防止干扰飞书 SDK 的内部配置读取。
+
+### 3. 应用凭据安全重置 (rebind)
+网桥提供了 `rebind` 命令行工具。该命令能够通过正则表达式定位并精确清除 `.env` 中的凭证项，将其恢复至默认占位符，同时保留用户自定义的其余环境变量（如 `CODEX_BIN` 等），避免直接删除 `.env` 导致自定义配置丢失。
+
+### 4. 精细化日志流管理 (LOG_TO_FILE)
+网桥支持通过 `LOG_TO_FILE` 开关控制控制台杂乱程度：
+* 当 `LOG_TO_FILE=true`：所有的普通 `INFO` / `WARN` 级日志均静默重定向至 `~/.codex-feishu-bridge/logs/bridge.log`。
+* 当 `LOG_TO_FILE=false`：系统会彻底劫持并拦截 `console.log` 等输出，保持前台/后台命令行输出极为清爽。
+* **错误级输出 (ERROR)** 拥有最高特权，在任何模式下均会**同时向本地日志文件写入并输出到终端标准错误流 stderr**，确保关键异常暴露无遗。
+
+---
+
+## 🎭 界面交互与细节设计 (User Interface & UX Details)
+
+### 1. 统一 24 小时制时间格式 (formatDateTime24h)
+为彻底杜绝不同操作系统/终端区域语言环境下 locale 默认输出 12 小时制带 AM/PM 的混乱现象，网桥设计并导出了统一的日期格式化辅助函数：
+```typescript
+export function formatDateTime24h(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const yyyy = date.getFullYear();
+  const MM = pad(date.getMonth() + 1);
+  const dd = pad(date.getDate());
+  const hh = pad(date.getHours());
+  const mm = pad(date.getMinutes());
+  const ss = pad(date.getSeconds());
+  return `${yyyy}-${MM}-${dd} ${hh}:${mm}:${ss}`;
+}
+```
+该函数已被应用在审批卡片时间戳、使用量统计卡片重置时间以及目标任务时间戳格式化等所有与用户交互的输出中。
+
+### 2. 会话列表分组与字典序排序
+`/list` 导出的会话卡片菜单下拉选项中，列表采用以下排序组合算法：
+* **全局会话置顶**：所有的 `🌐 全局会话 ➜ ...` 默认强制排列在列表首部，其内部同样以会话名称进行排序。
+* **项目会话按字典序排序**：
+  * **第一层**：按照项目 basename 目录别名对项目整体进行排序。
+  * **第二层**：对处于相同项目底下的会话，按其会话名进行字典序排序。
+* 排序基于 JavaScript 原生的 `localeCompare('zh-CN', { numeric: true })` 实现，完美支持英文按字母、中文按拼音以及数字混合排列的字典序升序。
+
+### 3. 下拉菜单选项长度扩容
+飞书 `select_static` 卡片元素对选项 label（展示的文本内容）有严格的 **100 字符上限** 限制。为解决项目名过长导致会话主题本身被 `...` 截断的问题，代码中将选项截断检测上限从原先的 50 字符调整到了系统极限的 **100 字符**，最大限度展示了完整的上下文内容。
 
 ---
 
