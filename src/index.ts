@@ -1592,7 +1592,7 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
       } catch (e: any) {
         console.error('Failed to send help card:', e);
         const allowedCommands = getAllowedCommands();
-        await sendSimpleStatusCard(chatId, "💡 Codex 飞书助手指令指南 (备用)", "blue", `支持的指令：\n- /list: 绑定/列出会话\n- /new [名称] 或 /create: 新建并绑定新会话\n- /cwd [工作目录] 或 /workspace: 查询或切换工作目录\n- /cmd [命令] 或 /run: 执行本地终端命令 (当前支持: ${allowedCommands.join(', ')})\n- /goal [目标内容]: 设置并启动目标模式\n- /goal: 查看当前目标状态\n- /goal clear: 清除当前目标\n- /mcp: 查看 MCP 服务及认证状态\n- /personality [friendly|pragmatic|none]: 设置或查询回复风格\n- /compact: 压缩当前会话上下文\n- /fork [新名称]: 派生并绑定新会话\n- /plan: 开启或关闭计划模式 (Plan Mode)\n- /status: 展示当前会话综合状态\n- /skills: 列出当前工作区可用技能\n- 在日常对话中通过 @技能名称 提及并调用特定技能 (例如: @Ce Debug 为什么编译报错)\n- /delete 或 /archive: 归档并解绑会话\n- /help 或 /h: 获取此帮助卡片`);
+        await sendSimpleStatusCard(chatId, "💡 Codex 飞书助手指令指南 (备用)", "blue", `支持的指令：\n- /list: 绑定/列出会话\n- /new [名称] 或 /create: 新建并绑定新会话\n- /cwd [工作目录] 或 /workspace: 查询或切换工作目录\n- /cmd [命令] 或 /run: 执行本地终端命令 (当前支持: ${allowedCommands.join(', ')})\n- /goal [目标内容]: 设置并启动目标模式\n- /goal: 查看当前目标状态\n- /goal clear: 清除当前目标\n- /mcp: 查看 MCP 服务及认证状态\n- /personality [friendly|pragmatic|none]: 设置或查询回复风格\n- /compact: 压缩当前会话上下文\n- /fork [新名称]: 派生并绑定新会话\n- /plan: 开启或关闭计划模式 (Plan Mode)\n- /status: 展示当前会话综合状态\n- /skills: 列出当前工作区可用技能\n- 在日常对话中通过 @技能名称 提及并调用特定技能 (例如: @Ce Debug 为什么编译报错)\n- /usage 或 /quota: 获取当前账户的短期/长期窗口用量及重置时间\n- /delete 或 /archive: 归档并解绑会话\n- /help 或 /h: 获取此帮助卡片`);
       }
       return;
     }
@@ -4030,6 +4030,13 @@ function createHelpCard() {
           text: {
             tag: "lark_md",
             content: "🗑️ **归档解绑**\n- `'/delete'` 或 `'/archive'`\n  将当前聊天与 Codex 会话解绑，同时在本地归档该会话。"
+          }
+        },
+        {
+          tag: "div",
+          text: {
+            tag: "lark_md",
+            content: "📊 **用量查询**\n- `'/usage'` 或 `'/quota'`\n  获取当前账户的短期 (5h) / 长期 (7d) 窗口用量统计及下次重置刷新时间。"
           }
         },
         {
