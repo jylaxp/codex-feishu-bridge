@@ -3718,12 +3718,6 @@ async function createTableBindingCard(threads: CodexThread[]) {
   // 3. Build Table columns and rows
   const columns = [
     {
-      name: "col_idx",
-      display_name: "序号",
-      data_type: "text",
-      width: "50px"
-    },
-    {
       name: "col_name",
       display_name: "会话名称",
       data_type: "text"
@@ -3752,8 +3746,7 @@ async function createTableBindingCard(threads: CodexThread[]) {
     }
 
     return {
-      col_idx: String(index + 1),
-      col_name: t.name || "",
+      col_name: `[${index + 1}] ${t.name || ""}`,
       col_project: dirName
     };
   });
