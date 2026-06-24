@@ -1081,16 +1081,36 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
                     params: { threadId, turnId, delta }
                   });
                 }
-              } else if (item.type === 'commandExecution' && typeof item.aggregatedOutput === 'string') {
-                const outputKey = `${threadId}-${turnId}-${itemIndex}`;
-                const oldOutput = this.lastCommandOutputs.get(outputKey) || '';
-                const newOutput = item.aggregatedOutput || '';
-                if (newOutput.length > oldOutput.length) {
-                  const delta = newOutput.slice(oldOutput.length);
-                  this.lastCommandOutputs.set(outputKey, newOutput);
+              } else if (item.type === 'commandExecution') {
+                const startedKey = `started-${threadId}-${turnId}-${itemIndex}`;
+                if (!this.lastCommandOutputs.has(startedKey)) {
+                  this.lastCommandOutputs.set(startedKey, 'true');
                   this.emitNotification({
-                    method: 'agent/stderr',
-                    params: { threadId, turnId, chunk: delta }
+                    method: 'item/started',
+                    params: { threadId, turnId, item: { type: 'commandExecution', command: item.command } }
+                  });
+                }
+
+                if (typeof item.aggregatedOutput === 'string') {
+                  const outputKey = `${threadId}-${turnId}-${itemIndex}`;
+                  const oldOutput = this.lastCommandOutputs.get(outputKey) || '';
+                  const newOutput = item.aggregatedOutput || '';
+                  if (newOutput.length > oldOutput.length) {
+                    const delta = newOutput.slice(oldOutput.length);
+                    this.lastCommandOutputs.set(outputKey, newOutput);
+                    this.emitNotification({
+                      method: 'agent/stderr',
+                      params: { threadId, turnId, chunk: delta }
+                    });
+                  }
+                }
+
+                const completedKey = `completed-${threadId}-${turnId}-${itemIndex}`;
+                if (item.status === 'completed' && !this.lastCommandOutputs.has(completedKey)) {
+                  this.lastCommandOutputs.set(completedKey, 'true');
+                  this.emitNotification({
+                    method: 'item/completed',
+                    params: { threadId, turnId, item: { type: 'commandExecution', exitCode: item.exitCode, aggregatedOutput: item.aggregatedOutput } }
                   });
                 }
               }

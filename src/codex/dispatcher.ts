@@ -644,16 +644,7 @@ export async function handleCodexNotification(msg: any) {
         if (turn.commandExecutionCount === 1) {
           const timeStr = get24HourTimeStr();
           const exitStatus = item.exitCode === 0 ? "成功" : `失败 (Exit Code: ${item.exitCode})`;
-          let outputLog = "";
-          if (item.aggregatedOutput && typeof item.aggregatedOutput === 'string' && item.aggregatedOutput.trim()) {
-            let out = item.aggregatedOutput.trim();
-            const limit = 800;
-            if (out.length > limit) {
-              out = out.substring(0, limit / 2) + '\n... (truncated) ...\n' + out.substring(out.length - limit / 2);
-            }
-            outputLog = `\n\`\`\`text\n${out}\n\`\`\``;
-          }
-          const endLog = `\n📌 *[${timeStr}] 命令执行结束*: ${exitStatus}${outputLog}`;
+          const endLog = `\n📌 *[${timeStr}] 命令执行结束*: ${exitStatus}`;
           turn.reasoning = (turn.reasoning || "") + endLog;
           turn.activeStream = undefined;
         }
@@ -661,7 +652,7 @@ export async function handleCodexNotification(msg: any) {
       turn.dirty = true;
     }
   } else if (msg.method === 'agent/stderr' || msg.method === 'agent/stdout') {
-    // Ignore raw logs
+    // Ignore raw logs to avoid spamming the Feishu card with long command outputs
   } else if (msg.method === 'thread/tokenUsage/updated') {
     turn.dirty = true;
     if (turn.status !== 'running' && turn.cardId) {
