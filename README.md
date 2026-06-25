@@ -1,4 +1,4 @@
-# 🔌 Codex-Feishu Bridge (Codex-飞书网桥)
+# 🔌 Codex-Feishu Bridge (CodeX-飞书网桥)
 
 Codex-飞书网桥 (Codex-Feishu Bridge) 是一个本地桥接程序，用于将飞书机器人服务（Feishu Bot）桥接至本地的 Codex 桌面客户端或 App Server。
 
@@ -7,7 +7,7 @@ Codex-飞书网桥 (Codex-Feishu Bridge) 是一个本地桥接程序，用于将
 ---
 
 ## 📖 目录
-- [🔌 Codex-Feishu Bridge (Codex-飞书网桥)](#-codex-feishu-bridge-codex-飞书网桥)
+- [🔌 Codex-Feishu Bridge (CodeX-飞书网桥)](#-codex-feishu-bridge-codex-飞书网桥)
   - [📖 目录](#-目录)
   - [📦 安装与使用指南](#-安装与使用指南)
     - [1. 全局安装](#1-全局安装)
@@ -16,6 +16,7 @@ Codex-飞书网桥 (Codex-Feishu Bridge) 是一个本地桥接程序，用于将
   - [⚙️ 配置文件与存储说明](#️-配置文件与存储说明)
     - [工作目录结构](#工作目录结构)
     - [配置文件 `.env` 详细参数说明](#配置文件-env-详细参数说明)
+    - [自动图片与文件上传支持](#自动图片与文件上传支持)
   - [💬 飞书机器人交互指令说明](#-飞书机器人交互指令说明)
   - [🔬 架构与底层协议原理](#-架构与底层协议原理)
 
