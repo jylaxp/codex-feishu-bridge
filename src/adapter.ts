@@ -7,6 +7,9 @@ import * as net from 'net';
 import WebSocket from 'ws';
 import * as crypto from 'crypto';
 
+import { platform } from './core/platform';
+import { LOG_DIR } from './config';
+
 const IS_LITTLE_ENDIAN = os.endianness() === 'LE';
 
 export function get24HourTimeStr(): string {
@@ -126,12 +129,13 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
 
   async connect(): Promise<void> {
     this.cleanupCalled = false;
-    const defaultSocketPath = path.join(os.homedir(), '.codex', 'app-server-control', 'app-server-control.sock');
+    const defaultSocketPath = platform.getDefaultSocketPath();
     const socketPath = this.options.socketPath || defaultSocketPath;
 
     // Proactively check if the socket is alive using a net connection
     let isSocketAlive = false;
-    if (fs.existsSync(socketPath)) {
+    const pathExists = os.platform() === 'win32' ? true : fs.existsSync(socketPath);
+    if (pathExists) {
       isSocketAlive = await new Promise<boolean>((resolve) => {
         const socket = net.createConnection(socketPath);
         socket.on('connect', () => {
@@ -143,7 +147,7 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
         });
       });
 
-      if (!isSocketAlive) {
+      if (!isSocketAlive && os.platform() !== 'win32' && fs.existsSync(socketPath)) {
         console.log(`Socket file found at ${socketPath} but it is dead (Connection Refused). Cleaning it up...`);
         try {
           fs.unlinkSync(socketPath);
@@ -189,14 +193,11 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
       });
     } else {
       let codexBin = process.env.CODEX_BIN || 'codex';
+      if (process.env.NODE_ENV === 'test' && codexBin === '/Applications/Codex.app/Contents/Resources/codex') {
+        codexBin = 'codex';
+      }
       if (codexBin === 'codex' && process.env.NODE_ENV !== 'test') {
-        const commonPaths = [
-          '/Applications/Codex.app/Contents/Resources/codex',
-          '/opt/homebrew/bin/codex',
-          '/usr/local/bin/codex',
-          path.join(os.homedir(), '.npm-global', 'bin', 'codex'),
-          path.join(os.homedir(), '.local', 'bin', 'codex')
-        ];
+        const commonPaths = platform.getAppServerBinaryPaths();
         for (const p of commonPaths) {
           if (fs.existsSync(p)) {
             codexBin = p;
@@ -519,44 +520,33 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
     }
 
     this.ipcConnectionPromise = new Promise<net.Socket | null>((resolve) => {
-      const systemTmpDir = os.tmpdir();
-      const codexIpcDir = path.join(systemTmpDir, 'codex-ipc');
-      let socketPath = '';
-      
-      if (fs.existsSync(codexIpcDir)) {
-        const files = fs.readdirSync(codexIpcDir);
-        const sockFile = files.find(f => (f.startsWith('ipc-') && f.endsWith('.sock')) || f === 'ipc.sock');
-        if (sockFile) {
-          socketPath = path.join(codexIpcDir, sockFile);
+      platform.getIpcSocketPath().then((socketPath) => {
+        if (!socketPath) {
+          logToFile('[IPC] No desktop IPC socket found.');
+          this.ipcConnectionPromise = null;
+          resolve(null);
+          return;
         }
-      }
-      
-      if (!socketPath) {
-        logToFile('[IPC] No desktop IPC socket found.');
-        this.ipcConnectionPromise = null;
-        resolve(null);
-        return;
-      }
 
-      logToFile(`[IPC] Connecting to Desktop IPC socket: ${socketPath}`);
-      const client = net.createConnection(socketPath);
-      this.connectingIpcClient = client;
-      let chunks: Buffer[] = [];
-      let chunksLen = 0;
-      let expectedLen: number | null = null;
+        logToFile(`[IPC] Connecting to Desktop IPC socket: ${socketPath}`);
+        const client = net.createConnection(socketPath);
+        this.connectingIpcClient = client;
+        let chunks: Buffer[] = [];
+        let chunksLen = 0;
+        let expectedLen: number | null = null;
 
-      let isResolved = false;
-      const connectionTimeout = setTimeout(() => {
-        if (isResolved) return;
-        isResolved = true;
-        this.connectingIpcClient = null;
-        logToFile('[IPC] Connection to Desktop IPC socket timed out.');
-        client.destroy();
-        this.ipcConnectionPromise = null;
-        resolve(null);
-      }, 5000);
+        let isResolved = false;
+        const connectionTimeout = setTimeout(() => {
+          if (isResolved) return;
+          isResolved = true;
+          this.connectingIpcClient = null;
+          logToFile('[IPC] Connection to Desktop IPC socket timed out.');
+          client.destroy();
+          this.ipcConnectionPromise = null;
+          resolve(null);
+        }, 5000);
 
-      const writeMessage = (obj: any) => this.writeIpcMessage(client, obj);
+        const writeMessage = (obj: any) => this.writeIpcMessage(client, obj);
 
       client.on('connect', () => {
         if (isResolved) return;
@@ -689,9 +679,10 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
         }
       });
     });
+  });
 
-    return this.ipcConnectionPromise;
-  }
+  return this.ipcConnectionPromise;
+}
 
   private async tryDesktopIpcStartTurn(options: {
     threadId: string;
@@ -843,9 +834,10 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
       }
       // Populate text and command output tracking from snapshot to avoid duplication
       if (Array.isArray(conversationState.turns)) {
+        const lastTurnIdx = conversationState.turns.length - 1;
         conversationState.turns.forEach((turn: any, turnIdx: number) => {
           const turnId = turn.turnId || turn.id;
-          if (turn.status === 'inProgress') {
+          if (turn.status === 'inProgress' && turnIdx === lastTurnIdx) {
             // Emitting turn/started so the bridge recreates the Feishu card
             this.emitNotification({
               method: 'turn/started',
@@ -1089,16 +1081,36 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
                     params: { threadId, turnId, delta }
                   });
                 }
-              } else if (item.type === 'commandExecution' && typeof item.aggregatedOutput === 'string') {
-                const outputKey = `${threadId}-${turnId}-${itemIndex}`;
-                const oldOutput = this.lastCommandOutputs.get(outputKey) || '';
-                const newOutput = item.aggregatedOutput || '';
-                if (newOutput.length > oldOutput.length) {
-                  const delta = newOutput.slice(oldOutput.length);
-                  this.lastCommandOutputs.set(outputKey, newOutput);
+              } else if (item.type === 'commandExecution') {
+                const startedKey = `started-${threadId}-${turnId}-${itemIndex}`;
+                if (!this.lastCommandOutputs.has(startedKey)) {
+                  this.lastCommandOutputs.set(startedKey, 'true');
                   this.emitNotification({
-                    method: 'agent/stderr',
-                    params: { threadId, turnId, chunk: delta }
+                    method: 'item/started',
+                    params: { threadId, turnId, item: { type: 'commandExecution', command: item.command } }
+                  });
+                }
+
+                if (typeof item.aggregatedOutput === 'string') {
+                  const outputKey = `${threadId}-${turnId}-${itemIndex}`;
+                  const oldOutput = this.lastCommandOutputs.get(outputKey) || '';
+                  const newOutput = item.aggregatedOutput || '';
+                  if (newOutput.length > oldOutput.length) {
+                    const delta = newOutput.slice(oldOutput.length);
+                    this.lastCommandOutputs.set(outputKey, newOutput);
+                    this.emitNotification({
+                      method: 'agent/stderr',
+                      params: { threadId, turnId, chunk: delta }
+                    });
+                  }
+                }
+
+                const completedKey = `completed-${threadId}-${turnId}-${itemIndex}`;
+                if (item.status === 'completed' && !this.lastCommandOutputs.has(completedKey)) {
+                  this.lastCommandOutputs.set(completedKey, 'true');
+                  this.emitNotification({
+                    method: 'item/completed',
+                    params: { threadId, turnId, item: { type: 'commandExecution', exitCode: item.exitCode, aggregatedOutput: item.aggregatedOutput } }
                   });
                 }
               }
@@ -1290,7 +1302,7 @@ export function redactSecrets(text: string): string {
 
 export function logToFile(msg: string) {
   try {
-    const logPath = path.join(os.homedir(), '.codex', 'bridge_debug.log');
+    const logPath = path.join(LOG_DIR, 'bridge_debug.log');
     const MAX_SIZE = 10 * 1024 * 1024; // 10MB
     
     // Ensure parent directory exists with restrictive permissions (0o700)
