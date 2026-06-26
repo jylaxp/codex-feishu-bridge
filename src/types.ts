@@ -21,6 +21,23 @@ export interface TurnStats {
   apiCalls?: number;
 }
 
+export interface ActionCluster {
+  id: string;
+  panelId: string;
+  markdownId: string;
+  startedAt: number;
+  lastUpdatedAt: number;
+  completed: boolean;
+  counts: {
+    searches: number;
+    reads: number;
+    edits: number;
+    skills: number;
+    runs: number;
+  };
+  details: string[];
+}
+
 export interface ActiveTurn {
   chatId: string;
   messageId: string;
@@ -33,7 +50,7 @@ export interface ActiveTurn {
   status: 'running' | 'success' | 'failed' | 'interrupted';
   dirty: boolean;
   updating?: boolean;
-  activeStream?: 'reasoning' | 'answer';
+  activeStream?: 'reasoning' | 'answer' | string;
   startedAt?: number;
   completedAt?: number;
   stats: TurnStats;
@@ -43,6 +60,10 @@ export interface ActiveTurn {
   collaborationMode?: string | null;
   personality?: string | null;
   streamingClosed?: boolean;
+  commandOutputTail?: string;
+  activeToolPanels?: Record<string, string>;
+  currentActionCluster?: ActionCluster;
+  clusterCount?: number;
   rateLimitStr?: string;
   lastFullUpdateAt?: number;
   lastSentValues?: Record<string, string>;

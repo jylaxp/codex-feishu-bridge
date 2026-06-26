@@ -105,27 +105,69 @@ export async function streamCardKitElement(cardId: string, elementId: string, co
   try {
     const processedContent = await processMarkdownImages(content || " ");
     const token = await getTenantAccessToken();
-    const res = await fetch(`https://open.feishu.cn/open-apis/cardkit/v1/cards/${encodeURIComponent(cardId)}/elements/${encodeURIComponent(elementId)}/content`, {
-      method: "PUT",
+    let lastError: any;
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      try {
+        const res = await fetch(`https://open.feishu.cn/open-apis/cardkit/v1/cards/${encodeURIComponent(cardId)}/elements/${encodeURIComponent(elementId)}/content`, {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            content: processedContent
+          })
+        });
+        const data: any = await res.json();
+        if (data.code === 0) {
+          return;
+        } else {
+          if (data.msg && (data.msg.includes('streaming mode is closed') || data.msg.includes('streaming_mode is closed'))) {
+            if (turn) turn.streamingClosed = true;
+            return;
+          } else if (data.code === 300313 && attempt < 15) {
+            lastError = data;
+            await new Promise(resolve => setTimeout(resolve, 200));
+            continue;
+          } else {
+            console.error(`Failed to stream CardKit element ${elementId}:`, JSON.stringify(data));
+            return false;
+          }
+        }
+      } catch (e) {
+        if (attempt < 15) {
+          lastError = e;
+          await new Promise(resolve => setTimeout(resolve, 200));
+        } else {
+          console.error(`Failed to stream element ${elementId} network request:`, e);
+          return false;
+        }
+      }
+    }
+  } catch (e) {
+    console.error(`Failed to stream element ${elementId} globally:`, e);
+  }
+}
+
+export async function batchUpdateCardKitElements(cardId: string, actions: any[], sequence: number) {
+  try {
+    const token = await getTenantAccessToken();
+    const res = await fetch(`https://open.feishu.cn/open-apis/cardkit/v1/cards/${encodeURIComponent(cardId)}/batch_update`, {
+      method: "POST",
       headers: {
         "Content-Type": "application/json",
         "Authorization": `Bearer ${token}`
       },
       body: JSON.stringify({
-        content: processedContent,
-        sequence: sequence
+        actions: JSON.stringify(actions)
       })
     });
     const data: any = await res.json();
     if (data.code !== 0) {
-      if (data.msg && (data.msg.includes('streaming mode is closed') || data.msg.includes('streaming_mode is closed'))) {
-        if (turn) turn.streamingClosed = true;
-      } else {
-        console.error(`Failed to stream CardKit element ${elementId}:`, data.msg);
-      }
+      console.error(`Failed to batch update CardKit elements for ${cardId}:`, data.msg);
     }
   } catch (e) {
-    console.error(`Failed to stream element ${elementId} network request:`, e);
+    console.error(`Failed to batch update elements network request:`, e);
   }
 }
 

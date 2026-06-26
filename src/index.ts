@@ -571,36 +571,38 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
       try {
         console.log(`Responding to Codex Approval ${approval.requestId} with decision ${decision}...`);
 
-        let success = true;
-        if (approval.isIpc && (adapter as any).respondIpcApproval) {
-          success = await (adapter as any).respondIpcApproval({
-            threadId: approval.threadId,
-            requestId: approval.requestId,
-            method: approval.approvalMethod || 'command',
-            decision: decision
-          });
-          console.log(`IPC approval response returned: ${success}`);
-        } else {
-          adapter.respond(approval.requestId, { decision });
-        }
+        (async () => {
+          try {
+            let success = true;
+            if (approval.isIpc && (adapter as any).respondIpcApproval) {
+              success = await (adapter as any).respondIpcApproval({
+                threadId: approval.threadId,
+                requestId: approval.requestId,
+                method: approval.approvalMethod || 'command',
+                decision: decision
+              });
+              console.log(`IPC approval response returned: ${success}`);
+            } else {
+              adapter.respond(approval.requestId, { decision });
+            }
 
-        const decidedCard = createApprovalDecidedCard(
-          approval.approvalType,
-          approval.cwd,
-          approval.summary,
-          approval.reason,
-          decision
-        );
-        await larkClient.im.message.patch({
-          path: { message_id: messageId },
-          data: { content: JSON.stringify(decidedCard) }
-        });
+            const decidedCard = createApprovalDecidedCard(
+              approval.approvalType,
+              approval.cwd,
+              approval.summary,
+              approval.reason,
+              decision
+            );
+            await larkClient.im.message.patch({
+              path: { message_id: messageId },
+              data: { content: JSON.stringify(decidedCard) }
+            });
+          } catch (e: any) {
+            console.error('Failed to submit approval decision asynchronously:', e);
+          }
+        })();
 
         return {
-          card: {
-            type: "card_json",
-            data: decidedCard
-          },
           toast: {
             type: "success",
             content: `Decision: ${decision} submitted`,
