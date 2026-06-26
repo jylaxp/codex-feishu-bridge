@@ -1,0 +1,19 @@
+src/feishu/card.ts
+  s_ed27dc122dab0e::t_38cee185e8b9e7 5-6,25-26,108,113,115,124,129,139-142,163,166-199,202,212-244,248-283,285,291
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "d1885dbfc3086b4fc73efd2e8ded44f41eea90ba",
+  "prompts": {},
+  "sessions": {
+    "s_ed27dc122dab0e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ec938-39bb-7d72-a73d-d434e94f7240",
+        "model": "gpt-5.5"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    }
+  }
+}
