@@ -2,6 +2,8 @@ import { larkClient, getTenantAccessToken } from './client';
 import { processMarkdownImages, uploadLocalFilesInMarkdown } from './media';
 import { ActiveTurn } from '../types';
 
+const cardSequences = new Map<string, number>();
+
 export async function createCardKitCard(cardContent: any): Promise<string> {
   const token = await getTenantAccessToken();
   const res = await fetch("https://open.feishu.cn/open-apis/cardkit/v1/cards", {
@@ -20,6 +22,8 @@ export async function createCardKitCard(cardContent: any): Promise<string> {
   if (data.code !== 0) {
     throw new Error(`Failed to create CardKit card: ${data.msg}`);
   }
+  // Initialize sequence for new cards to 0 as required by Feishu streaming mode
+  cardSequences.set(data.data.card_id, 0);
   return data.data.card_id;
 }
 
@@ -101,13 +105,14 @@ export async function sendSimpleStatusCard(chatId: string, title: string, templa
   }
 }
 
-export async function streamCardKitElement(cardId: string, elementId: string, content: string, sequence: number, turn?: ActiveTurn) {
+export async function streamCardKitElement(cardId: string, elementId: string, content: string, _ignoredSeq: number, turn?: ActiveTurn) {
   try {
     const processedContent = await processMarkdownImages(content || " ");
     const token = await getTenantAccessToken();
     let lastError: any;
-    for (let attempt = 1; attempt <= 4; attempt++) {
+    for (let attempt = 1; attempt <= 15; attempt++) {
       try {
+        const currentSeq = cardSequences.get(cardId) || 0;
         const res = await fetch(`https://open.feishu.cn/open-apis/cardkit/v1/cards/${encodeURIComponent(cardId)}/elements/${encodeURIComponent(elementId)}/content`, {
           method: "PUT",
           headers: {
@@ -116,11 +121,12 @@ export async function streamCardKitElement(cardId: string, elementId: string, co
           },
           body: JSON.stringify({
             content: processedContent,
-            sequence: sequence
+            sequence: currentSeq
           })
         });
         const data: any = await res.json();
         if (data.code === 0) {
+          cardSequences.set(cardId, currentSeq + 1);
           return;
         } else {
           if (data.msg && (data.msg.includes('streaming mode is closed') || data.msg.includes('streaming_mode is closed'))) {
@@ -129,6 +135,10 @@ export async function streamCardKitElement(cardId: string, elementId: string, co
           } else if (data.code === 300313 && attempt < 15) {
             lastError = data;
             await new Promise(resolve => setTimeout(resolve, 200));
+            continue;
+          } else if (data.code === 300317 && attempt < 15) {
+            console.warn(`[Sequence Recovery] streamCardKitElement seq ${currentSeq} rejected for ${elementId}. Retrying...`);
+            cardSequences.set(cardId, currentSeq + 1);
             continue;
           } else {
             console.error(`Failed to stream CardKit element ${elementId}:`, JSON.stringify(data));
@@ -150,76 +160,134 @@ export async function streamCardKitElement(cardId: string, elementId: string, co
   }
 }
 
-export async function batchUpdateCardKitElements(cardId: string, actions: any[], sequence: number) {
+export async function batchUpdateCardKitElements(cardId: string, actions: any[], _ignoredSeq: number) {
   try {
     const token = await getTenantAccessToken();
-    const res = await fetch(`https://open.feishu.cn/open-apis/cardkit/v1/cards/${encodeURIComponent(cardId)}/batch_update`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${token}`
-      },
-      body: JSON.stringify({
-        actions: JSON.stringify(actions),
-        sequence: sequence
-      })
-    });
-    const data: any = await res.json();
-    if (data.code !== 0) {
-      console.error(`Failed to batch update CardKit elements for ${cardId}:`, data.msg);
+    for (let attempt = 1; attempt <= 15; attempt++) {
+      try {
+        const currentSeq = cardSequences.get(cardId) || 0;
+        const res = await fetch(`https://open.feishu.cn/open-apis/cardkit/v1/cards/${encodeURIComponent(cardId)}/batch_update`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            actions: JSON.stringify(actions),
+            sequence: currentSeq
+          })
+        });
+        const data: any = await res.json();
+        if (data.code === 0) {
+          cardSequences.set(cardId, currentSeq + 1);
+          return;
+        } else if (data.code === 300317 && attempt < 15) {
+          console.warn(`[Sequence Recovery] batchUpdateCardKitElements seq ${currentSeq} rejected. Retrying...`);
+          cardSequences.set(cardId, currentSeq + 1);
+          continue;
+        } else {
+          console.error(`Failed to batch update CardKit elements for ${cardId}:`, JSON.stringify(data));
+          return;
+        }
+      } catch (e) {
+        if (attempt < 15) {
+          await new Promise(resolve => setTimeout(resolve, 200));
+          continue;
+        }
+        console.error(`Failed to batch update elements network request:`, e);
+        return;
+      }
     }
   } catch (e) {
-    console.error(`Failed to batch update elements network request:`, e);
+    console.error(`Failed to batch update elements top-level error:`, e);
   }
 }
 
 export async function finalizeCardKitCard(cardId: string, finalContent: any, turn: ActiveTurn) {
   try {
     const token = await getTenantAccessToken();
-    
     if (turn) turn.streamingClosed = true;
     
     // 1. Close streaming mode
-    const settingsRes = await fetch(`https://open.feishu.cn/open-apis/cardkit/v1/cards/${encodeURIComponent(cardId)}/settings`, {
-      method: "PATCH",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${token}`
-      },
-      body: JSON.stringify({
-        settings: JSON.stringify({ streaming_mode: false }),
-        sequence: turn.sequence++
-      })
-    });
-    const settingsData: any = await settingsRes.json();
-    if (settingsData.code !== 0) {
-      console.error(`Failed to close streaming mode for card ${cardId}:`, settingsData.msg);
+    for (let attempt = 1; attempt <= 15; attempt++) {
+      try {
+        const currentSeq = cardSequences.get(cardId) || 0;
+        const settingsRes = await fetch(`https://open.feishu.cn/open-apis/cardkit/v1/cards/${encodeURIComponent(cardId)}/settings`, {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            settings: JSON.stringify({ streaming_mode: false }),
+            sequence: currentSeq
+          })
+        });
+        const settingsData: any = await settingsRes.json();
+        if (settingsData.code === 0) {
+          cardSequences.set(cardId, currentSeq + 1);
+          break;
+        } else if (settingsData.code === 300317 && attempt < 15) {
+          cardSequences.set(cardId, currentSeq + 1);
+          continue;
+        } else {
+          console.error(`Failed to close streaming mode for card ${cardId}:`, settingsData.msg);
+          break;
+        }
+      } catch (e) {
+        if (attempt < 15) {
+          await new Promise(resolve => setTimeout(resolve, 200));
+          continue;
+        }
+        console.error(`Failed to close streaming mode network error:`, e);
+        break;
+      }
     }
 
     // 2. Put final full card json
-    const updateRes = await fetch(`https://open.feishu.cn/open-apis/cardkit/v1/cards/${encodeURIComponent(cardId)}`, {
-      method: "PUT",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${token}`
-      },
-      body: JSON.stringify({
-        card: {
-          type: "card_json",
-          data: JSON.stringify(finalContent)
-        },
-        sequence: turn.sequence++
-      })
-    });
-    const updateData: any = await updateRes.json();
-    if (updateData.code !== 0) {
-      console.error(`Failed to finalize CardKit card ${cardId}:`, updateData.msg);
+    for (let attempt = 1; attempt <= 15; attempt++) {
+      try {
+        const currentSeq = cardSequences.get(cardId) || 0;
+        const updateRes = await fetch(`https://open.feishu.cn/open-apis/cardkit/v1/cards/${encodeURIComponent(cardId)}`, {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            card: {
+              type: "card_json",
+              data: JSON.stringify(finalContent)
+            },
+            sequence: currentSeq
+          })
+        });
+        const updateData: any = await updateRes.json();
+        if (updateData.code === 0) {
+          cardSequences.set(cardId, currentSeq + 1);
+          break;
+        } else if (updateData.code === 300317 && attempt < 15) {
+          cardSequences.set(cardId, currentSeq + 1);
+          continue;
+        } else {
+          console.error(`Failed to finalize CardKit card ${cardId}:`, updateData.msg);
+          break;
+        }
+      } catch (e) {
+        if (attempt < 15) {
+          await new Promise(resolve => setTimeout(resolve, 200));
+          continue;
+        }
+        console.error(`Failed to finalize card network error:`, e);
+        break;
+      }
     }
+
     if (turn.status === 'success' && !turn.filesUploaded) {
       turn.filesUploaded = true;
       uploadLocalFilesInMarkdown(turn.answer || '', turn.chatId, cardId).catch(console.error);
     }
   } catch (e) {
-    console.error(`Failed to finalize CardKit card network request:`, e);
+    console.error(`Failed to finalize CardKit card globally:`, e);
   }
 }

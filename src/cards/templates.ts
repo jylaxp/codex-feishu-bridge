@@ -354,7 +354,7 @@ export function createHelpCard() {
           tag: "div",
           text: {
             tag: "lark_md",
-            content: "🔍 **会话绑定**\n- `'/list'`\n  拉取本地 Codex 活跃会话列表，提供下拉菜单选择绑定。\n- `'/ll'`\n  拉取本地 Codex 活跃会话列表（Table 表格视图，完美防止会话名在客户端被截断）。"
+            content: "🔍 **会话绑定**\n- `'/list'` 或 `'/l'`\n  拉取本地 Codex 活跃会话列表，提供下拉菜单选择绑定。\n- `'/ll'`\n  拉取本地 Codex 活跃会话列表（Table 表格视图，完美防止会话名在客户端被截断）。"
           }
         },
         {

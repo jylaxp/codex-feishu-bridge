@@ -28,7 +28,7 @@ export async function routeCommand(chatId: string, text: string): Promise<boolea
   }
 
   // 1. Handle list / ll commands
-  if (trimmed.startsWith('/list')) {
+  if (trimmed.startsWith('/list') || trimmed === '/l' || trimmed.startsWith('/l ')) {
     await handleList(chatId);
     return true;
   }
