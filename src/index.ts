@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
+import { exec } from 'child_process';
 
 import './config';
 import { envPath } from './config';
@@ -18,6 +19,8 @@ import { handleCodexNotification } from './codex/dispatcher';
 import { routeCommand } from './commands/router';
 import { checkAndPushHistory } from './codex/history';
 import { ActiveTurn } from './types';
+import { platform } from './core/platform';
+import { registerThreadInGlobalState } from './core/global-state';
 
 // Helper to extract text content
 function extractTextMessage(contentStr: string): string {
@@ -127,7 +130,88 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
         // Try routing command
         const wasCommand = await routeCommand(chatId, text);
         if (wasCommand) {
+          stateManager.pendingProjects.delete(chatId);
           return;
+        }
+
+        const pendingProject = stateManager.pendingProjects.get(chatId);
+        if (pendingProject) {
+          stateManager.pendingProjects.delete(chatId);
+          try {
+            console.log(`Creating new Codex thread for project "${pendingProject.name}" in CWD "${pendingProject.path}"`);
+            
+            // Launch Codex Desktop App with the project path to ensure it opens/switches to this project
+            try {
+              const codexBin = platform.getAppServerBinaryPaths().find((p: string) => fs.existsSync(p)) || 'codex';
+              console.log(`Launching Codex Desktop for path: ${pendingProject.path} using binary: ${codexBin}`);
+              exec(`"${codexBin}" app "${pendingProject.path}"`, (err: any) => {
+                if (err) {
+                  console.error('Failed to launch Codex Desktop App:', err);
+                }
+              });
+              // Wait a brief moment for Codex Desktop to start opening the project
+              await new Promise(resolve => setTimeout(resolve, 1500));
+            } catch (appErr) {
+              console.warn('Failed to auto-launch Codex Desktop App:', appErr);
+            }
+
+            const params: any = {
+              threadSource: 'user',
+              cwd: pendingProject.path,
+              workspacePath: pendingProject.path,
+              workspace: pendingProject.path
+            };
+            const startRes = await adapter.request('thread/start', params);
+            console.log('Codex thread/start response:', JSON.stringify(startRes));
+
+            const thread = startRes?.thread || startRes;
+            const threadId = thread?.id || startRes?.threadId;
+
+            if (!threadId) {
+              throw new Error('No thread ID returned from Codex App Server');
+            }
+
+            // Determine session name
+            let sessionName = text.trim();
+            if (sessionName.length > 20 || !sessionName) {
+              const now = new Date();
+              const pad = (n: number) => n.toString().padStart(2, '0');
+              const timeStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+              sessionName = `${pendingProject.name}_${timeStr}`;
+            }
+
+            // Set the thread name on Codex Server so it shows up named correctly
+            try {
+              await adapter.request('thread/name/set', {
+                threadId: threadId,
+                name: sessionName
+              });
+            } catch (nameErr) {
+              console.warn('Failed to set thread name on Codex Server:', nameErr);
+            }
+
+            // Register the thread in global state so it is visible in the sidebar under the project
+            await registerThreadInGlobalState(threadId, { projectPath: pendingProject.path });
+
+            stateManager.sessionDb[chatId] = {
+              threadId: threadId,
+              threadName: sessionName,
+              cwd: pendingProject.path
+            };
+            saveSessions(stateManager.sessionDb);
+
+            checkAndPushHistory().catch(e => {
+              console.error('Failed to run history check after creating project session:', e);
+            });
+
+            const successCard = createBoundSuccessCard(sessionName, threadId);
+            const successCardId = await createCardKitCard(successCard);
+            await sendCardKitMessage(chatId, successCardId);
+          } catch (createErr: any) {
+            console.error('Failed to create session for selected project:', createErr);
+            await sendSimpleStatusCard(chatId, "🆕 创建会话失败", "red", `项目: ${pendingProject.name}\n错误: ${createErr.message || createErr}`);
+            return;
+          }
         }
 
         // Handle normal user message (forward to Codex)
@@ -445,6 +529,59 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
       return;
     }
 
+    // 0.5 Handle np_select_project
+    if (action.action_id === 'np_select_project' || actionValue.action === 'np_select_project') {
+      const selectedProjectPath = action.option || actionValue.projectPath;
+      if (!selectedProjectPath) return;
+
+      const projectName = path.basename(selectedProjectPath);
+      
+      stateManager.pendingProjects.set(chatId, {
+        path: selectedProjectPath,
+        name: projectName
+      });
+
+      const updateCard = {
+        schema: "2.0",
+        config: { wide_screen_mode: true },
+        header: {
+          template: "green",
+          title: { tag: "plain_text", content: "📁 项目选择成功" }
+        },
+        body: {
+          elements: [
+            {
+              tag: "div",
+              text: {
+                tag: "lark_md",
+                content: `已选择项目: **${projectName}**\n路径: \`${selectedProjectPath}\`\n\n💬 **请直接在当前聊天中输入信息（如第一条指令或新会话名称）**，系统将自动在项目下创建新会话并开始工作。`
+              }
+            }
+          ]
+        }
+      };
+
+      try {
+        await larkClient.im.message.patch({
+          path: { message_id: messageId },
+          data: { content: JSON.stringify(updateCard) }
+        });
+      } catch (patchErr: any) {
+        console.error('Failed to patch project selection card:', patchErr);
+      }
+
+      return {
+        toast: {
+          type: "success",
+          content: `Selected project: ${projectName}`,
+          i18n: {
+            zh_cn: `已选择项目: ${projectName}`,
+            en_us: `Selected project: ${projectName}`
+          }
+        }
+      };
+    }
+
     // 1. Handle session binding
     if (action.action_id === 'bind_select_thread' || actionValue.action === 'bind_select_thread') {
       const selectedThreadId = action.option || actionValue.threadId;
@@ -571,36 +708,38 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
       try {
         console.log(`Responding to Codex Approval ${approval.requestId} with decision ${decision}...`);
 
-        let success = true;
-        if (approval.isIpc && (adapter as any).respondIpcApproval) {
-          success = await (adapter as any).respondIpcApproval({
-            threadId: approval.threadId,
-            requestId: approval.requestId,
-            method: approval.approvalMethod || 'command',
-            decision: decision
-          });
-          console.log(`IPC approval response returned: ${success}`);
-        } else {
-          adapter.respond(approval.requestId, { decision });
-        }
+        (async () => {
+          try {
+            let success = true;
+            if (approval.isIpc && (adapter as any).respondIpcApproval) {
+              success = await (adapter as any).respondIpcApproval({
+                threadId: approval.threadId,
+                requestId: approval.requestId,
+                method: approval.approvalMethod || 'command',
+                decision: decision
+              });
+              console.log(`IPC approval response returned: ${success}`);
+            } else {
+              adapter.respond(approval.requestId, { decision });
+            }
 
-        const decidedCard = createApprovalDecidedCard(
-          approval.approvalType,
-          approval.cwd,
-          approval.summary,
-          approval.reason,
-          decision
-        );
-        await larkClient.im.message.patch({
-          path: { message_id: messageId },
-          data: { content: JSON.stringify(decidedCard) }
-        });
+            const decidedCard = createApprovalDecidedCard(
+              approval.approvalType,
+              approval.cwd,
+              approval.summary,
+              approval.reason,
+              decision
+            );
+            await larkClient.im.message.patch({
+              path: { message_id: messageId },
+              data: { content: JSON.stringify(decidedCard) }
+            });
+          } catch (e: any) {
+            console.error('Failed to submit approval decision asynchronously:', e);
+          }
+        })();
 
         return {
-          card: {
-            type: "card_json",
-            data: decidedCard
-          },
           toast: {
             type: "success",
             content: `Decision: ${decision} submitted`,

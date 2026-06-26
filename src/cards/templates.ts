@@ -361,7 +361,7 @@ export function createHelpCard() {
           tag: "div",
           text: {
             tag: "lark_md",
-            content: "🆕 **新建会话**\n- `'/new [名称]'` 或 `'/create [名称]'\n  快速在本地 Codex Desktop 启动一个新会话并自动与当前聊天绑定。可指定会话名字。"
+            content: "🆕 **新建会话**\n- `'/new [名称]'` 或 `'/create [名称]'\n  快速在本地 Codex Desktop 启动一个新会话并自动与当前聊天绑定。可指定会话名字。\n- `'/np'`\n  选择本地项目，然后通过输入信息在该项目下创建新会话并开始工作。"
           }
         },
         {
@@ -439,6 +439,13 @@ export function createHelpCard() {
           text: {
             tag: "lark_md",
             content: "✨ **可用技能列表与调用**\n- `'/skills'`\n  列出当前工作区下可用的所有技能（Skills）。\n- **技能 @ 提及**：在日常对话中通过 `@技能名称 [输入内容]` 来调用特定技能（例如 `@Ce Debug 为什么我的项目有类型报错？`）。"
+          }
+        },
+        {
+          tag: "div",
+          text: {
+            tag: "lark_md",
+            content: "🛑 **终止任务**\n- `'/cancel'` 或 `'/stop'` 或 `'/s'`\n  终止/中断当前会话正在运行的任务。"
           }
         },
         {
