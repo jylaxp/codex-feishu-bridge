@@ -225,7 +225,7 @@ export async function handleCwd(chatId: string, text: string) {
         }
       } catch (statErr: any) {
         if (statErr.code === 'ENOENT') {
-          await sendSimpleStatusCard(chatId, "🚫 路径绑定失败", "red", `路径存在：\n\`${finalCwd}\``);
+          await sendSimpleStatusCard(chatId, "🚫 路径绑定失败", "red", `路径不存在：\n\`${finalCwd}\``);
           return;
         }
         const errMsg = statErr?.message || "";

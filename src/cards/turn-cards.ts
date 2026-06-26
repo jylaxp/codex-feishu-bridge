@@ -52,7 +52,7 @@ export async function createCardKitInitialLayout(turn: ActiveTurn) {
           content: await processMarkdownImages(`🧠 **模型推理过程**\n等待开始...`),
           element_id: "codex_reasoning"
         },
-        { tag: "hr" },
+        { tag: "hr", element_id: "codex_output_hr" },
         {
           tag: "markdown",
           content: await processMarkdownImages(`✨ **最终结果输出**\n等待中...`),
