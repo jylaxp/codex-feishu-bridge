@@ -1,0 +1,19 @@
+src/codex/dispatcher.ts
+  s_ed27dc122dab0e::t_b46e155e2f1c85 541,549-553,555,855
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.1",
+  "base_commit_sha": "db7f935cab77193d5ea4a983c0f66fcf2c13f1fe",
+  "prompts": {},
+  "sessions": {
+    "s_ed27dc122dab0e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ec938-39bb-7d72-a73d-d434e94f7240",
+        "model": "gpt-5.5"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    }
+  }
+}
