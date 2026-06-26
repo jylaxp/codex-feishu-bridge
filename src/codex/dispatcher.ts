@@ -538,14 +538,7 @@ export async function handleCodexNotification(msg: any) {
           try {
             await fetchRateLimitsForTurn(turn);
             await streamUpdateCardKit(turn);
-          } finally {
-            turn.status = finalStatus;
-            cleanupTurn(finalTargetTurnId, turn.threadId);
-          }
-        });
-
-        (async () => {
-          try {
+            
             const totalLength = (turn.reasoning || "").length + (turn.answer || "").length;
             const delayMs = Math.min(8000, Math.max(1000, (totalLength * 10) + 500));
             console.log(`[Async Finalize] Waiting ${delayMs}ms for typewriter animation to catch up (total chars: ${totalLength})...`);
@@ -553,10 +546,13 @@ export async function handleCodexNotification(msg: any) {
             const finalLayout = await createCardKitFinalLayout(turn);
             await finalizeCardKitCard(cId, finalLayout, turn);
             console.log(`[Async Finalize] Card ${cId} finalized successfully.`);
-          } catch (finalizeErr) {
-            console.error('Asynchronous card finalization failed:', finalizeErr);
+          } catch (err) {
+            console.error('Asynchronous card finalization or update failed:', err);
+          } finally {
+            turn.status = finalStatus;
+            cleanupTurn(finalTargetTurnId, turn.threadId);
           }
-        })();
+        });
       } else {
         turn.status = finalStatus;
         cleanupTurn(finalTargetTurnId, turn.threadId);
@@ -856,7 +852,7 @@ export async function handleCodexNotification(msg: any) {
     turn.dirty = true;
     if (turn.status !== 'running' && turn.cardId) {
       const cId = turn.cardId;
-      const targetTurnId = params.turnId || (params.turn && params.turn.id) || turn.threadId;
+      const targetTurnId = turn.threadId;
       queueTurnTask(targetTurnId, async () => {
         try {
           const finalLayout = await createCardKitFinalLayout(turn);
