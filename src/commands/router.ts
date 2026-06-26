@@ -1,4 +1,4 @@
-import { handleHelp, handleNew, handleFork, handleDelete } from './handlers/session';
+import { handleHelp, handleNew, handleFork, handleDelete, handleNewProject } from './handlers/session';
 import { handleList, handleTableList } from './handlers/bind';
 import { handleGoal, handlePlan, handleCompact, handleCancel, handleCwd, executeUserCommand } from './handlers/control';
 import { handleUsage, handlePersonality, handleModel, handleStatus, handleSkills, handleMcp } from './handlers/info';
@@ -103,6 +103,12 @@ export async function routeCommand(chatId: string, text: string): Promise<boolea
     return true;
   }
 
+  // 12.5 Handle np command
+  if (trimmed.startsWith('/np')) {
+    await handleNewProject(chatId);
+    return true;
+  }
+
   // 13. Handle cwd command
   if (trimmed.startsWith('/cwd') || trimmed.startsWith('/workspace')) {
     await handleCwd(chatId, trimmed);
@@ -123,8 +129,8 @@ export async function routeCommand(chatId: string, text: string): Promise<boolea
     return true;
   }
 
-  // 16. Handle cancel / stop command
-  if (trimmed === '/cancel' || trimmed === '/stop') {
+  // 16. Handle cancel / stop / s command
+  if (trimmed === '/cancel' || trimmed === '/stop' || trimmed === '/s') {
     await handleCancel(chatId);
     return true;
   }

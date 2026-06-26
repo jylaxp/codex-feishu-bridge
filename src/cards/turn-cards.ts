@@ -652,3 +652,84 @@ export async function createTableBindingCard(threads: CodexThread[]) {
     body: { elements }
   };
 }
+
+export async function createProjectSelectCard() {
+  const homeDir = os.homedir();
+  const globalStatePath = path.join(homeDir, '.codex', '.codex-global-state.json');
+  let savedWorkspaces: string[] = [];
+  let workspaceLabels: Record<string, string> = {};
+
+  try {
+    const stats = await fs.promises.stat(globalStatePath);
+    if (stats.isFile()) {
+      const globalStateStr = await fs.promises.readFile(globalStatePath, 'utf8');
+      const globalState = JSON.parse(globalStateStr);
+      savedWorkspaces = globalState['electron-saved-workspace-roots'] || globalState['project-order'] || [];
+      workspaceLabels = globalState['electron-workspace-root-labels'] || {};
+    }
+  } catch (e: any) {
+    if (e.code !== 'ENOENT') {
+      console.error('Failed to parse .codex-global-state.json:', e);
+    }
+  }
+
+  if (savedWorkspaces.length === 0) {
+    return {
+      schema: "2.0",
+      config: { wide_screen_mode: true },
+      header: {
+        template: "orange",
+        title: { tag: "plain_text", content: "📁 Codex 新建项目会话" }
+      },
+      body: {
+        elements: [
+          {
+            tag: "div",
+            text: {
+              tag: "lark_md",
+              content: "⚠️ **未发现任何已保存的项目/工作区。**\n请先在 Codex Desktop 客户端中打开一个项目以保存工作区。"
+            }
+          }
+        ]
+      }
+    };
+  }
+
+  const options = savedWorkspaces.map(w => {
+    const name = workspaceLabels[w] || path.basename(w);
+    const content = `📁 ${name} (${w})`;
+    const cleanContent = content.length > 100 ? content.substring(0, 97) + "..." : content;
+    return {
+      text: { tag: "plain_text", content: cleanContent },
+      value: w
+    };
+  });
+
+  const elements = [
+    {
+      tag: "div",
+      text: {
+        tag: "lark_md",
+        content: "请从下方选择您要工作的项目。选择后，输入任何信息（如会话名称或指令），系统将自动在该项目下创建新会话并开始工作："
+      }
+    },
+    {
+      tag: "select_static",
+      element_id: "np_select_dropdown",
+      placeholder: { tag: "plain_text", content: "选择项目..." },
+      value: { action: "np_select_project" },
+      options: options.slice(0, 99)
+    }
+  ];
+
+  return {
+    schema: "2.0",
+    config: { wide_screen_mode: true },
+    header: {
+      template: "indigo",
+      title: { tag: "plain_text", content: "📁 Codex 新建项目会话" }
+    },
+    body: { elements }
+  };
+}
+

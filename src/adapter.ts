@@ -781,14 +781,28 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
     }
 
     // Attempt to launch the turn via Desktop IPC first (so that Desktop UI is updated)
-    try {
-      const ipcTurnId = await this.tryDesktopIpcStartTurn(options);
-      if (ipcTurnId) {
-        console.log(`Successfully started turn via Desktop IPC. turnId: ${ipcTurnId}`);
-        return ipcTurnId;
+    // We retry up to 5 times with a 1.5s delay if it returns null, to allow Codex Desktop window to load/register.
+    const maxRetries = 5;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        console.log(`Attempting to start turn via Desktop IPC (attempt ${attempt}/${maxRetries})...`);
+        const ipcTurnId = await this.tryDesktopIpcStartTurn(options);
+        if (ipcTurnId) {
+          console.log(`Successfully started turn via Desktop IPC. turnId: ${ipcTurnId}`);
+          return ipcTurnId;
+        }
+      } catch (e) {
+        console.warn(`Attempt ${attempt} to start turn via Desktop IPC failed:`, e);
       }
-    } catch (e) {
-      console.warn('Error starting turn via Desktop IPC, falling back to standard WebSocket request:', e);
+
+      if (attempt < maxRetries) {
+        const socketPath = await platform.getIpcSocketPath();
+        if (!socketPath) {
+          console.log('No active Desktop IPC socket found. Skipping further retries.');
+          break;
+        }
+        await new Promise(resolve => setTimeout(resolve, 1500));
+      }
     }
 
     console.log('Falling back to standard websocket turn/start...');
