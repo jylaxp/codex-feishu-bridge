@@ -653,7 +653,7 @@ export async function handleCodexNotification(msg: any) {
       if (item.phase === 'commentary') {
         if (turn.currentActionCluster) {
           turn.currentActionCluster.completed = true;
-          const targetTurnIdForQueue = params.turnId || (params.turn && params.turn.id) || turn.threadId;
+          const targetTurnIdForQueue = turn.threadId;
           const clusterToClose = turn.currentActionCluster;
           if (turn.cardId) {
             queueTurnTask(targetTurnIdForQueue, async () => {
@@ -692,7 +692,7 @@ export async function handleCodexNotification(msg: any) {
     } else if (item.type === 'reasoning') {
       if (turn.currentActionCluster) {
         turn.currentActionCluster.completed = true;
-        const targetTurnIdForQueue = params.turnId || (params.turn && params.turn.id) || turn.threadId;
+        const targetTurnIdForQueue = turn.threadId;
         const clusterToClose = turn.currentActionCluster;
         if (turn.cardId) {
           queueTurnTask(targetTurnIdForQueue, async () => {
@@ -721,7 +721,7 @@ export async function handleCodexNotification(msg: any) {
       turn.activeStream = msg.method === 'item/started' ? 'reasoning' : undefined;
       turn.dirty = true;
     } else if (item.type === 'commandExecution' || item.type === 'mcpToolCall' || item.type === 'fileChange' || item.type === 'toolCall') {
-      const targetTurnIdForQueue = params.turnId || (params.turn && params.turn.id) || turn.threadId;
+      const targetTurnIdForQueue = turn.threadId;
 
       if (msg.method === 'item/started') {
         const actionInfo = categorizeAction(item);
@@ -813,7 +813,7 @@ export async function handleCodexNotification(msg: any) {
         }
       } else if (msg.method === 'item/completed') {
         const exitStatus = (item.exitCode === 0 || item.status === 'completed') ? "Succeeded" : `Failed`;
-        const targetTurnIdForQueue = params.turnId || (params.turn && params.turn.id) || turn.threadId;
+        const targetTurnIdForQueue = turn.threadId;
         
         const cluster = turn.currentActionCluster;
         if (cluster && exitStatus === 'Failed') {

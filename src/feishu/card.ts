@@ -115,7 +115,8 @@ export async function streamCardKitElement(cardId: string, elementId: string, co
             "Authorization": `Bearer ${token}`
           },
           body: JSON.stringify({
-            content: processedContent
+            content: processedContent,
+            sequence: sequence
           })
         });
         const data: any = await res.json();
@@ -159,7 +160,8 @@ export async function batchUpdateCardKitElements(cardId: string, actions: any[],
         "Authorization": `Bearer ${token}`
       },
       body: JSON.stringify({
-        actions: JSON.stringify(actions)
+        actions: JSON.stringify(actions),
+        sequence: sequence
       })
     });
     const data: any = await res.json();
