@@ -4,6 +4,7 @@ import { sendSimpleStatusCard, createCardKitCard, sendCardKitMessage } from '../
 import { createHelpCard, createBoundSuccessCard } from '../../cards/templates';
 import { saveSessions } from '../../core/storage';
 import { checkAndPushHistory } from '../../codex/history';
+import { registerThreadInGlobalState } from '../../core/global-state';
 
 export async function handleHelp(chatId: string) {
   try {
@@ -14,7 +15,41 @@ export async function handleHelp(chatId: string) {
     console.error('Failed to send help card:', e);
     const { getAllowedCommands } = require('../router');
     const allowedCommands = getAllowedCommands();
-    await sendSimpleStatusCard(chatId, "💡 Codex 飞书助手指令指南 (备用)", "blue", `支持的指令：\n- /list: 绑定/列出会话\n- /ll: 绑定/列出会话 (表格 Table 视图)\n- /new [名称] 或 /create: 新建并绑定新会话\n- /cwd [工作目录] 或 /workspace: 查询或切换工作目录\n- /cmd [命令] 或 /run: 执行本地终端命令 (当前支持: ${allowedCommands.join(', ')})\n- /goal [目标内容]: 设置并启动目标模式\n- /goal: 查看当前目标状态\n- /goal clear: 清除当前目标\n- /mcp: 查看 MCP 服务及认证状态\n- /model [名称]: 设置或查询当前会话使用的大模型\n- /personality [friendly|pragmatic|none]: 设置或查询回复风格\n- /compact: 压缩当前会话上下文\n- /fork [新名称]: 派生并绑定新会话\n- /plan: 开启或关闭计划模式 (Plan Mode)\n- /status: 展示当前会话综合状态\n- /skills: 列出当前工作区可用技能\n- 在日常对话中通过 @技能名称 提及并调用特定技能 (例如: @Ce Debug 为什么编译报错)\n- /usage 或 /quota: 获取当前账户的短期/长期窗口用量及重置时间\n- /delete 或 /archive: 归档并解绑会话\n- /help 或 /h: 获取此帮助卡片`);
+    await sendSimpleStatusCard(chatId, "💡 Codex 飞书助手指令指南 (备用)", "blue", `支持的指令：
+- /list: 绑定/列出会话
+- /ll: 绑定/列出会话 (表格 Table 视图)
+- /new [名称] 或 /create: 新建并绑定新会话
+- /np: 在选定项目下新建会话并开始工作
+- /cwd [工作目录] 或 /workspace: 查询或切换工作目录
+- /cmd [命令] 或 /run: 执行本地终端命令 (当前支持: ${allowedCommands.join(', ')})
+- /goal [目标内容]: 设置并启动目标模式
+- /goal: 查看当前目标状态
+- /goal clear: 清除当前目标
+- /mcp: 查看 MCP 服务及认证状态
+- /model [名称]: 设置或查询当前会话使用的大模型
+- /personality [friendly|pragmatic|none]: 设置或查询回复风格
+- /compact: 压缩当前会话上下文
+- /fork [新名称]: 派生并绑定新会话
+- /plan: 开启或关闭计划模式 (Plan Mode)
+- /status: 展示当前会话综合状态
+- /skills: 列出当前工作区可用技能
+- 在日常对话中通过 @技能名称 提及并调用特定技能 (例如: @Ce Debug 为什么编译报错)
+- /usage 或 /quota: 获取当前账户的短期/长期窗口用量及重置时间
+- /cancel 或 /stop 或 /s: 终止当前会话正在运行的任务
+- /delete 或 /archive: 归档并解绑会话
+- /help 或 /h: 获取此帮助卡片`);
+  }
+}
+
+export async function handleNewProject(chatId: string) {
+  try {
+    const { createProjectSelectCard } = require('../../cards/turn-cards');
+    const selectCard = await createProjectSelectCard();
+    const cardId = await createCardKitCard(selectCard);
+    await sendCardKitMessage(chatId, cardId);
+  } catch (e: any) {
+    console.error('Failed to send project selection card:', e);
+    await sendSimpleStatusCard(chatId, "🚫 新建项目会话失败", "red", `${e.message || e}`);
   }
 }
 
@@ -43,12 +78,25 @@ export async function handleNew(chatId: string, text: string) {
       throw new Error('No thread ID returned from Codex App Server');
     }
 
+    // Register the thread in global state so it is visible in the sidebar under projectless
+    await registerThreadInGlobalState(threadId, { isProjectless: true });
+
     stateManager.sessionDb[chatId] = {
       threadId: threadId,
       threadName: sessionName,
       cwd: thread?.cwd || ""
     };
     saveSessions(stateManager.sessionDb);
+
+    // Set the thread name on Codex Server so it shows up named correctly
+    try {
+      await adapter.request('thread/name/set', {
+        threadId: threadId,
+        name: sessionName
+      });
+    } catch (nameErr) {
+      console.warn('Failed to set thread name on Codex Server:', nameErr);
+    }
 
     checkAndPushHistory().catch(e => {
       console.error('Failed to run history check after creating session:', e);
@@ -95,6 +143,13 @@ export async function handleFork(chatId: string, text: string) {
       name: forkName
     });
     
+    // Register the forked thread in global state
+    if (bound.cwd) {
+      await registerThreadInGlobalState(newThreadId, { projectPath: bound.cwd });
+    } else {
+      await registerThreadInGlobalState(newThreadId, { isProjectless: true });
+    }
+
     stateManager.sessionDb[chatId] = {
       threadId: newThreadId,
       threadName: forkName,

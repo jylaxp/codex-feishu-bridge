@@ -10,6 +10,7 @@ export class BridgeStateManager {
   public activeApprovals = new Map<string, ActiveApproval>();
   public processedMessageIds = new Map<string, number>();
   public exploreCwds = new Map<string, string>();
+  public pendingProjects = new Map<string, { path: string; name: string }>();
 
   public isMessageProcessed(messageId: string): boolean {
     return this.processedMessageIds.has(messageId);
