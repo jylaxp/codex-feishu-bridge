@@ -6,6 +6,7 @@ import {
   createCardKitCard,
   sendCardKitMessage,
   streamCardKitElement,
+  batchUpdateCardKitElements,
   finalizeCardKitCard,
   sendSimpleStatusCard
 } from '../feishu/card';
@@ -97,6 +98,19 @@ export async function streamUpdateCardKit(turn: ActiveTurn) {
       }
     }
 
+    if (turn.activeStream && turn.activeStream.startsWith('cmd_') && turn.activeToolPanels) {
+      const mdId = turn.activeToolPanels[turn.activeStream];
+      if (mdId && turn.commandOutputTail !== undefined) {
+        const tailDisplay = `\`\`\`text\n${turn.commandOutputTail || "等待输出..."}\n\`\`\`` + " ▍";
+        if (shouldUpdate(mdId, tailDisplay)) {
+          const success = await streamCardKitElement(turn.cardId, mdId, tailDisplay, turn.sequence++, turn);
+          if (success === false && turn.lastSentValues) {
+            delete turn.lastSentValues[mdId];
+          }
+        }
+      }
+    }
+
     if (turn.answer) {
       const truncatedAnswer = truncateText(turn.answer, 10000, '\n\n... (由于长度限制，后续输出已被截断，请在 IDE 中查看完整内容) ...');
       const displayVal = truncatedAnswer + (turn.activeStream === 'answer' ? " ▍" : "");
@@ -147,6 +161,54 @@ export function getChatIdForThread(threadId: string): string | undefined {
     }
   }
   return undefined;
+}
+
+export type ActionCategory = 'READ' | 'EDIT' | 'SEARCH' | 'SKILL' | 'RUN';
+
+export function categorizeAction(item: any): { category: ActionCategory; name: string; count: number } {
+  if (item.type === 'fileChange') {
+    return { category: 'EDIT', name: 'fileChange', count: item.changes?.length || 1 };
+  } else if (item.type === 'mcpToolCall') {
+    return { category: 'SKILL', name: `${item.server}.${item.tool}`, count: 1 };
+  } else if (item.type === 'toolCall') {
+    return { category: 'SKILL', name: item.toolName || item.tool || 'unknown_tool', count: 1 };
+  } else if (item.type === 'commandExecution') {
+    const cmd = (item.command || '').trim();
+    if (cmd.startsWith('rg ') || cmd.startsWith('grep ') || cmd.startsWith('find ')) {
+      return { category: 'SEARCH', name: cmd, count: 1 };
+    } else if (cmd.startsWith('cat ') || cmd.startsWith('head ') || cmd.startsWith('less ') || cmd.startsWith('tail ')) {
+      return { category: 'READ', name: cmd, count: 1 };
+    } else if (cmd.startsWith('sed ') || cmd.startsWith('awk ') || cmd.startsWith('echo ')) {
+      return { category: 'EDIT', name: cmd, count: 1 };
+    } else {
+      return { category: 'RUN', name: cmd, count: 1 };
+    }
+  }
+  return { category: 'RUN', name: 'unknown', count: 1 };
+}
+
+export function generateClusterTitle(counts: any, latestRunName?: string): { title: string; icon: string } {
+  const parts: string[] = [];
+  if (counts.edits > 0) parts.push(`编辑了 ${counts.edits} 个文件`);
+  if (counts.reads > 0) parts.push(`读取了 ${counts.reads} 个文件`);
+  if (counts.searches > 0) parts.push(`已搜索代码`);
+  
+  if (counts.runs > 0) {
+    if (latestRunName) {
+      let shortCmd = latestRunName;
+      if (shortCmd.length > 20) shortCmd = shortCmd.substring(0, 20) + '...';
+      return { title: `🚀 执行命令: ${shortCmd} ${parts.length > 0 ? '(' + parts.join('和') + ')' : ''}`, icon: 'code-block_outlined' };
+    }
+    return { title: `🚀 执行了 ${counts.runs} 条命令 ${parts.length > 0 ? '(' + parts.join('和') + ')' : ''}`, icon: 'code-block_outlined' };
+  } else if (counts.skills > 0) {
+    return { title: `🔧 调用了 ${counts.skills} 个技能 ${parts.length > 0 ? '(' + parts.join('和') + ')' : ''}`, icon: 'api-app_outlined' };
+  } else {
+    // Only READ, EDIT, SEARCH
+    if (parts.length > 0) {
+      return { title: parts.join(''), icon: counts.edits > 0 ? 'file-word_outlined' : 'search_outlined' };
+    }
+  }
+  return { title: `工具执行中...`, icon: 'api-app_outlined' };
 }
 
 export async function handleCodexNotification(msg: any) {
@@ -631,6 +693,24 @@ export async function handleCodexNotification(msg: any) {
       }
     } else if (item.type === 'agentMessage') {
       if (item.phase === 'commentary') {
+        if (turn.currentActionCluster) {
+          turn.currentActionCluster.completed = true;
+          const targetTurnIdForQueue = turn.threadId;
+          const clusterToClose = turn.currentActionCluster;
+          if (turn.cardId) {
+            queueTurnTask(targetTurnIdForQueue, async () => {
+              const updateAction = {
+                action: "partial_update_element",
+                partial_element: {
+                  element_id: clusterToClose.panelId,
+                  expanded: false
+                }
+              };
+              await batchUpdateCardKitElements(turn.cardId!, [updateAction], turn.sequence++);
+            });
+          }
+          turn.currentActionCluster = undefined;
+        }
         if (msg.method === 'item/started') {
           const timeStr = get24HourTimeStr();
           const separator = turn.reasoning ? `\n\n---\n⏱️ *[${timeStr}] 阶段推理*\n` : `⏱️ *[${timeStr}] 阶段推理*\n`;
@@ -652,6 +732,24 @@ export async function handleCodexNotification(msg: any) {
       }
       turn.dirty = true;
     } else if (item.type === 'reasoning') {
+      if (turn.currentActionCluster) {
+        turn.currentActionCluster.completed = true;
+        const targetTurnIdForQueue = turn.threadId;
+        const clusterToClose = turn.currentActionCluster;
+        if (turn.cardId) {
+          queueTurnTask(targetTurnIdForQueue, async () => {
+            const updateAction = {
+              action: "partial_update_element",
+              partial_element: {
+                element_id: clusterToClose.panelId,
+                expanded: false
+              }
+            };
+            await batchUpdateCardKitElements(turn.cardId!, [updateAction], turn.sequence++);
+          });
+        }
+        turn.currentActionCluster = undefined;
+      }
       if (msg.method === 'item/started') {
         const timeStr = get24HourTimeStr();
         const separator = turn.reasoning ? `\n\n---\n⏱️ *[${timeStr}] 阶段推理*\n` : `⏱️ *[${timeStr}] 阶段推理*\n`;
@@ -664,37 +762,138 @@ export async function handleCodexNotification(msg: any) {
       }
       turn.activeStream = msg.method === 'item/started' ? 'reasoning' : undefined;
       turn.dirty = true;
-    } else if (item.type === 'commandExecution') {
-      const cmdCount = turn.commandExecutionCount || 0;
+    } else if (item.type === 'commandExecution' || item.type === 'mcpToolCall' || item.type === 'fileChange' || item.type === 'toolCall') {
+      const targetTurnIdForQueue = turn.threadId;
+
       if (msg.method === 'item/started') {
+        const actionInfo = categorizeAction(item);
+        
+        let isNewCluster = false;
+        if (!turn.currentActionCluster || turn.currentActionCluster.completed) {
+          isNewCluster = true;
+          const clusterCount = (turn.clusterCount || 0) + 1;
+          turn.clusterCount = clusterCount;
+          
+            const shortId = Date.now().toString(36).slice(-5);
+            turn.currentActionCluster = {
+            id: `cluster_${clusterCount}`,
+            panelId: `p_${clusterCount}_${shortId}`,
+            markdownId: `m_${clusterCount}_${shortId}`,
+            startedAt: Date.now(),
+            lastUpdatedAt: Date.now(),
+            completed: false,
+            counts: { searches: 0, reads: 0, edits: 0, skills: 0, runs: 0 },
+            details: []
+          };
+        }
+        
+        const cluster = turn.currentActionCluster;
+        if (actionInfo.category === 'SEARCH') cluster.counts.searches += actionInfo.count;
+        if (actionInfo.category === 'READ') cluster.counts.reads += actionInfo.count;
+        if (actionInfo.category === 'EDIT') cluster.counts.edits += actionInfo.count;
+        if (actionInfo.category === 'SKILL') cluster.counts.skills += actionInfo.count;
+        if (actionInfo.category === 'RUN') cluster.counts.runs += actionInfo.count;
+        
+        const cmdCount = turn.commandExecutionCount || 0;
         turn.commandExecutionCount = cmdCount + 1;
-        if (cmdCount === 0) {
-          const timeStr = get24HourTimeStr();
-          let cmdDisplay = item.command || '';
-          if (cmdDisplay.length > 120) {
-            cmdDisplay = cmdDisplay.substring(0, 120) + '...';
-          }
-          const separator = turn.reasoning ? `\n\n---\n` : ``;
-          const cmdLog = `${separator}🛠️ *[${timeStr}] 运行命令*: \`${cmdDisplay}\``;
-          turn.reasoning = (turn.reasoning || "") + cmdLog;
-          turn.activeStream = 'reasoning';
-        } else if (cmdCount === 1 && !turn.hasLoggedFoldMessage) {
-          turn.hasLoggedFoldMessage = true;
-          turn.reasoning = (turn.reasoning || "") + `\n\n---\n📎 *后续执行指令已自动折叠*`;
+        
+        cluster.details.push(`- \`${actionInfo.name}\``);
+        const mdId = cluster.markdownId;
+        
+        turn.activeToolPanels = turn.activeToolPanels || {};
+        turn.activeToolPanels[`cmd_${cmdCount + 1}`] = mdId;
+        turn.activeStream = `cmd_${cmdCount + 1}`;
+        turn.commandOutputTail = "";
+        
+        const summary = generateClusterTitle(cluster.counts, actionInfo.category === 'RUN' ? actionInfo.name : undefined);
+        
+        if (turn.cardId) {
+          queueTurnTask(targetTurnIdForQueue, async () => {
+            if (isNewCluster) {
+              const addAction = {
+                action: "add_elements",
+                target_element_id: "codex_output_hr",
+                insert_location: "before",
+                elements: [
+                  {
+                    tag: "collapsible_panel",
+                    element_id: cluster.panelId,
+                    expanded: true,
+                    header: {
+                      title: { tag: "plain_text", content: summary.title },
+                      vertical_align: "center",
+                      icon: { tag: "standard_icon", token: summary.icon, color: "grey", size: "16px 16px" },
+                      icon_position: "left"
+                    },
+                    border: { color: "grey", corner_radius: "5px" },
+                    vertical_spacing: "4px",
+                    padding: "4px 8px 4px 8px",
+                    elements: [
+                      { tag: "markdown", element_id: cluster.markdownId, content: cluster.details.join('\n') }
+                    ]
+                  }
+                ]
+              };
+              await batchUpdateCardKitElements(turn.cardId!, [addAction], turn.sequence++);
+            } else {
+              const updateAction = {
+                action: "partial_update_element",
+                partial_element: {
+                  element_id: cluster.panelId,
+                  header: {
+                    title: { tag: "plain_text", content: summary.title },
+                    vertical_align: "center",
+                    icon: { tag: "standard_icon", token: summary.icon, size: "16px 16px" },
+                    icon_position: "left"
+                  }
+                }
+              };
+              await batchUpdateCardKitElements(turn.cardId!, [updateAction], turn.sequence++);
+              await streamCardKitElement(turn.cardId!, cluster.markdownId, cluster.details.join('\n'), turn.sequence++, turn);
+            }
+          });
         }
       } else if (msg.method === 'item/completed') {
-        if (turn.commandExecutionCount === 1) {
-          const timeStr = get24HourTimeStr();
-          const exitStatus = item.exitCode === 0 ? "成功" : `失败 (Exit Code: ${item.exitCode})`;
-          const endLog = `\n📌 *[${timeStr}] 命令执行结束*: ${exitStatus}`;
-          turn.reasoning = (turn.reasoning || "") + endLog;
-          turn.activeStream = undefined;
+        const exitStatus = (item.exitCode === 0 || item.status === 'completed') ? "Succeeded" : `Failed`;
+        const targetTurnIdForQueue = turn.threadId;
+        
+        const cluster = turn.currentActionCluster;
+        if (cluster && exitStatus === 'Failed') {
+          if (turn.cardId) {
+            queueTurnTask(targetTurnIdForQueue, async () => {
+              const updateAction = {
+                action: "partial_update_element",
+                partial_element: {
+                  element_id: cluster.panelId,
+                  border: { color: "red", corner_radius: "5px" }
+                }
+              };
+              await batchUpdateCardKitElements(turn.cardId!, [updateAction], turn.sequence++);
+            });
+          }
         }
+
+        turn.commandOutputTail = undefined;
+        turn.activeStream = undefined;
       }
       turn.dirty = true;
     }
   } else if (msg.method === 'agent/stderr' || msg.method === 'agent/stdout') {
-    // Ignore raw logs to avoid spamming the Feishu card with long command outputs
+    const targetTurnId = params.turnId || (params.turn && params.turn.id);
+    let targetTurn = turn;
+    if (targetTurnId) {
+      targetTurn = stateManager.activeTurns.get(targetTurnId) || stateManager.recentTurns.get(targetTurnId) || turn;
+    }
+    if (targetTurn && targetTurn.activeStream?.startsWith('cmd_') && typeof params.chunk === 'string') {
+      if (targetTurn.commandOutputTail !== undefined) {
+         let tail = targetTurn.commandOutputTail + params.chunk;
+         if (tail.length > 1000) {
+            tail = tail.substring(tail.length - 1000);
+         }
+         targetTurn.commandOutputTail = tail;
+         targetTurn.dirty = true;
+      }
+    }
   } else if (msg.method === 'thread/tokenUsage/updated') {
     turn.dirty = true;
     if (turn.status !== 'running' && turn.cardId) {

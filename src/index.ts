@@ -770,7 +770,6 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
       try {
         const ipcId = approval.ipcRequestId || (approval.isIpc ? approval.requestId : undefined);
         const wsId = approval.wsRequestId || (!approval.isIpc ? approval.requestId : undefined);
-
         console.log(`Responding to Codex Approval (IPC ID: ${ipcId || 'none'}, WS ID: ${wsId || 'none'}) with decision ${decision}...`);
 
         // 1. Respond to IPC channel if present
