@@ -226,6 +226,55 @@ export async function handleCodexNotification(msg: any) {
     
     const chatId = threadId ? getChatIdForThread(threadId) : undefined;
     if (chatId) {
+      // 审批去重：判断是否已存在针对同一个 thread 且 summary/type 相同的活跃审批
+      const existingEntry = Array.from(stateManager.activeApprovals.entries()).find(([_, app]) => {
+        if (app.status !== 'pending') return false;
+        if (app.requestId === msg.id) return true;
+        if (app.threadId === threadId && app.summary === summary && app.approvalType === type) {
+          return true;
+        }
+        return false;
+      });
+
+      if (existingEntry) {
+        const [existingApprovalId, existingApp] = existingEntry;
+        console.log(`[Approval Request] Request ${msg.id} is a duplicate of active approval ${existingApprovalId}. Merging request IDs and skipping duplicate Feishu card.`);
+        if (msg.isIpc) {
+          existingApp.ipcRequestId = msg.id;
+          existingApp.isIpc = true;
+        } else {
+          existingApp.wsRequestId = msg.id;
+        }
+        saveApprovals(stateManager.activeApprovals);
+        return;
+      }
+
+      // Synchronously insert a placeholder into activeApprovals to prevent race conditions during the 1.5s delay
+      const approvalData: any = {
+        requestId: msg.id,
+        chatId,
+        threadId: threadId || "",
+        turnId: turnId || "",
+        approvalType: type,
+        summary,
+        cwd,
+        reason: params.reason || "",
+        isIpc: !!msg.isIpc,
+        approvalMethod: msg.method,
+        createdAt: Date.now(),
+        status: 'pending',
+        sequence: 1
+      };
+
+      if (msg.isIpc) {
+        approvalData.ipcRequestId = msg.id;
+      } else {
+        approvalData.wsRequestId = msg.id;
+      }
+
+      stateManager.activeApprovals.set(approvalId, approvalData);
+      saveApprovals(stateManager.activeApprovals);
+
       (async () => {
         try {
           // Delay by 1.5 seconds to see if the request is automatically approved
@@ -237,6 +286,8 @@ export async function handleCodexNotification(msg: any) {
             // Check if the request is still active and pending
             if (!isRequestPending(resumeRes, msg.id)) {
               console.log(`[Approval Request] Request ${msg.id} is no longer pending (likely auto-approved or cancelled). Skipping Feishu card.`);
+              stateManager.activeApprovals.delete(approvalId);
+              saveApprovals(stateManager.activeApprovals);
               return;
             }
 
@@ -249,29 +300,20 @@ export async function handleCodexNotification(msg: any) {
             }
             if (reviewer !== 'user') {
               console.log(`[Approval Request] approvalsReviewer is "${reviewer}" (not "user"), skipping Feishu card for request ${msg.id}.`);
+              stateManager.activeApprovals.delete(approvalId);
+              saveApprovals(stateManager.activeApprovals);
               return;
             }
           }
 
           console.log(`[Approval Request] Intercepted approval request ${msg.id} for thread ${threadId} (isIpc: ${!!msg.isIpc}). Sending Feishu card...`);
-          
-          stateManager.activeApprovals.set(approvalId, {
-            requestId: msg.id,
-            chatId,
-            threadId: threadId || "",
-            turnId: turnId || "",
-            approvalType: type,
-            summary,
-            cwd,
-            reason: params.reason || "",
-            isIpc: !!msg.isIpc,
-            approvalMethod: msg.method,
-            createdAt: Date.now()
-          });
-          saveApprovals(stateManager.activeApprovals);
 
           const appCard = createApprovalCard(approvalId, type, cwd, summary, params.reason);
           const cardId = await createCardKitCard(appCard);
+          
+          approvalData.cardId = cardId;
+          saveApprovals(stateManager.activeApprovals);
+
           await sendCardKitMessage(chatId, cardId);
         } catch (e) {
           console.error('Failed to process approval request:', e);
@@ -283,10 +325,10 @@ export async function handleCodexNotification(msg: any) {
                 threadId: threadId || "",
                 requestId: msg.id,
                 method: msg.method,
-                decision: 'reject'
+                decision: 'decline'
               });
             } else {
-              adapter.respond(msg.id, { decision: 'reject' });
+              adapter.respond(msg.id, { decision: 'decline' });
             }
           } catch (respondErr) {
             console.error('Failed to reject failed approval request:', respondErr);

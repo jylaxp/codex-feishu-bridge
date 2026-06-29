@@ -129,6 +129,32 @@ export async function streamCardKitElement(cardId: string, elementId: string, co
   }
 }
 
+export async function updateCardKitCard(cardId: string, cardContent: any, sequence: number) {
+  try {
+    const token = await getTenantAccessToken();
+    const res = await fetch(`https://open.feishu.cn/open-apis/cardkit/v1/cards/${encodeURIComponent(cardId)}`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${token}`
+      },
+      body: JSON.stringify({
+        card: {
+          type: "card_json",
+          data: JSON.stringify(cardContent)
+        },
+        sequence: sequence
+      })
+    });
+    const data: any = await res.json();
+    if (data.code !== 0) {
+      console.error(`Failed to update CardKit card ${cardId}:`, data.msg);
+    }
+  } catch (e) {
+    console.error(`Failed to update CardKit card ${cardId} network request:`, e);
+  }
+}
+
 export async function finalizeCardKitCard(cardId: string, finalContent: any, turn: ActiveTurn) {
   try {
     const token = await getTenantAccessToken();
