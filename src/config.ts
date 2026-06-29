@@ -45,6 +45,6 @@ initConfig();
 export const SESSIONS_FILE = path.join(configDir, 'sessions.json');
 export const APPROVALS_FILE = path.join(configDir, 'approvals.json');
 export const PUSHED_TURNS_FILE = path.join(configDir, 'pushed_turns.json');
-export const APPROVAL_TTL_MS = 30 * 60 * 1000; // 30 minutes
+export const APPROVAL_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 export const RATE_LIMIT_QUERY_INTERVAL_MS = parseInt(process.env.RATE_LIMIT_QUERY_INTERVAL_MS || '300000', 10);
 export const LOG_DIR = path.join(configDir, 'logs');

@@ -86,4 +86,10 @@ export interface ActiveApproval {
   isIpc?: boolean;
   approvalMethod?: string;
   createdAt?: number;
+  ipcRequestId?: string | number;
+  wsRequestId?: string | number;
+  cardId?: string;
+  status?: 'pending' | 'approved' | 'declined';
+  decision?: string;
+  sequence?: number;
 }

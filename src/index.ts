@@ -11,7 +11,7 @@ import { setupLogging } from './core/logger';
 import { stateManager } from './core/state';
 import { saveSessions, saveApprovals, loadApprovals } from './core/storage';
 import { initLarkClient, larkClient } from './feishu/client';
-import { sendSimpleStatusCard, createCardKitCard, sendCardKitMessage } from './feishu/card';
+import { sendSimpleStatusCard, createCardKitCard, sendCardKitMessage, updateCardKitCard } from './feishu/card';
 import { createBoundSuccessCard, createSkillsCard } from './cards/templates';
 import { createApprovalDecidedCard, createCardKitInitialLayout } from './cards/turn-cards';
 import { initCodex, adapter } from './codex/connector';
@@ -654,6 +654,32 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
       }
 
       if (!approval) {
+        const expiredCard = {
+          schema: "2.0",
+          config: { wide_screen_mode: true },
+          header: {
+            template: "grey",
+            title: { tag: "plain_text", content: "⚠️ Codex 审批已过期" }
+          },
+          body: {
+            elements: [
+              {
+                tag: "markdown",
+                content: "⏳ **该审批请求已过期或不存在。**\n此审批可能已在其他设备处理，或超出了 30 分钟的安全有效期。"
+              }
+            ]
+          }
+        };
+
+        if (messageId) {
+          larkClient.im.message.patch({
+            path: { message_id: messageId },
+            data: { content: JSON.stringify(expiredCard) }
+          }).catch(err => {
+            console.error('Failed to patch expired approval card:', err);
+          });
+        }
+
         return {
           toast: {
             type: "error",
@@ -661,6 +687,40 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
             i18n: {
               zh_cn: "未找到该审批请求或已过期",
               en_us: "Approval request not found or expired"
+            }
+          }
+        };
+      }
+
+      // Check if this approval was already processed to prevent duplicate clicks
+      if (approval.status === 'approved' || approval.status === 'declined') {
+        const decidedCard = createApprovalDecidedCard(
+          approval.approvalType,
+          approval.cwd,
+          approval.summary,
+          approval.reason,
+          approval.decision || 'accept'
+        );
+        if (messageId) {
+          larkClient.im.message.delete({
+            path: { message_id: messageId }
+          }).catch(err => {
+            console.error('Failed to recall already processed approval card message:', err);
+            if (approval.cardId) {
+              const nextSeq = (approval.sequence || 1) + 1;
+              approval.sequence = nextSeq;
+              saveApprovals(stateManager.activeApprovals);
+              updateCardKitCard(approval.cardId, decidedCard, nextSeq).catch(console.error);
+            }
+          });
+        }
+        return {
+          toast: {
+            type: "info",
+            content: "This approval has already been processed",
+            i18n: {
+              zh_cn: `该审批已于之前被处理：${approval.status === 'approved' ? '批准' : '拒绝'}`,
+              en_us: `This approval has already been processed: ${approval.status}`
             }
           }
         };
@@ -702,42 +762,76 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
         }
       }
 
-      stateManager.activeApprovals.delete(approvalId);
+      // Mark as processed instead of deleting, so we can support repeat click checks
+      approval.status = decision === 'decline' ? 'declined' : 'approved';
+      approval.decision = decision;
       saveApprovals(stateManager.activeApprovals);
 
       try {
-        console.log(`Responding to Codex Approval ${approval.requestId} with decision ${decision}...`);
+        const ipcId = approval.ipcRequestId || (approval.isIpc ? approval.requestId : undefined);
+        const wsId = approval.wsRequestId || (!approval.isIpc ? approval.requestId : undefined);
+        console.log(`Responding to Codex Approval (IPC ID: ${ipcId || 'none'}, WS ID: ${wsId || 'none'}) with decision ${decision}...`);
 
-        (async () => {
+        // 1. Respond to IPC channel if present
+        if (ipcId && (adapter as any).respondIpcApproval) {
           try {
-            let success = true;
-            if (approval.isIpc && (adapter as any).respondIpcApproval) {
-              success = await (adapter as any).respondIpcApproval({
-                threadId: approval.threadId,
-                requestId: approval.requestId,
-                method: approval.approvalMethod || 'command',
-                decision: decision
-              });
-              console.log(`IPC approval response returned: ${success}`);
-            } else {
-              adapter.respond(approval.requestId, { decision });
-            }
-
-            const decidedCard = createApprovalDecidedCard(
-              approval.approvalType,
-              approval.cwd,
-              approval.summary,
-              approval.reason,
-              decision
-            );
-            await larkClient.im.message.patch({
-              path: { message_id: messageId },
-              data: { content: JSON.stringify(decidedCard) }
+            const success = await (adapter as any).respondIpcApproval({
+              threadId: approval.threadId,
+              requestId: ipcId,
+              method: approval.approvalMethod || 'command',
+              decision: decision
             });
-          } catch (e: any) {
-            console.error('Failed to submit approval decision asynchronously:', e);
+            console.log(`IPC approval response returned: ${success}`);
+          } catch (ipcErr) {
+            console.error('Failed to respond to IPC approval:', ipcErr);
           }
-        })();
+        }
+
+        // 2. Respond to WebSocket JSON-RPC channel if present
+        if (wsId) {
+          try {
+            adapter.respond(wsId, { decision });
+            console.log(`WebSocket approval response returned for request ID: ${wsId}`);
+          } catch (wsErr) {
+            console.error('Failed to respond to WebSocket approval:', wsErr);
+          }
+        }
+
+        // 3. Fallback to default respond logic if neither was explicitly mapped
+        if (!ipcId && !wsId) {
+          if (approval.isIpc && (adapter as any).respondIpcApproval) {
+            await (adapter as any).respondIpcApproval({
+              threadId: approval.threadId,
+              requestId: approval.requestId,
+              method: approval.approvalMethod || 'command',
+              decision: decision
+            });
+          } else {
+            adapter.respond(approval.requestId, { decision });
+          }
+        }
+
+        const decidedCard = createApprovalDecidedCard(
+          approval.approvalType,
+          approval.cwd,
+          approval.summary,
+          approval.reason,
+          decision
+        );
+
+        if (messageId) {
+          larkClient.im.message.delete({
+            path: { message_id: messageId }
+          }).catch(err => {
+            console.error('Failed to recall/delete approval card message, updating card content instead:', err);
+            if (approval.cardId) {
+              const nextSeq = (approval.sequence || 1) + 1;
+              approval.sequence = nextSeq;
+              saveApprovals(stateManager.activeApprovals);
+              updateCardKitCard(approval.cardId, decidedCard, nextSeq).catch(console.error);
+            }
+          });
+        }
 
         return {
           toast: {
