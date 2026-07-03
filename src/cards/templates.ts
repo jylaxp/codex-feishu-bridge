@@ -361,14 +361,14 @@ export function createHelpCard() {
           tag: "div",
           text: {
             tag: "lark_md",
-            content: "🆕 **新建会话**\n- `'/new [名称]'` 或 `'/create [名称]'\n  快速在本地 Codex Desktop 启动一个新会话并自动与当前聊天绑定。可指定会话名字。"
+            content: "🆕 **新建会话**\n- `'/new [名称]'` 或 `'/create [名称]'\n  快速在本地 Codex Desktop 启动一个新会话并自动与当前聊天绑定。可指定会话名字。\n\n🖥️ **唤起桌面端**\n- `'/open'`\n  强制通过 URL Scheme 唤起 Codex 桌面端，并自动跳转至当前绑定的会话，解决新建会话未实时显示的问题。"
           }
         },
         {
           tag: "div",
           text: {
             tag: "lark_md",
-            content: "📁 **切换工作目录**\n- `'/cwd [路径]'` 或 `'/workspace [路径]'\n  查询或动态修改当前已绑定会话的工作目录 (CWD)。这会直接决定接下来 Codex 在哪执行命令或修改文件。"
+            content: "📁 **切换与管理**\n- `'/cwd [路径]'` 或 `'/workspace [路径]'\n  查询或动态修改当前会话绑定的工作目录。\n- `'/fork [新名称]'`\n  派生复制当前会话并将群聊自动绑定至新派生的会话。"
           }
         },
         {
@@ -477,7 +477,7 @@ export function createHelpCard() {
   };
 }
 
-export function createBoundSuccessCard(threadName: string, threadId: string) {
+export function createBoundSuccessCard(threadName: string, threadId: string, cwd?: string) {
   return {
     schema: "2.0",
     config: {
@@ -496,7 +496,7 @@ export function createBoundSuccessCard(threadName: string, threadId: string) {
           tag: "div",
           text: {
             tag: "lark_md",
-            content: `This Feishu chat is now bound to Codex Session: **${threadName}**\n\n- **Thread ID**: \`${threadId}\`\n\nAny messages sent in this chat will now run on Codex Desktop.`
+            content: `This Feishu chat is now bound to Codex Session: **${threadName}**\n- **Project (CWD)**: \`${cwd || 'None (Global)'}\`\n- **Thread ID**: \`${threadId}\`\n\nAny messages sent in this chat will now run on Codex Desktop.`
           }
         }
       ]

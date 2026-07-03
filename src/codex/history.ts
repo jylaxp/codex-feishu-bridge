@@ -61,8 +61,12 @@ export async function checkAndPushHistory() {
           sessionsChanged = true;
         }
       }
-    } catch (e) {
-      console.error(`Failed to push history for thread ${session.threadId}:`, e);
+    } catch (e: any) {
+      if (e && e.message && e.message.includes('no rollout found')) {
+        console.log(`Thread ${session.threadId} has no rollout yet (likely newly created and empty).`);
+      } else {
+        console.error(`Failed to push history for thread ${session.threadId}:`, e);
+      }
     }
   });
 

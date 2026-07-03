@@ -404,7 +404,7 @@ export function createApprovalDecidedCard(
   };
 }
 
-export async function createBindingCard(threads: CodexThread[]) {
+export async function createBindingCard(threads: CodexThread[], currentBoundThreadId?: string) {
   const homeDir = os.homedir();
   const globalStatePath = path.join(homeDir, '.codex', '.codex-global-state.json');
   let savedWorkspaces: string[] = [];
@@ -427,6 +427,7 @@ export async function createBindingCard(threads: CodexThread[]) {
   }
 
   const filteredThreads = threads.filter(t => {
+    if (currentBoundThreadId && t.id === currentBoundThreadId) return true;
     const isValidProjectless = t.id && projectlessThreadIds.includes(t.id);
     if (isValidProjectless) return true;
     const isSavedWorkspace = t.cwd && savedWorkspaces.some(w => {
@@ -521,7 +522,7 @@ export async function createBindingCard(threads: CodexThread[]) {
   };
 }
 
-export async function createTableBindingCard(threads: CodexThread[]) {
+export async function createTableBindingCard(threads: CodexThread[], currentBoundThreadId?: string) {
   const homeDir = os.homedir();
   const globalStatePath = path.join(homeDir, '.codex', '.codex-global-state.json');
   let savedWorkspaces: string[] = [];
@@ -544,6 +545,7 @@ export async function createTableBindingCard(threads: CodexThread[]) {
   }
 
   const filteredThreads = threads.filter(t => {
+    if (currentBoundThreadId && t.id === currentBoundThreadId) return true;
     const isValidProjectless = t.id && projectlessThreadIds.includes(t.id);
     if (isValidProjectless) return true;
     const isSavedWorkspace = t.cwd && savedWorkspaces.some(w => {

@@ -54,6 +54,7 @@ export interface CodexThreadAdapter {
     personality?: string | null;
   }): Promise<string>;
   cleanupThreadState?(threadId: string): void;
+  patchThreadVisibility(threadId: string): Promise<void>;
 }
 
 export class LocalAppServerAdapter implements CodexThreadAdapter {
@@ -129,8 +130,10 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
 
   async connect(): Promise<void> {
     this.cleanupCalled = false;
-    const defaultSocketPath = platform.getDefaultSocketPath();
-    const socketPath = this.options.socketPath || defaultSocketPath;
+    let socketPath = this.options.socketPath || '';
+    if (!socketPath) {
+      socketPath = platform.getDefaultSocketPath();
+    }
 
     // Proactively check if the socket is alive using a net connection
     let isSocketAlive = false;
@@ -1225,6 +1228,24 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
     });
   }
 
+  async broadcastIpc(method: string, params: any, version: number = 0): Promise<void> {
+    if (process.env.NODE_ENV === 'test') {
+      return;
+    }
+    const client = await this.getIpcClient();
+    if (!client || !this.ipcClientId) {
+      logToFile('[IPC] Failed to get connected IPC client for broadcast.');
+      return;
+    }
+    this.writeIpcMessage(client, {
+      type: 'broadcast',
+      method: method,
+      sourceClientId: this.ipcClientId,
+      version: version,
+      params: params
+    });
+  }
+
   private writeIpcMessage(client: net.Socket, obj: any): void {
     const jsonStr = JSON.stringify(obj);
     const msgBuffer = Buffer.from(jsonStr, 'utf8');
@@ -1267,6 +1288,40 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
       parts.push(...item.content.map((c: any) => this.extractSlateText([c])));
     }
     return parts.filter(p => p.trim().length > 0).join('\n[STEP_BOUNDARY]\n');
+  }
+
+  async patchThreadVisibility(threadId: string): Promise<void> {
+    const { execSync } = require('child_process');
+    const path = require('path');
+    const fs = require('fs');
+    const dbPath = path.join(process.env.HOME || '', '.codex', 'state_5.sqlite');
+    const devDbPath = path.join(process.env.HOME || '', '.codex', 'sqlite', 'codex-dev.db');
+    
+    // Do not block forever. Just try to update if it exists.
+    for (let i = 0; i < 5; i++) {
+      try {
+        const count = execSync(`sqlite3 "${dbPath}" "SELECT count(*) FROM threads WHERE id = '${threadId}';"`).toString().trim();
+        if (count === '1') {
+          // Thread exists! Update it in the App Server DB
+          execSync(`sqlite3 "${dbPath}" "UPDATE threads SET preview = 'New Session (via Feishu)' WHERE id = '${threadId}' AND preview = '';"`);
+          execSync(`sqlite3 "${dbPath}" "UPDATE threads SET has_user_event = 1 WHERE id = '${threadId}';"`);
+          
+          // Now patch the UI Database (codex-dev.db) so it shows up in the sidebar
+          if (fs.existsSync(devDbPath)) {
+            const cwd = execSync(`sqlite3 "${dbPath}" "SELECT cwd FROM threads WHERE id = '${threadId}';"`).toString().trim();
+            const now = Math.floor(Date.now() / 1000);
+            execSync(`sqlite3 "${devDbPath}" "INSERT OR IGNORE INTO local_thread_catalog (host_id, thread_id, display_title, source_created_at, source_updated_at, cwd, source_kind, source_detail, model_provider, git_branch, observation_sequence, missing_candidate) VALUES ('local', '${threadId}', 'New Session (via Feishu)', ${now}, ${now}, '${cwd.replace(/'/g, "''")}', 'vscode', '', 'openai', '', 100, 0);"`);
+          }
+          
+          console.log(`Patched visibility for thread ${threadId}`);
+          return;
+        }
+      } catch (e) {
+        // Ignore sqlite busy errors
+      }
+      await new Promise(r => setTimeout(r, 100));
+    }
+    console.log(`Thread ${threadId} not in DB yet, skipping patch.`);
   }
 }
 

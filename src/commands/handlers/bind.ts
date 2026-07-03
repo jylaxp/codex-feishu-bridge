@@ -11,7 +11,13 @@ export async function handleList(chatId: string) {
       return;
     }
 
-    const bindingCard = await createBindingCard(threads);
+    const { stateManager } = require('../../core/state');
+    const bound = stateManager.sessionDb[chatId];
+    if (bound && bound.threadId && !threads.find(t => t.id === bound.threadId)) {
+      threads.unshift({ id: bound.threadId, name: bound.threadName, cwd: bound.cwd || "" } as any);
+    }
+    const currentBound = bound?.threadId;
+    const bindingCard = await createBindingCard(threads, currentBound);
     const cardId = await createCardKitCard(bindingCard);
     await sendCardKitMessage(chatId, cardId);
   } catch (e: any) {
@@ -29,7 +35,13 @@ export async function handleTableList(chatId: string) {
       return;
     }
 
-    const bindingCard = await createTableBindingCard(threads);
+    const { stateManager } = require('../../core/state');
+    const bound = stateManager.sessionDb[chatId];
+    if (bound && bound.threadId && !threads.find(t => t.id === bound.threadId)) {
+      threads.unshift({ id: bound.threadId, name: bound.threadName, cwd: bound.cwd || "" } as any);
+    }
+    const currentBound = bound?.threadId;
+    const bindingCard = await createTableBindingCard(threads, currentBound);
     const cardId = await createCardKitCard(bindingCard);
     await sendCardKitMessage(chatId, cardId);
   } catch (e: any) {

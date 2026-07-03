@@ -131,6 +131,7 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
         }
 
         // Handle normal user message (forward to Codex)
+        console.log(`[index.ts normal_message] stateManager ID is: ${stateManager.id}`);
         const bound = stateManager.sessionDb[chatId];
         if (!bound) {
           await sendSimpleStatusCard(chatId, "⚠️ 未绑定会话", "orange", "当前飞书群聊未绑定任何 Codex 会话，请先使用 `/list` 选择一个会话，或者使用 `/new` 指令创建一个会话。");
@@ -291,12 +292,28 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
               stateManager.activeTurns.set(turnId, initialTurn);
               stateManager.threadToActiveTurnId.set(bound.threadId, turnId);
               console.log(`Remote turn started and mapped with ID: ${turnId}`);
+              
+              // Force visibility in sidebar (in case this is the first turn) and reload UI cache
+              try {
+                await adapter.patchThreadVisibility(bound.threadId);
+                const { execSync } = require('child_process');
+                execSync(`open "codex://chat/${bound.threadId}"`);
+                console.log(`Forced UI reload via deep link for thread ${bound.threadId}`);
+              } catch (e) {
+                console.error('Failed to trigger UI reload for thread:', e);
+              }
             } catch (e: any) {
               console.error('Asynchronous Codex turn trigger failed:', e);
               stateManager.activeTurns.delete(tempTurnId);
               const activeTurnId = stateManager.threadToActiveTurnId.get(bound.threadId);
               if (activeTurnId === tempTurnId) {
                 stateManager.threadToActiveTurnId.delete(bound.threadId);
+              }
+              if (e?.message && e.message.includes('thread not found')) {
+                const { stateManager } = require('./core/state');
+                const { saveSessions } = require('./core/storage');
+                delete stateManager.sessionDb[chatId];
+                saveSessions(stateManager.sessionDb);
               }
 
               if (logCardMessageId) {
@@ -326,6 +343,12 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
 
         } catch (e: any) {
           console.error('Failed to trigger Codex turn:', e);
+          if (e?.message && e.message.includes('thread not found')) {
+            const { stateManager } = require('./core/state');
+            const { saveSessions } = require('./core/storage');
+            delete stateManager.sessionDb[chatId];
+            saveSessions(stateManager.sessionDb);
+          }
           if (logCardMessageId) {
             try {
               await larkClient.im.message.patch({
@@ -467,7 +490,7 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
           console.error('Failed to run history check after binding:', e);
         });
 
-        const successCard = createBoundSuccessCard(threadName, selectedThreadId);
+        const successCard = createBoundSuccessCard(threadName, selectedThreadId, stateManager.sessionDb[chatId].cwd);
         await larkClient.im.message.patch({
           path: { message_id: messageId },
           data: { content: JSON.stringify(successCard) }

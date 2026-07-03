@@ -2,6 +2,7 @@ import { handleHelp, handleNew, handleFork, handleDelete } from './handlers/sess
 import { handleList, handleTableList } from './handlers/bind';
 import { handleGoal, handlePlan, handleCompact, handleCancel, handleCwd, executeUserCommand } from './handlers/control';
 import { handleUsage, handlePersonality, handleModel, handleStatus, handleSkills, handleMcp } from './handlers/info';
+import { handleOpen } from './handlers/open';
 
 export function getAllowedCommands(): string[] {
   let allowedCommands = ['ls', 'pwd', 'git', 'find', 'cd'];
@@ -37,7 +38,15 @@ export async function routeCommand(chatId: string, text: string): Promise<boolea
     return true;
   }
 
-  // 2. Handle goal command
+
+
+  // 2. Handle open command
+  if (trimmed.startsWith('/open')) {
+    await handleOpen(chatId);
+    return true;
+  }
+
+  // 3. Handle goal command
   if (trimmed.startsWith('/goal')) {
     await handleGoal(chatId, trimmed);
     return true;

@@ -2,6 +2,10 @@ import { ActiveTurn, ActiveApproval, SessionDb } from '../types';
 import { loadSessions, loadPushedTurns } from './storage';
 
 export class BridgeStateManager {
+  public id = Math.random().toString();
+  constructor() {
+    console.trace("Instantiating BridgeStateManager! ID:", this.id);
+  }
   public sessionDb: SessionDb = loadSessions();
   public pushedTurns: Set<string> = loadPushedTurns();
   public activeTurns = new Map<string, ActiveTurn>();
@@ -29,4 +33,7 @@ export class BridgeStateManager {
   }
 }
 
-export const stateManager = new BridgeStateManager();
+if (!(global as any).__bridgeStateManager) {
+  (global as any).__bridgeStateManager = new BridgeStateManager();
+}
+export const stateManager = (global as any).__bridgeStateManager as BridgeStateManager;
