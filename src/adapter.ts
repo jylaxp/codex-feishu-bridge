@@ -34,6 +34,7 @@ export interface CodexThread {
   name: string;
   preview: string;
   cwd?: string;
+  createdAt?: number;
 }
 
 export interface CodexThreadAdapter {
@@ -504,7 +505,8 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
         id: t.id,
         name: t.name || t.preview || "未命名会话",
         preview: t.preview || "",
-        cwd: t.cwd || t.workspacePath || t.workspace || ""
+        cwd: t.cwd || t.workspacePath || t.workspace || "",
+        createdAt: typeof t.createdAt === 'number' ? t.createdAt : undefined
       }));
   }
 

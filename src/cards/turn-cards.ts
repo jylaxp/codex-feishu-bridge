@@ -404,6 +404,17 @@ export function createApprovalDecidedCard(
   };
 }
 
+function getThreadTimestamp(t: CodexThread): number {
+  if (typeof t.createdAt === 'number') return t.createdAt * 1000;
+  if (t.id) {
+    const hex = t.id.replace(/-/g, '').substring(0, 12);
+    if (/^[0-9a-fA-F]{12}$/.test(hex)) {
+      return parseInt(hex, 16);
+    }
+  }
+  return 0;
+}
+
 export async function createBindingCard(threads: CodexThread[]) {
   const homeDir = os.homedir();
   const globalStatePath = path.join(homeDir, '.codex', '.codex-global-state.json');
@@ -446,18 +457,7 @@ export async function createBindingCard(threads: CodexThread[]) {
   };
 
   const sortedThreads = [...filteredThreads].sort((a, b) => {
-    const isGlobalA = a.id && projectlessThreadIds.includes(a.id);
-    const isGlobalB = b.id && projectlessThreadIds.includes(b.id);
-    if (isGlobalA && !isGlobalB) return -1;
-    if (!isGlobalA && isGlobalB) return 1;
-    if (isGlobalA && isGlobalB) {
-      return (a.name || "").localeCompare(b.name || "", 'zh-CN', { numeric: true });
-    }
-    const dirA = getDirName(a);
-    const dirB = getDirName(b);
-    const dirComp = dirA.localeCompare(dirB, 'zh-CN', { numeric: true });
-    if (dirComp !== 0) return dirComp;
-    return (a.name || "").localeCompare(b.name || "", 'zh-CN', { numeric: true });
+    return getThreadTimestamp(b) - getThreadTimestamp(a);
   });
 
   const options = sortedThreads.map(t => {
@@ -558,18 +558,7 @@ export async function createTableBindingCard(threads: CodexThread[]) {
   };
 
   const sortedThreads = [...filteredThreads].sort((a, b) => {
-    const isGlobalA = a.id && projectlessThreadIds.includes(a.id);
-    const isGlobalB = b.id && projectlessThreadIds.includes(b.id);
-    if (isGlobalA && !isGlobalB) return -1;
-    if (!isGlobalA && isGlobalB) return 1;
-    if (isGlobalA && isGlobalB) {
-      return (a.name || "").localeCompare(b.name || "", 'zh-CN', { numeric: true });
-    }
-    const dirA = getDirName(a);
-    const dirB = getDirName(b);
-    const dirComp = dirA.localeCompare(dirB, 'zh-CN', { numeric: true });
-    if (dirComp !== 0) return dirComp;
-    return (a.name || "").localeCompare(b.name || "", 'zh-CN', { numeric: true });
+    return getThreadTimestamp(b) - getThreadTimestamp(a);
   });
 
   const columns = [
