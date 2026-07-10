@@ -26,10 +26,42 @@ import { registerThreadInGlobalState } from './core/global-state';
 function extractTextMessage(contentStr: string): string {
   try {
     const parsed = JSON.parse(contentStr);
-    let text = parsed.text || "";
-    // Remove bot mentions
-    text = text.replace(/@_user_\d+/g, "").trim();
-    return text;
+    
+    // 1. Handle standard text message
+    if (parsed.text) {
+      let text = parsed.text;
+      // Remove bot mentions
+      text = text.replace(/@_user_\d+/g, "").trim();
+      return text;
+    }
+    
+    // 2. Handle post (rich text) message
+    if (Array.isArray(parsed.content)) {
+      let textParts: string[] = [];
+      for (const paragraph of parsed.content) {
+        if (Array.isArray(paragraph)) {
+          let paragraphText = "";
+          for (const element of paragraph) {
+            if (element.tag === "text" && element.text) {
+              paragraphText += element.text;
+            } else if (element.tag === "a" && element.text) {
+              paragraphText += element.text;
+            } else if (element.tag === "at" && element.user_name) {
+              paragraphText += `@${element.user_name}`;
+            }
+          }
+          if (paragraphText) {
+            textParts.push(paragraphText);
+          }
+        }
+      }
+      let text = textParts.join("\n").trim();
+      // Remove bot mentions
+      text = text.replace(/@_user_\d+/g, "").trim();
+      return text;
+    }
+    
+    return contentStr;
   } catch (e) {
     return contentStr;
   }

@@ -193,8 +193,14 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
       });
     } else {
       let codexBin = process.env.CODEX_BIN || 'codex';
-      if (process.env.NODE_ENV === 'test' && codexBin === '/Applications/Codex.app/Contents/Resources/codex') {
+      if (process.env.NODE_ENV === 'test' && (codexBin === '/Applications/Codex.app/Contents/Resources/codex' || codexBin === '/Applications/ChatGPT.app/Contents/Resources/codex')) {
         codexBin = 'codex';
+      }
+      if (codexBin === '/Applications/Codex.app/Contents/Resources/codex' && !fs.existsSync(codexBin)) {
+        const chatgptPath = '/Applications/ChatGPT.app/Contents/Resources/codex';
+        if (fs.existsSync(chatgptPath)) {
+          codexBin = chatgptPath;
+        }
       }
       if (codexBin === 'codex' && process.env.NODE_ENV !== 'test') {
         const commonPaths = platform.getAppServerBinaryPaths();
