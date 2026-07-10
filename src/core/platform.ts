@@ -39,6 +39,7 @@ class MacOSConfig implements PlatformConfig {
 
   getAppServerBinaryPaths(): string[] {
     return [
+      '/Applications/ChatGPT.app/Contents/Resources/codex',
       '/Applications/Codex.app/Contents/Resources/codex',
       '/opt/homebrew/bin/codex',
       '/usr/local/bin/codex',
@@ -84,7 +85,9 @@ class WindowsConfig implements PlatformConfig {
     const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
     const programFiles = process.env.ProgramFiles || 'C:\\Program Files';
     return [
+      path.join(localAppData, 'Programs', 'ChatGPT', 'resources', 'codex.exe'),
       path.join(localAppData, 'Programs', 'Codex', 'resources', 'codex.exe'),
+      path.join(programFiles, 'ChatGPT', 'resources', 'codex.exe'),
       path.join(programFiles, 'Codex', 'resources', 'codex.exe'),
       path.join(os.homedir(), 'AppData', 'Roaming', 'npm', 'codex.cmd')
     ];

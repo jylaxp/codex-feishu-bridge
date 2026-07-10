@@ -427,14 +427,9 @@ export async function createBindingCard(threads: CodexThread[]) {
   }
 
   const filteredThreads = threads.filter(t => {
-    const isValidProjectless = t.id && projectlessThreadIds.includes(t.id);
-    if (isValidProjectless) return true;
-    const isSavedWorkspace = t.cwd && savedWorkspaces.some(w => {
-      const normW = path.normalize(w).toLowerCase();
-      const normC = path.normalize(t.cwd || "").toLowerCase();
-      return normC === normW || normC.startsWith(normW + path.sep);
-    });
-    return isSavedWorkspace;
+    // Show all active sessions (either global/projectless or project-based).
+    // We no longer restrict project-based sessions to saved electron workspaces.
+    return true;
   });
 
   const getDirName = (t: any) => {
@@ -466,7 +461,7 @@ export async function createBindingCard(threads: CodexThread[]) {
   });
 
   const options = sortedThreads.map(t => {
-    const isGlobal = t.id && projectlessThreadIds.includes(t.id);
+    const isGlobal = (t.id && projectlessThreadIds.includes(t.id)) || !t.cwd;
     let content = "";
     if (isGlobal) {
       content = `🌐 ${t.name} (全局)`;
@@ -544,14 +539,9 @@ export async function createTableBindingCard(threads: CodexThread[]) {
   }
 
   const filteredThreads = threads.filter(t => {
-    const isValidProjectless = t.id && projectlessThreadIds.includes(t.id);
-    if (isValidProjectless) return true;
-    const isSavedWorkspace = t.cwd && savedWorkspaces.some(w => {
-      const normW = path.normalize(w).toLowerCase();
-      const normC = path.normalize(t.cwd || "").toLowerCase();
-      return normC === normW || normC.startsWith(normW + path.sep);
-    });
-    return isSavedWorkspace;
+    // Show all active sessions (either global/projectless or project-based).
+    // We no longer restrict project-based sessions to saved electron workspaces.
+    return true;
   });
 
   const getDirName = (t: any) => {
@@ -588,7 +578,7 @@ export async function createTableBindingCard(threads: CodexThread[]) {
   ];
 
   const rows = sortedThreads.map((t, index) => {
-    const isGlobal = t.id && projectlessThreadIds.includes(t.id);
+    const isGlobal = (t.id && projectlessThreadIds.includes(t.id)) || !t.cwd;
     let dirName = "🌐 全局会话";
     if (!isGlobal && t.cwd) {
       const matchedWorkspace = savedWorkspaces.find(w => {

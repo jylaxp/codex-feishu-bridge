@@ -19,6 +19,8 @@ export function parseCommandArgs(command: string): string[] {
 
 export async function routeCommand(chatId: string, text: string): Promise<boolean> {
   const trimmed = text.trim();
+  const parts = trimmed.split(/\s+/);
+  const commandName = parts[0];
   
   // 0. Handle help command
   const isHelp = trimmed === '/help' || trimmed === '/h' || trimmed === 'help' || trimmed === 'h' || trimmed.startsWith('/help ') || trimmed.startsWith('/h ');
@@ -28,103 +30,102 @@ export async function routeCommand(chatId: string, text: string): Promise<boolea
   }
 
   // 1. Handle list / ll commands
-  if (trimmed.startsWith('/list')) {
+  if (commandName === '/list') {
     await handleList(chatId);
     return true;
   }
-  if (trimmed.startsWith('/ll')) {
+  if (commandName === '/ll') {
     await handleTableList(chatId);
     return true;
   }
 
   // 2. Handle goal command
-  if (trimmed.startsWith('/goal')) {
+  if (commandName === '/goal') {
     await handleGoal(chatId, trimmed);
     return true;
   }
 
   // 3. Handle mcp command
-  if (trimmed.startsWith('/mcp')) {
+  if (commandName === '/mcp') {
     await handleMcp(chatId);
     return true;
   }
 
   // 4. Handle model command
-  if (trimmed.startsWith('/model')) {
+  if (commandName === '/model') {
     await handleModel(chatId, trimmed);
     return true;
   }
 
   // 5. Handle personality command
-  if (trimmed.startsWith('/personality') || trimmed.startsWith('/style')) {
+  if (commandName === '/personality' || commandName === '/style') {
     await handlePersonality(chatId, trimmed);
     return true;
   }
 
   // 6. Handle compact command
-  if (trimmed.startsWith('/compact') || trimmed.startsWith('/compress')) {
+  if (commandName === '/compact' || commandName === '/compress') {
     await handleCompact(chatId);
     return true;
   }
 
   // 7. Handle fork command
-  if (trimmed.startsWith('/fork') || trimmed.startsWith('/branch')) {
+  if (commandName === '/fork' || commandName === '/branch') {
     await handleFork(chatId, trimmed);
     return true;
   }
 
   // 8. Handle plan command
-  if (trimmed.startsWith('/plan')) {
+  if (commandName === '/plan') {
     await handlePlan(chatId, trimmed);
     return true;
   }
 
   // 9. Handle status command
-  if (trimmed.startsWith('/status')) {
+  if (commandName === '/status') {
     await handleStatus(chatId);
     return true;
   }
 
   // 10. Handle usage command
-  if (trimmed.startsWith('/usage') || trimmed.startsWith('/quota')) {
+  if (commandName === '/usage' || commandName === '/quota') {
     await handleUsage(chatId);
     return true;
   }
 
   // 11. Handle skills command
-  if (trimmed.startsWith('/skills')) {
+  if (commandName === '/skills') {
     await handleSkills(chatId);
     return true;
   }
 
   // 12. Handle new command
-  if (trimmed.startsWith('/new') || trimmed.startsWith('/create')) {
+  if (commandName === '/new' || commandName === '/create') {
     await handleNew(chatId, trimmed);
     return true;
   }
 
   // 12.5 Handle np command
-  if (trimmed.startsWith('/np')) {
+  if (commandName === '/np') {
     await handleNewProject(chatId);
     return true;
   }
 
   // 13. Handle cwd command
-  if (trimmed.startsWith('/cwd') || trimmed.startsWith('/workspace')) {
+  if (commandName === '/cwd' || commandName === '/workspace') {
     await handleCwd(chatId, trimmed);
     return true;
   }
 
   // 14. Handle cmd / run command
-  if (trimmed.startsWith('/cmd') || trimmed.startsWith('/run') || trimmed.startsWith('/shell')) {
-    const parts = trimmed.split(/\s+/);
-    const command = trimmed.substring(parts[0].length).trim();
+  if (commandName === '/cmd' || commandName === '/run' || commandName === '/shell') {
+    const command = trimmed.substring(commandName.length).trim();
     await executeUserCommand(chatId, command);
     return true;
   }
 
   // 15. Handle delete / archive command
-  if (trimmed.startsWith('/delete') || trimmed.startsWith('/archive')) {
+  if (commandName === '/delete' || commandName === '/archive') {
     await handleDelete(chatId);
     return true;
   }
