@@ -1,0 +1,25 @@
+src/cli.ts
+  s_5c07f37bfc6964::t_0481b02d341759 30
+src/core/platform.ts
+  s_5c07f37bfc6964::t_f995e4eab11a0a 42
+src/adapter.ts
+  s_5c07f37bfc6964::t_8c246a3e510443 199
+src/config.ts
+  s_5c07f37bfc6964::t_4dbfeb9995a831 25
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "1dedf2706f294ed176ae52e8312cd3e7236b0504",
+  "prompts": {},
+  "sessions": {
+    "s_5c07f37bfc6964": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1e87f762-af67-489d-88ab-1613cf957d79",
+        "model": "deepseek-v4-pro"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    }
+  }
+}
