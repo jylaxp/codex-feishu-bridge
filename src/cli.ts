@@ -27,7 +27,7 @@ ALLOWED_APPROVERS=
 RATE_LIMIT_QUERY_INTERVAL_MS=300000
 
 # Path to the Codex CLI binary on macOS (using Desktop App bundled resources version)
-CODEX_BIN=/Applications/Codex.app/Contents/Resources/codex
+CODEX_BIN=/Applications/ChatGPT.app/Contents/Resources/codex
 
 # Switch to output logs to a file instead of stdout (true/false)
 LOG_TO_FILE=false
