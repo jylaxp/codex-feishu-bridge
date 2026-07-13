@@ -775,26 +775,9 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
     model?: string | null;
     personality?: string | null;
   }): Promise<string> {
-    // Proactively resume/load the thread first on WS to ensure we subscribe to its event stream
-    try {
-      console.log(`Pre-loading thread ${options.threadId} via thread/resume...`);
-      await this.request('thread/resume', { threadId: options.threadId });
-    } catch (e) {
-      console.warn(`Failed to preload thread ${options.threadId} via thread/resume:`, e);
-    }
+    // Bypass Desktop IPC completely since the socket is removed in the new ChatGPT version.
+    // We will directly use the local app-server.
 
-    // Attempt to launch the turn via Desktop IPC first (so that Desktop UI is updated)
-    try {
-      const ipcTurnId = await this.tryDesktopIpcStartTurn(options);
-      if (ipcTurnId) {
-        console.log(`Successfully started turn via Desktop IPC. turnId: ${ipcTurnId}`);
-        return ipcTurnId;
-      }
-    } catch (e) {
-      console.warn('Error starting turn via Desktop IPC, falling back to standard WebSocket request:', e);
-    }
-
-    console.log('Falling back to standard websocket turn/start...');
     const result = await this.request('turn/start', {
       threadId: options.threadId,
       cwd: options.cwd,

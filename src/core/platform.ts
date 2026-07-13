@@ -28,6 +28,33 @@ class MacOSConfig implements PlatformConfig {
 
   async getIpcSocketPath(): Promise<string | null> {
     const systemTmpDir = os.tmpdir();
+
+    // Check new ChatGPT macOS app IPC socket pattern: com.openai.codex.XXXXXX/SingletonSocket
+    try {
+      const folders = fs.readdirSync(systemTmpDir);
+      let newestSocket: string | null = null;
+      let newestMtime = 0;
+
+      for (const folder of folders) {
+        if (folder.startsWith('com.openai.codex.')) {
+          const sockPath = path.join(systemTmpDir, folder, 'SingletonSocket');
+          if (fs.existsSync(sockPath)) {
+            const stats = fs.statSync(sockPath);
+            if (stats.mtimeMs > newestMtime) {
+              newestMtime = stats.mtimeMs;
+              newestSocket = sockPath;
+            }
+          }
+        }
+      }
+      if (newestSocket) {
+        return newestSocket;
+      }
+    } catch (e) {
+      console.warn('Error finding new IPC socket:', e);
+    }
+
+    // Fallback to old behavior
     const codexIpcDir = path.join(systemTmpDir, 'codex-ipc');
     if (!fs.existsSync(codexIpcDir)) {
       return null;

@@ -297,8 +297,12 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
               try {
                 await adapter.patchThreadVisibility(bound.threadId);
                 const { execSync } = require('child_process');
-                execSync(`open "codex://chat/${bound.threadId}"`);
-                console.log(`Forced UI reload via deep link for thread ${bound.threadId}`);
+                execSync(`open "codex://"`);
+                // sleep a bit to let the app navigate away, then navigate back
+                setTimeout(() => {
+                  execSync(`open "codex://chat/${bound.threadId}"`);
+                  console.log(`Forced UI reload via deep link for thread ${bound.threadId}`);
+                }, 500);
               } catch (e) {
                 console.error('Failed to trigger UI reload for thread:', e);
               }
@@ -658,7 +662,7 @@ async function main() {
 
   setupLogging();
 
-  await initCodex(handleCodexNotification);
+  await initCodex();
 
   console.log('Connecting Feishu WebSocket Event Stream...');
   const wsClient = new Lark.WSClient({

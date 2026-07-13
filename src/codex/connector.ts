@@ -1,68 +1,55 @@
+/**
+ * Bridge entry point for Codex integration.
+ *
+ * Architecture (same as VSCode extension):
+ *   1. Spawn codex -c features.code_mode_host=true app-server --listen stdio://
+ *   2. All JSON-RPC via stdio (turn/start, thread/list, skills/list, etc.)
+ *   3. code_mode_host connects this app-server to the desktop IPC network
+ *   4. Desktop detects SQLite changes → shows bridge-initiated turns in its UI
+ *   5. All streaming events (deltas, completions) come through stdio JSON-RPC
+ *
+ * This is how VSCode extension works — no Desktop IPC, no thread-follower-start-turn.
+ * Just a code_mode_host app-server + standard turn/start RPC.
+ */
 import { LocalAppServerAdapter } from '../adapter';
 import { stateManager } from '../core/state';
 import { checkAndPushHistory } from './history';
-import { finalizeCardKitCard } from '../feishu/card';
-import { createCardKitFinalLayout } from '../cards/turn-cards';
+import { handleNotification, registerDependencies } from './events';
 
+// Single app-server with code_mode_host, same as VSCode
 export const adapter = new LocalAppServerAdapter({
-  socketPath: process.env.CODEX_SOCKET_PATH
+  socketPath: '/tmp/bridge-direct.sock', // force spawn, never connect to daemon
 });
 
-export let isReconnecting = false;
-export let reconnectAttempts = 0;
+export const client = adapter; // backward compat
 
-export async function connectWithRetry() {
-  if (isReconnecting) return;
-  isReconnecting = true;
+export async function initCodex() {
+  const { createCardKitInitialLayout, createCardKitFinalLayout } = require('../cards/turn-cards');
+  const { streamUpdateCardKit, cleanupTurn } = require('./dispatcher');
+  const { createCardKitCard, sendCardKitMessage, finalizeCardKitCard, sendSimpleStatusCard } = require('../feishu/card');
+  const { fetchRateLimitsForTurn } = require('./stats');
+  const { queueTurnTask } = require('./queue');
+  const { saveSessions, savePushedTurns } = require('../core/storage');
+  const { getChatIdForThread } = require('./dispatcher');
 
-  while (true) {
-    try {
-      console.log(`Connecting to Codex App Server (attempt ${reconnectAttempts + 1})...`);
-      await adapter.connect();
-      console.log('Codex App Server connection established.');
-      reconnectAttempts = 0;
-      isReconnecting = false;
-      
-      // Run history check asynchronously
-      checkAndPushHistory().catch(e => {
-        console.error('Failed to run startup history check:', e);
-      });
-      break;
-    } catch (err: any) {
-      reconnectAttempts++;
-      const delay = Math.min(30000, 1000 * Math.pow(2, reconnectAttempts));
-      console.error(`Connection to Codex failed: ${err.message || err}. Retrying in ${delay}ms...`);
-      await new Promise(resolve => setTimeout(resolve, delay));
-    }
-  }
-}
-
-export async function initCodex(notificationHandler: (msg: any) => Promise<void>) {
-  adapter.onExit(async () => {
-    console.warn('Codex App Server disconnected.');
-    const snapshot = Array.from(stateManager.activeTurns.entries());
-    stateManager.activeTurns.clear();
-    stateManager.threadToActiveTurnId.clear();
-    for (const [turnId, turn] of snapshot) {
-      turn.status = 'failed';
-      const errorMsg = `\n⚠️ *[System]*: Codex App Server disconnected unexpectedly.`;
-      turn.reasoning = (turn.reasoning || "") + errorMsg;
-      if (turn.cardId) {
-        const finalLayout = await createCardKitFinalLayout(turn);
-        finalizeCardKitCard(turn.cardId, finalLayout, turn).catch(e =>
-          console.error('Failed to finalize card on exit:', e)
-        );
-      }
-    }
-
-    // Automatically trigger reconnect loop on exit
-    connectWithRetry().catch(e => {
-      console.error('Reconnection loop encountered a fatal error:', e);
-    });
+  registerDependencies({
+    createCardKitInitialLayout, createCardKitFinalLayout,
+    streamUpdateCardKit, createCardKitCard, sendCardKitMessage,
+    finalizeCardKitCard, sendSimpleStatusCard,
+    fetchRateLimitsForTurn, queueTurnTask, cleanupTurn,
+    saveSessions, savePushedTurns, getChatIdForThread,
+    routeCommand: (require('../commands/router') as any).routeCommand,
+    checkAndPushHistory,
   });
 
-  // Start the initial connection flow
-  await connectWithRetry();
+  // Connect adapter (spawns app-server with code_mode_host)
+  adapter.onNotification((msg) => {
+    handleNotification(adapter as any, msg).catch(e => console.error('Event error:', e));
+  });
+  adapter.onExit(() => console.warn('App-server disconnected'));
 
-  adapter.onNotification(notificationHandler);
+  await adapter.connect();
+  console.log('App-server connected (code_mode_host)');
+
+  checkAndPushHistory().catch(e => console.error('History check failed:', e));
 }
