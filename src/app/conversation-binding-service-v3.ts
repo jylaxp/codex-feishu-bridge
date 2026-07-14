@@ -52,7 +52,7 @@ export class ConversationBindingServiceV3 {
 
   public async handleCommand(message: InboundTextMessage): Promise<boolean> {
     const command = message.text.trim();
-    if (command === '/bind' || command === '/l' || command === '/list') {
+    if (command === '/bind' || command === '/l' || command === '/list' || command === '/ll') {
       await this.sendPicker(message);
       return true;
     }

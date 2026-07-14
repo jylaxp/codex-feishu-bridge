@@ -11,6 +11,7 @@ import { CodexAppNavigationAdapter } from './codex/app-navigation-adapter';
 import { verifyCodexRuntimeContract } from './codex/runtime-contract';
 import { parseEnvironment } from './config';
 import { loadBridgeEnvironment } from './config-file';
+import { BridgeCommandService } from './command-service';
 import { ConversationBindingServiceV3 } from './conversation-binding-service-v3';
 import { DesktopApprovalService } from './desktop-approval-service';
 import { BridgeConfig } from './domain';
@@ -79,6 +80,14 @@ export async function startBridge(
     undefined,
     new CodexAppNavigationAdapter(),
   );
+  const commands = new BridgeCommandService(
+    config,
+    bindings,
+    appServer,
+    cards,
+    orchestrator,
+    new CodexAppNavigationAdapter(),
+  );
   const desktopSupervisor = new DesktopIpcSupervisor(desktop, {
     onReady: (handshake) => {
       normalizer.beginEpoch(handshake.epoch);
@@ -94,6 +103,9 @@ export async function startBridge(
   });
   const eventServer = new LarkEventServer(lark.websocket, config, {
     onMessage: async (message) => {
+      if (await commands.handle(message)) {
+        return;
+      }
       if (await conversationBindings.handleCommand(message)) {
         return;
       }

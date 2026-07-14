@@ -180,6 +180,21 @@ export class InMemoryOrchestrator {
     return true;
   }
 
+  /** Cancels the current task for an authorized chat command without a card token. */
+  public async cancelCurrent(chatId: string, threadId: string): Promise<boolean> {
+    const task = this.activeByThreadId.get(threadId);
+    if (!task || task.message.chatId !== chatId || TERMINAL.has(task.status)) {
+      return false;
+    }
+    if (task.turnId) {
+      await this.desktop.interruptTurnTracked({ threadId, turnId: task.turnId }, () => undefined);
+    }
+    task.status = 'INTERRUPTED';
+    await this.flushCard(task, true);
+    this.finish(task);
+    return true;
+  }
+
   /** Returns the source conversation for a still-live, exact Desktop turn. */
   public approvalContext(threadId: string, turnId: string | null): RuntimeApprovalContext | undefined {
     const task = this.activeByThreadId.get(threadId);
@@ -457,7 +472,7 @@ function buildStart(task: RuntimeTask, config: BridgeConfig): TurnStartParams {
     threadId: task.binding.threadId,
     clientUserMessageId: task.message.messageId,
     input: [{ type: 'text', text: task.message.text, text_elements: [] }],
-    cwd: config.codexCwd,
+    cwd: task.binding.workspaceId,
     runtimeWorkspaceRoots: [...config.allowedWorkspaceRoots],
     approvalPolicy: 'on-request',
     approvalsReviewer: 'user',
@@ -468,6 +483,7 @@ function buildStart(task: RuntimeTask, config: BridgeConfig): TurnStartParams {
       excludeTmpdirEnvVar: false,
       excludeSlashTmp: false,
     },
+    ...(task.binding.model ? { model: task.binding.model } : {}),
   };
 }
 

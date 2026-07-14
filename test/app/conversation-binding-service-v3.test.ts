@@ -231,6 +231,7 @@ test('keeps /l and /list on the legacy binding-picker command surface', async ()
 
     assert.equal(await service.handleCommand(inbound('/l')), true);
     assert.equal(await service.handleCommand(inbound('/list')), true);
+    assert.equal(await service.handleCommand(inbound('/ll')), true);
     const card = cards.cards[0]!;
     const header = card.header as { title: { content: string } };
     const body = card.body as { elements: Array<Record<string, unknown>> };
