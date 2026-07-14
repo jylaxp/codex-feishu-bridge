@@ -1,0 +1,28 @@
+src/app/config-reset.ts
+  s_4672ec237d452e::t_b334ddf88e98bd 1-171
+src/app/cli.ts
+  s_4672ec237d452e::t_b334ddf88e98bd 4,6,11-12,46-53,96-97,107-113,138-144,163,195,199
+  s_4672ec237d452e::t_e7619c0e780c3a 114-115,121-126
+test/app/config-reset.test.ts
+  s_4672ec237d452e::t_b334ddf88e98bd 1-70
+test/app/cli.test.ts
+  s_4672ec237d452e::t_55aa30f1ff5cd0 27-28
+  s_4672ec237d452e::t_e7619c0e780c3a 31-45
+  s_4672ec237d452e::t_5b19e8a7f56527 29-30
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "0efee646c9b7a8742d8aae3a049d31d166436212",
+  "prompts": {},
+  "sessions": {
+    "s_4672ec237d452e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5be6-2b87-7190-8898-ae985cbeb51e",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    }
+  }
+}
