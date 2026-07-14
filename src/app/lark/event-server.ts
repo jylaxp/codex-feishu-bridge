@@ -12,6 +12,8 @@ const MAX_SIGNED_BINDING_TOKEN_LENGTH = 1024;
 
 export type CardActionKind = 'approval' | 'binding' | 'cancel';
 
+type CardActionOption = string | { readonly value?: unknown };
+
 export interface InboundCardAction {
   readonly tenantKey: string;
   readonly chatId: string;
@@ -30,7 +32,11 @@ export interface RawCardActionEvent {
   readonly operator?: { readonly open_id?: string };
   readonly action?: {
     readonly value?: unknown;
-    readonly option?: { readonly value?: unknown };
+    /**
+     * `select_static` callbacks use a string in the current Feishu SDK.
+     * Keep the object variant for older callback envelopes.
+     */
+    readonly option?: CardActionOption;
   };
 }
 
@@ -58,6 +64,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function selectedOptionValue(option: CardActionOption | undefined): string | null {
+  if (typeof option === 'string') {
+    return nonBlank(option);
+  }
+  return isRecord(option) ? nonBlank(option.value) : null;
+}
+
 /** Normalizes the minimal callback fields without retaining the raw payload. */
 export function normalizeCardAction(
   event: RawCardActionEvent,
@@ -80,9 +93,7 @@ export function normalizeCardAction(
   }
 
   const action = nonBlank(value.action);
-  const selectedOption = isRecord(event.action?.option)
-    ? nonBlank(event.action?.option?.value)
-    : null;
+  const selectedOption = selectedOptionValue(event.action?.option);
   const token = action === 'binding'
     ? selectedOption ?? nonBlank(value.token)
     : nonBlank(value.token);

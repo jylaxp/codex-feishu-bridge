@@ -96,6 +96,21 @@ test('reads the signed binding token from a select_static option', () => {
   assert.equal(action?.token, 'selected-binding-token');
 });
 
+test('reads the current Feishu select_static string option callback', () => {
+  const action = normalizeCardAction({
+    tenant_key: 'tenant-test',
+    context: { open_chat_id: 'chat-test', open_message_id: 'message-card' },
+    operator: { open_id: 'user-test' },
+    action: {
+      value: { action: 'binding' },
+      option: 'selected-binding-token',
+    },
+  }, config);
+
+  assert.equal(action?.action, 'binding');
+  assert.equal(action?.token, 'selected-binding-token');
+});
+
 test('rejects card actions from another chat or with malformed tokens', () => {
   const baseEvent = {
     tenant_key: 'tenant-test',
