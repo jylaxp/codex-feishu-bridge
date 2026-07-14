@@ -381,6 +381,17 @@ export class AppServerEventCoordinator {
     return this.earlyNotificationCount;
   }
 
+  /**
+   * Drops only ephemeral state when the Desktop connection epoch ends. Events
+   * from the prior runtime must never be attached to a future turn.
+   */
+  public resetEphemeralState(): void {
+    this.reductionsByTurnId.clear();
+    this.pendingTurnStartsByThreadId.clear();
+    this.earlyNotificationsByTurn.clear();
+    this.earlyNotificationCount = 0;
+  }
+
   /** Handles one notification synchronously and returns its durability boundary. */
   public handle(notification: ServerNotification): EventCoordinationOutcome {
     this.pruneEarlyNotifications(this.nowMs());

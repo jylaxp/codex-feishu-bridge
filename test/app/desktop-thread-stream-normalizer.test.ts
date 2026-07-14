@@ -251,6 +251,17 @@ test('ignores patches until an authoritative snapshot exists', () => {
   assert.deepEqual(normalizer.handle(completionBroadcast()), []);
 });
 
+test('clears authoritative state when the Desktop connection epoch changes', () => {
+  const normalizer = new DesktopThreadStreamNormalizer();
+  normalizer.beginEpoch(1);
+  normalizer.handle(snapshotBroadcast());
+
+  normalizer.beginEpoch(2);
+
+  assert.equal(normalizer.connectionEpoch, 2);
+  assert.deepEqual(normalizer.handle(completionBroadcast()), []);
+});
+
 test('does not synthesize a suffix delta when Desktop rewrites existing text', () => {
   const normalizer = new DesktopThreadStreamNormalizer();
   normalizer.handle(snapshotBroadcast());

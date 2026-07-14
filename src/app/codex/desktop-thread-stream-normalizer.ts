@@ -18,6 +18,7 @@ const THREAD_STREAM_PROTOCOL_VERSION = 11;
 /** Converts Desktop state snapshots/patches into canonical App Server events. */
 export class DesktopThreadStreamNormalizer {
   private readonly statesByThreadId = new Map<string, UnknownRecord>();
+  private activeEpoch: number | undefined;
 
   public constructor(private readonly nowMs: () => number = Date.now) {}
 
@@ -46,6 +47,24 @@ export class DesktopThreadStreamNormalizer {
 
   public reset(): void {
     this.statesByThreadId.clear();
+  }
+
+  /**
+   * Starts a new Desktop connection epoch. Broadcasts are only meaningful for
+   * the live socket, so changing epoch discards every authoritative snapshot.
+   */
+  public beginEpoch(epoch: number): void {
+    if (!Number.isSafeInteger(epoch) || epoch < 1) {
+      throw new RangeError('Desktop connection epoch must be a positive safe integer');
+    }
+    if (this.activeEpoch !== epoch) {
+      this.statesByThreadId.clear();
+      this.activeEpoch = epoch;
+    }
+  }
+
+  public get connectionEpoch(): number | undefined {
+    return this.activeEpoch;
   }
 }
 

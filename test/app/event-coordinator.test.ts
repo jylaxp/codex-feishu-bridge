@@ -439,3 +439,17 @@ test('a failed item flush can be retried without losing the completion event', (
   assert.equal(coordinator.handle(completed), 'FLUSHED');
   assert.equal(store.items.get('final-1')?.contentText, 'retryable result');
 });
+
+test('resetEphemeralState discards reductions and pending turn-start buffers', () => {
+  const store = createStore();
+  const coordinator = new AppServerEventCoordinator(store.dependencies);
+
+  coordinator.handle(deltaEvent('item/agentMessage/delta', 'agent-1', 'partial'));
+  coordinator.beginTurnStart('task-pending', 'thread-pending');
+  assert.equal(coordinator.getProjectionSnapshot(TURN_ID)?.pendingAgentText, 'partial');
+
+  coordinator.resetEphemeralState();
+
+  assert.equal(coordinator.getProjectionSnapshot(TURN_ID), undefined);
+  assert.equal(coordinator.getBufferedNotificationCount(), 0);
+});
