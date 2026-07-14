@@ -1,0 +1,24 @@
+src/app/cards/layouts.ts
+  s_4672ec237d452e::t_e496a7843fc679 72
+  s_4672ec237d452e::t_91a7f79b8b59fa 54-58,62-63,66-71,73,75-87,92-110
+  s_4672ec237d452e::t_9cc8bb17915478 111
+test/app/layouts.test.ts
+  s_4672ec237d452e::t_91a7f79b8b59fa 6,22-24,28,49
+  s_4672ec237d452e::t_2e2aad88000037 26-27
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "2393e65be86c476c224eca018c083a5536cd249a",
+  "prompts": {},
+  "sessions": {
+    "s_4672ec237d452e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5be6-2b87-7190-8898-ae985cbeb51e",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    }
+  }
+}
