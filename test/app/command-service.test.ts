@@ -19,8 +19,11 @@ const config: BridgeConfig = {
   maxQueuedTasks: 10,
 };
 
+let nextEvent = 1;
+
 function message(text: string): InboundTextMessage {
-  return { tenantKey: 'tenant', eventId: `event-${text}`, messageId: 'message', chatId: 'chat',
+  const event = nextEvent++;
+  return { tenantKey: 'tenant', eventId: `event-${event}`, messageId: `message-${event}`, chatId: 'chat',
     rootMessageId: 'root', senderOpenId: 'user', text, payloadDigest: 'digest', createdAtMs: 1 };
 }
 
@@ -33,6 +36,7 @@ test('handles slash control commands without forwarding them to a model turn', a
     const cards: CardKitJson[] = [];
     const calls: string[] = [];
     const cancelled: string[] = [];
+    const shellCalls: Array<{ command: string; arguments_: readonly string[]; cwd: string }> = [];
     const service = new BridgeCommandService(
       config,
       store,
@@ -45,6 +49,10 @@ test('handles slash control commands without forwarding them to a model turn', a
         cancelled.push(`${chatId}:${threadId}`); return true;
       } } as unknown as InMemoryOrchestrator,
       { openThread: async () => undefined },
+      { run: async (command, arguments_, cwd) => {
+        shellCalls.push({ command, arguments_, cwd });
+        return { stdout: 'clean', stderr: '', exitCode: 0, timedOut: false };
+      } },
     );
 
     assert.equal(await service.handle(message('/help')), true);
@@ -54,7 +62,19 @@ test('handles slash control commands without forwarding them to a model turn', a
     assert.deepEqual(cancelled, ['chat:thread-1']);
     assert.equal(await service.handle(message('/usage')), true);
     assert.deepEqual(calls, ['account/rateLimits/read']);
-    assert.equal(cards.length, 4);
+    assert.equal(await service.handle(message('/plan')), true);
+    assert.equal(store.get('tenant', 'chat')?.plan, 'plan');
+    assert.equal(await service.handle(message('/plan')), true);
+    assert.equal(store.get('tenant', 'chat')?.plan, undefined);
+    assert.equal(await service.handle(message('/goal -c')), true);
+    assert.deepEqual(calls, ['account/rateLimits/read', 'thread/goal/clear']);
+    assert.equal(await service.handle(message('/cmd git status')), true);
+    assert.deepEqual(shellCalls, [{ command: 'git', arguments_: ['status'], cwd: '/workspace' }]);
+    assert.equal(await service.handle(message('/cmd git branch unsafe-branch')), true);
+    assert.equal(await service.handle(message('/cmd find . -exec touch marker \\;')), true);
+    assert.deepEqual(shellCalls, [{ command: 'git', arguments_: ['status'], cwd: '/workspace' }]);
+    assert.equal(await service.handle(message('/not-allowed')), true);
+    assert.equal(cards.length, 11);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

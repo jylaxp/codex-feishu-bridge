@@ -13,6 +13,7 @@ export const MAX_CARD_UPDATE_INTERVAL_MS = 2_000;
 export const DEFAULT_MAX_QUEUED_TASKS = 100;
 export const MIN_QUEUED_TASKS = 1;
 export const MAX_QUEUED_TASKS = 1_000;
+const DEFAULT_SHELL_COMMANDS = Object.freeze(['ls', 'pwd', 'git', 'find', 'cd']);
 
 export class ConfigurationError extends Error {
   public constructor(message: string) {
@@ -104,6 +105,18 @@ function parseRequiredAbsolutePathList(env: NodeJS.ProcessEnv, key: string): rea
   return Object.freeze(normalizedValues);
 }
 
+function parseAllowedShellCommands(env: NodeJS.ProcessEnv): readonly string[] {
+  const raw = env.ALLOWED_SHELL_COMMANDS?.trim();
+  if (!raw) {
+    return DEFAULT_SHELL_COMMANDS;
+  }
+  const commands = [...new Set(raw.split(',').map((value) => value.trim().toLowerCase()).filter(Boolean))];
+  if (commands.length === 0 || commands.some((command) => !/^[a-z0-9][a-z0-9_.-]*$/.test(command))) {
+    throw new ConfigurationError('ALLOWED_SHELL_COMMANDS entries must be executable basenames');
+  }
+  return Object.freeze(commands);
+}
+
 function parseBoundedInteger(
   env: NodeJS.ProcessEnv,
   key: string,
@@ -139,6 +152,7 @@ export function parseEnvironment(env: NodeJS.ProcessEnv): BridgeConfig {
     allowedChats: parseRequiredList(env, 'ALLOWED_CHATS'),
     authorizedUsers: parseRequiredList(env, 'AUTHORIZED_USERS'),
     allowedApprovers: parseRequiredList(env, 'ALLOWED_APPROVERS'),
+    allowedShellCommands: parseAllowedShellCommands(env),
     ...appServer,
     codexBin: requireAbsolutePath(env, 'CODEX_BIN'),
     codexCwd: requireAbsolutePath(env, 'CODEX_CWD'),

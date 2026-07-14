@@ -141,6 +141,8 @@ export interface TurnStartParams {
   approvalsReviewer?: ApprovalsReviewer | null;
   sandboxPolicy?: SandboxPolicy | null;
   model?: string | null;
+  collaborationMode?: string | null;
+  personality?: string | null;
 }
 
 export interface TurnSteerParams {

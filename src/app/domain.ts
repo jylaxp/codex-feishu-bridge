@@ -50,6 +50,8 @@ export interface BridgeConfig {
   readonly allowedChats: readonly string[];
   readonly authorizedUsers: readonly string[];
   readonly allowedApprovers: readonly string[];
+  /** Explicitly trusted local executables for /cmd, /run and /shell. */
+  readonly allowedShellCommands?: readonly string[];
   readonly appServerMode: 'owned_stdio' | 'managed_proxy';
   readonly appServerSocketPath: string | null;
   readonly codexBin: string;

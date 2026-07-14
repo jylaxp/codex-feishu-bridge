@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import type { ChatThreadBinding } from '../../src/app/binding-store';
+import { CardKitError } from '../../src/app/cards/cardkit-client';
 import type { CardKitJson } from '../../src/app/cards/layouts';
 import type { DesktopIpcClient } from '../../src/app/codex/desktop-ipc-client';
 import type { TurnStartParams, TurnSteerParams } from '../../src/app/codex/protocol';
@@ -31,17 +32,19 @@ const binding: ChatThreadBinding = {
   chatId: 'chat',
   threadId: 'thread-1',
   workspaceId: 'workspace-one',
+  personality: 'friendly',
+  plan: 'plan',
   revision: 1,
   updatedAtMs: 1,
 };
 
-function message(id: string, text: string): InboundTextMessage {
+function message(id: string, text: string, rootId = id): InboundTextMessage {
   return {
     tenantKey: 'tenant',
     eventId: `event-${id}`,
     messageId: `message-${id}`,
     chatId: 'chat',
-    rootMessageId: `root-${id}`,
+    rootMessageId: `root-${rootId}`,
     senderOpenId: 'user',
     text,
     payloadDigest: id,
@@ -111,6 +114,9 @@ test('sends a bound prompt only once through Desktop IPC and projects its termin
   assert.equal(await orchestrator.handleInbound(message('1', 'hello'), binding), 'duplicate');
   assert.equal(desktop.starts.length, 1);
   assert.equal(desktop.starts[0]?.threadId, 'thread-1');
+  assert.equal(desktop.starts[0]?.personality, 'friendly');
+  assert.equal(desktop.starts[0]?.collaborationMode, 'plan');
+  assert.doesNotMatch(JSON.stringify(cards.created[0]), /↑/);
 
   orchestrator.handleNotification({
     method: 'item/agentMessage/delta',
@@ -142,12 +148,74 @@ test('steers the active turn and abandons all local state after Desktop loss', a
   );
 
   await orchestrator.handleInbound(message('1', 'first'), binding);
-  assert.equal(await orchestrator.handleInbound(message('2', 'follow up'), binding), 'steered');
+  assert.equal(await orchestrator.handleInbound(message('2', 'follow up', '1'), binding), 'steered');
   assert.equal(desktop.steers.length, 1);
 
   orchestrator.abandonAll();
   await orchestrator.handleInbound(message('3', 'new after reconnect'), binding);
   assert.equal(desktop.starts.length, 2);
+});
+
+test('queues a different Feishu root instead of steering it into the active turn', async () => {
+  const desktop = new FakeDesktop();
+  const orchestrator = new InMemoryOrchestrator(
+    config,
+    desktop as unknown as DesktopIpcClient,
+    new FakeCards(),
+  );
+
+  await orchestrator.handleInbound(message('1', 'first'), binding);
+  assert.equal(await orchestrator.handleInbound(message('2', 'other root'), binding), 'queued');
+  assert.equal(desktop.steers.length, 0);
+  assert.equal(desktop.starts.length, 1);
+});
+
+test('does not retain a duplicate key when initial CardKit delivery fails before a turn starts', async () => {
+  const desktop = new FakeDesktop();
+  let createAttempts = 0;
+  const cards: InMemoryCardClient = {
+    createCard: async () => {
+      createAttempts += 1;
+      if (createAttempts === 1) throw new Error('temporary CardKit error');
+      return 'card-1';
+    },
+    replyCard: async () => 'card-message-1',
+    replaceCard: async (_id, _card, sequence) => sequence + 1,
+    closeStreaming: async (_id, sequence) => sequence + 1,
+  };
+  const orchestrator = new InMemoryOrchestrator(config, desktop as unknown as DesktopIpcClient, cards);
+
+  await assert.rejects(orchestrator.handleInbound(message('1', 'retry me'), binding), /temporary CardKit error/);
+  assert.equal(await orchestrator.handleInbound(message('1', 'retry me'), binding), 'started');
+  assert.equal(desktop.starts.length, 1);
+});
+
+test('retries a transient CardKit update without replaying the Desktop turn', async () => {
+  const desktop = new FakeDesktop();
+  let updateAttempts = 0;
+  const cards: InMemoryCardClient = {
+    createCard: async () => 'card-1',
+    replyCard: async () => 'card-message-1',
+    replaceCard: async (_id, _card, sequence) => {
+      updateAttempts += 1;
+      if (updateAttempts === 1) {
+        throw new CardKitError('NETWORK_RETRYABLE', 'temporary CardKit outage');
+      }
+      return sequence + 1;
+    },
+    closeStreaming: async (_id, sequence) => sequence + 1,
+  };
+  const orchestrator = new InMemoryOrchestrator(
+    config,
+    desktop as unknown as DesktopIpcClient,
+    cards,
+    { cardRetryDelayMs: 1 },
+  );
+
+  assert.equal(await orchestrator.handleInbound(message('1', 'retry update'), binding), 'started');
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(updateAttempts, 2);
+  assert.equal(desktop.starts.length, 1);
 });
 
 test('keeps a terminal card briefly so late usage and rate limits update its original footer', async () => {
@@ -190,7 +258,8 @@ test('keeps a terminal card briefly so late usage and rate limits update its ori
       model: 'gpt-5.6-sol',
       apiCalls: 3,
       tokenUsage: {
-        last: { inputTokens: 1_200, outputTokens: 345, totalTokens: 12_345 },
+        last: { inputTokens: 1_200, outputTokens: 345 },
+        total: { totalTokens: 12_345 },
         modelContextWindow: 128_000,
       },
     },

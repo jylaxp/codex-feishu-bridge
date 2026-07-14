@@ -61,6 +61,9 @@ LARK_TENANT_KEY=tenant_key
 ALLOWED_CHATS=oc_xxx
 AUTHORIZED_USERS=ou_user_xxx
 ALLOWED_APPROVERS=ou_approver_xxx
+# 可选；/cmd、/run、/shell 的本地可执行文件白名单。
+# 默认 ls,pwd,git,find,cd，仍会校验参数、工作区与输出上限。
+# ALLOWED_SHELL_COMMANDS=ls,pwd,git,find,cd
 
 CODEX_BIN=/absolute/path/to/codex
 CODEX_CWD=/absolute/path/to/project

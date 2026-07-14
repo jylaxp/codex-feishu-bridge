@@ -232,12 +232,13 @@ test('keeps /l and /list on the legacy binding-picker command surface', async ()
     assert.equal(await service.handleCommand(inbound('/l')), true);
     assert.equal(await service.handleCommand(inbound('/list')), true);
     assert.equal(await service.handleCommand(inbound('/ll')), true);
-    const card = cards.cards[0]!;
+    const card = cards.cards.at(-1)!;
     const header = card.header as { title: { content: string } };
     const body = card.body as { elements: Array<Record<string, unknown>> };
-    assert.equal(header.title.content, '📂 Codex 绑定会话');
+    assert.equal(header.title.content, '📂 Codex 绑定会话 (Table 视图)');
     assert.equal(body.elements[0]?.tag, 'div');
-    assert.equal(body.elements[1]?.tag, 'select_static');
+    assert.equal(body.elements[1]?.tag, 'table');
+    assert.equal(body.elements[2]?.tag, 'select_static');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

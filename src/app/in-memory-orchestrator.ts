@@ -2,9 +2,10 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
 
 import { deriveTaskCancelToken } from './action-tokens';
 import type { ChatThreadBinding } from './binding-store';
+import { CardKitError } from './cards/cardkit-client';
 import { type CardKitJson, createTaskCard } from './cards/layouts';
 import { sanitizeCardText } from './cards/sanitizer';
-import type { DesktopIpcClient } from './codex/desktop-ipc-client';
+import { DesktopIpcRequestError, type DesktopIpcClient } from './codex/desktop-ipc-client';
 import type {
   ServerNotification,
   Turn,
@@ -34,6 +35,8 @@ export interface InMemoryOrchestratorOptions {
   readonly now?: () => number;
   readonly onCardError?: (error: Error) => void;
   readonly readRateLimits?: () => Promise<unknown>;
+  /** Testable base backoff for transient CardKit update failures. */
+  readonly cardRetryDelayMs?: number;
 }
 
 export type InMemoryInboundOutcome = 'started' | 'queued' | 'steered' | 'duplicate';
@@ -67,7 +70,10 @@ interface RuntimeTask {
   cardSequence: number;
   completedAtMs: number | null;
   streamingClosed: boolean;
+  cancelRequested: boolean;
   cardWrite: Promise<void>;
+  cardRetryCount: number;
+  cardRetryTimer: NodeJS.Timeout | undefined;
   terminalCleanupTimer: NodeJS.Timeout | undefined;
   updateTimer: NodeJS.Timeout | undefined;
 }
@@ -76,6 +82,8 @@ const TERMINAL: ReadonlySet<TaskStatus> = new Set(['SUCCEEDED', 'FAILED', 'INTER
 const DEDUPE_TTL_MS = 10 * 60_000;
 const TERMINAL_CARD_RETENTION_MS = 5 * 60_000;
 const TEXT_LIMIT = 128 * 1024;
+const MAX_CARD_RETRY_ATTEMPTS = 3;
+const CARD_RETRY_BASE_DELAY_MS = 250;
 
 /**
  * Current-process task state. It deliberately never serializes a task, queue,
@@ -85,6 +93,7 @@ export class InMemoryOrchestrator {
   private readonly now: () => number;
   private readonly onCardError: (error: Error) => void;
   private readonly readRateLimits: (() => Promise<unknown>) | undefined;
+  private readonly cardRetryDelayMs: number;
   private readonly tasksById = new Map<string, RuntimeTask>();
   private readonly activeByThreadId = new Map<string, RuntimeTask>();
   private readonly terminalByTurnKey = new Map<string, RuntimeTask>();
@@ -94,6 +103,7 @@ export class InMemoryOrchestrator {
   }>>();
   private readonly pendingByThreadId = new Map<string, ServerNotification[]>();
   private readonly processedMessageKeys = new Map<string, number>();
+  private readonly inboundLocks = new Map<string, Promise<unknown>>();
 
   public constructor(
     private readonly config: BridgeConfig,
@@ -104,9 +114,17 @@ export class InMemoryOrchestrator {
     this.now = options.now ?? Date.now;
     this.onCardError = options.onCardError ?? (() => undefined);
     this.readRateLimits = options.readRateLimits;
+    this.cardRetryDelayMs = options.cardRetryDelayMs ?? CARD_RETRY_BASE_DELAY_MS;
   }
 
   public async handleInbound(
+    message: InboundTextMessage,
+    binding: ChatThreadBinding,
+  ): Promise<InMemoryInboundOutcome> {
+    return this.runExclusive(binding.threadId, () => this.handleInboundLocked(message, binding));
+  }
+
+  private async handleInboundLocked(
     message: InboundTextMessage,
     binding: ChatThreadBinding,
   ): Promise<InMemoryInboundOutcome> {
@@ -115,16 +133,30 @@ export class InMemoryOrchestrator {
     if (this.processedMessageKeys.has(dedupeKey)) {
       return 'duplicate';
     }
-    this.processedMessageKeys.set(dedupeKey, this.now());
     const active = this.activeByThreadId.get(binding.threadId);
-    if (active?.turnId && !TERMINAL.has(active.status)) {
-      await this.desktop.steerTurnTracked(buildSteer(active, message), () => undefined);
-      return 'steered';
+    let outcome: InMemoryInboundOutcome;
+    if (
+      active?.turnId
+      && !TERMINAL.has(active.status)
+      && active.message.rootMessageId === message.rootMessageId
+    ) {
+      try {
+        await this.desktop.steerTurnTracked(buildSteer(active, message), () => undefined);
+      } catch (error) {
+        if (!(error instanceof DesktopIpcRequestError) || error.disposition === 'PROVABLY_UNSENT') {
+          throw error;
+        }
+        active.tools = '补充消息的 Desktop 送达结果无法确认，Bridge 不会自动重发。';
+        this.requestCardUpdate(active, true);
+      }
+      outcome = 'steered';
+    } else if (active) {
+      outcome = this.enqueue(message, binding);
+    } else {
+      outcome = await this.start(message, binding);
     }
-    if (active) {
-      return this.enqueue(message, binding);
-    }
-    return this.start(message, binding);
+    this.processedMessageKeys.set(dedupeKey, this.now());
+    return outcome;
   }
 
   public handleNotification(notification: ServerNotification): void {
@@ -157,8 +189,12 @@ export class InMemoryOrchestrator {
   public async cancel(action: {
     readonly chatId: string;
     readonly messageId: string;
+    readonly operatorOpenId: string;
     readonly token: string;
   }): Promise<boolean> {
+    if (!this.config.authorizedUsers.includes(action.operatorOpenId)) {
+      return false;
+    }
     const task = [...this.tasksById.values()].find((candidate) => (
       candidate.message.chatId === action.chatId
       && candidate.cardMessageId === action.messageId
@@ -168,6 +204,13 @@ export class InMemoryOrchestrator {
     if (!task) {
       return false;
     }
+    if (!task.turnId) {
+      task.cancelRequested = true;
+      task.status = 'INTERRUPTED';
+      task.completedAtMs = this.now();
+      await this.flushCard(task, true);
+      return true;
+    }
     if (task.turnId) {
       await this.desktop.interruptTurnTracked({
         threadId: task.binding.threadId,
@@ -175,6 +218,7 @@ export class InMemoryOrchestrator {
       }, () => undefined);
     }
     task.status = 'INTERRUPTED';
+    task.completedAtMs = this.now();
     await this.flushCard(task, true);
     this.finish(task);
     return true;
@@ -186,10 +230,18 @@ export class InMemoryOrchestrator {
     if (!task || task.message.chatId !== chatId || TERMINAL.has(task.status)) {
       return false;
     }
+    if (!task.turnId) {
+      task.cancelRequested = true;
+      task.status = 'INTERRUPTED';
+      task.completedAtMs = this.now();
+      await this.flushCard(task, true);
+      return true;
+    }
     if (task.turnId) {
       await this.desktop.interruptTurnTracked({ threadId, turnId: task.turnId }, () => undefined);
     }
     task.status = 'INTERRUPTED';
+    task.completedAtMs = this.now();
     await this.flushCard(task, true);
     this.finish(task);
     return true;
@@ -239,6 +291,9 @@ export class InMemoryOrchestrator {
       if (task.terminalCleanupTimer) {
         clearTimeout(task.terminalCleanupTimer);
       }
+      if (task.cardRetryTimer) {
+        clearTimeout(task.cardRetryTimer);
+      }
     }
     this.tasksById.clear();
     this.activeByThreadId.clear();
@@ -246,6 +301,7 @@ export class InMemoryOrchestrator {
     this.queuesByThreadId.clear();
     this.pendingByThreadId.clear();
     this.processedMessageKeys.clear();
+    this.inboundLocks.clear();
   }
 
   private async start(
@@ -280,7 +336,10 @@ export class InMemoryOrchestrator {
       cardSequence: 0,
       completedAtMs: null,
       streamingClosed: false,
+      cancelRequested: false,
       cardWrite: Promise.resolve(),
+      cardRetryCount: 0,
+      cardRetryTimer: undefined,
       terminalCleanupTimer: undefined,
       updateTimer: undefined,
     };
@@ -290,13 +349,27 @@ export class InMemoryOrchestrator {
     try {
       const turn = await this.desktop.startTurnTracked(buildStart(task, this.config), () => undefined);
       task.turnId = turn.id;
+      if (task.cancelRequested) {
+        await this.desktop.interruptTurnTracked({
+          threadId: task.binding.threadId,
+          turnId: task.turnId,
+        }, () => undefined);
+        task.status = 'INTERRUPTED';
+        task.completedAtMs ??= this.now();
+        await this.flushCard(task, true);
+        this.finish(task);
+        return 'started';
+      }
       task.status = 'RUNNING';
       this.replayPending(task);
       this.requestCardUpdate(task, true);
       return 'started';
     } catch {
-      task.status = 'FAILED';
-      task.tools = 'Desktop IPC 未能确认任务执行结果。';
+      task.status = task.cancelRequested ? 'INTERRUPTED' : 'FAILED';
+      task.completedAtMs ??= this.now();
+      task.tools = task.cancelRequested
+        ? '取消请求结束前，Desktop IPC 未能确认任务状态。'
+        : 'Desktop IPC 未能确认任务执行结果。';
       await this.flushCard(task, true);
       this.finish(task);
       return 'started';
@@ -400,6 +473,7 @@ export class InMemoryOrchestrator {
         task.cardSequence,
         `task:${task.id}:${task.cardSequence + 1}`,
       );
+      task.cardRetryCount = 0;
       if (terminal && !task.streamingClosed) {
         task.cardSequence = await this.cards.closeStreaming(
           task.cardId,
@@ -409,8 +483,26 @@ export class InMemoryOrchestrator {
         task.streamingClosed = true;
       }
     } catch (error) {
-      this.onCardError(toError(error));
+      const cardError = toError(error);
+      if (error instanceof CardKitError && error.retryable && task.cardRetryCount < MAX_CARD_RETRY_ATTEMPTS) {
+        this.scheduleCardRetry(task);
+        return;
+      }
+      this.onCardError(cardError);
     }
+  }
+
+  private scheduleCardRetry(task: RuntimeTask): void {
+    if (task.cardRetryTimer || !this.tasksById.has(task.id)) {
+      return;
+    }
+    task.cardRetryCount += 1;
+    const delay = this.cardRetryDelayMs * 2 ** (task.cardRetryCount - 1);
+    task.cardRetryTimer = setTimeout(() => {
+      task.cardRetryTimer = undefined;
+      void this.flushCard(task, TERMINAL.has(task.status));
+    }, delay);
+    task.cardRetryTimer.unref();
   }
 
   private finish(task: RuntimeTask): void {
@@ -427,18 +519,25 @@ export class InMemoryOrchestrator {
       const key = turnKey(task.binding.threadId, task.turnId);
       this.terminalByTurnKey.set(key, task);
       task.terminalCleanupTimer = setTimeout(() => {
+        if (task.cardRetryTimer) {
+          clearTimeout(task.cardRetryTimer);
+        }
         this.terminalByTurnKey.delete(key);
         this.tasksById.delete(task.id);
       }, TERMINAL_CARD_RETENTION_MS);
       task.terminalCleanupTimer.unref();
     } else {
+      if (task.cardRetryTimer) {
+        clearTimeout(task.cardRetryTimer);
+      }
       this.tasksById.delete(task.id);
     }
     const next = this.queuesByThreadId.get(task.binding.threadId)?.shift();
     if (!next) {
       return;
     }
-    void this.start(next.message, next.binding);
+    void this.runExclusive(next.binding.threadId, () => this.start(next.message, next.binding))
+      .catch((error: unknown) => this.onCardError(toError(error)));
   }
 
   private async refreshRateLimits(task: RuntimeTask): Promise<void> {
@@ -465,6 +564,23 @@ export class InMemoryOrchestrator {
       }
     }
   }
+
+  private runExclusive<TResult>(threadId: string, operation: () => Promise<TResult>): Promise<TResult> {
+    const previous = this.inboundLocks.get(threadId) ?? Promise.resolve();
+    const current = previous.catch(() => undefined).then(operation);
+    this.inboundLocks.set(threadId, current);
+    void current.then(
+      () => this.clearInboundLock(threadId, current),
+      () => this.clearInboundLock(threadId, current),
+    );
+    return current;
+  }
+
+  private clearInboundLock(threadId: string, current: Promise<unknown>): void {
+    if (this.inboundLocks.get(threadId) === current) {
+      this.inboundLocks.delete(threadId);
+    }
+  }
 }
 
 function buildStart(task: RuntimeTask, config: BridgeConfig): TurnStartParams {
@@ -484,6 +600,10 @@ function buildStart(task: RuntimeTask, config: BridgeConfig): TurnStartParams {
       excludeSlashTmp: false,
     },
     ...(task.binding.model ? { model: task.binding.model } : {}),
+    ...(task.binding.plan ? { collaborationMode: task.binding.plan } : {}),
+    ...(task.binding.personality && task.binding.personality !== 'none'
+      ? { personality: task.binding.personality }
+      : {}),
   };
 }
 
@@ -531,7 +651,9 @@ function applyUsage(task: RuntimeTask, params: Record<string, unknown>): void {
   task.model = stringField(params.model) ?? task.model;
   task.inputTokens = numberField(last.inputTokens) ?? task.inputTokens;
   task.outputTokens = numberField(last.outputTokens) ?? task.outputTokens;
-  task.contextTokens = numberField(last.totalTokens) ?? task.contextTokens;
+  task.contextTokens = numberField(last.totalTokens)
+    ?? numberField(recordField(usage.total)?.totalTokens)
+    ?? task.contextTokens;
   task.contextWindow = numberField(usage.modelContextWindow) ?? task.contextWindow;
   task.apiCalls = firstNumber(
     params.apiCalls,
@@ -549,7 +671,7 @@ function formatFooter(status: TaskStatus, startedAtMs: number, usage?: RuntimeTa
   const completedAtMs = usage?.completedAtMs ?? Date.now();
   const parts = [state, `耗时 ${formatDuration(completedAtMs - startedAtMs)}`];
   if (usage?.model) parts.push(usage.model);
-  if (usage?.inputTokens !== null || usage?.outputTokens !== null) {
+  if (usage && (usage.inputTokens !== null || usage.outputTokens !== null)) {
     parts.push(`↑ ${formatCount(usage?.inputTokens)} ↓ ${formatCount(usage?.outputTokens)}`);
   }
   if (usage?.contextTokens !== null && usage?.contextWindow) {

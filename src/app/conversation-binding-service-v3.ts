@@ -53,7 +53,7 @@ export class ConversationBindingServiceV3 {
   public async handleCommand(message: InboundTextMessage): Promise<boolean> {
     const command = message.text.trim();
     if (command === '/bind' || command === '/l' || command === '/list' || command === '/ll') {
-      await this.sendPicker(message);
+      await this.sendPicker(message, command === '/ll');
       return true;
     }
     if (message.text === '/binding') {
@@ -118,7 +118,7 @@ export class ConversationBindingServiceV3 {
     return this.openThread(binding.threadId);
   }
 
-  private async sendPicker(message: InboundTextMessage): Promise<void> {
+  private async sendPicker(message: InboundTextMessage, table = false): Promise<void> {
     const response = await this.catalog.request<unknown>('thread/list', {
       limit: PICKER_LIMIT,
       sortKey: 'updated_at',
@@ -131,7 +131,7 @@ export class ConversationBindingServiceV3 {
       choice,
       token: createToken(choice.id, revision, message, this.config.larkAppSecret, this.now),
     }));
-    await this.reply(message, pickerCard(entries), 'picker');
+    await this.reply(message, pickerCard(entries, table), table ? 'picker-table' : 'picker');
   }
 
   private async sendStatus(message: InboundTextMessage): Promise<void> {
@@ -177,7 +177,10 @@ export class ConversationBindingServiceV3 {
   }
 }
 
-function pickerCard(entries: readonly { readonly choice: ThreadChoice; readonly token: string }[]): CardKitJson {
+function pickerCard(
+  entries: readonly { readonly choice: ThreadChoice; readonly token: string }[],
+  table: boolean,
+): CardKitJson {
   const options = entries.map((entry) => ({
     text: {
       tag: 'plain_text',
@@ -185,31 +188,46 @@ function pickerCard(entries: readonly { readonly choice: ThreadChoice; readonly 
     },
     value: entry.token,
   }));
+  const elements: Record<string, unknown>[] = [{
+    tag: 'div',
+    text: {
+      tag: 'lark_md',
+      content: table
+        ? '请查看下方的活跃会话列表，并在底部下拉菜单中选择对应序号以绑定至当前聊天。'
+        : '请从下方下拉菜单中选择一个 Codex 活跃会话绑定至当前聊天。选项已按本地项目分组：',
+    },
+  }];
+  if (table) {
+    elements.push({
+      tag: 'table',
+      page_size: 10,
+      row_height: 'low',
+      header_style: { bold: true, text_align: 'left' },
+      columns: [
+        { name: 'col_name', display_name: '会话名称', data_type: 'text' },
+        { name: 'col_project', display_name: '所属项目', data_type: 'text' },
+      ],
+      rows: entries.map((entry, index) => ({
+        col_name: `[${index + 1}] ${entry.choice.title}`,
+        col_project: entry.choice.cwd?.split(/[\\/]/).filter(Boolean).at(-1) ?? '🌐 全局会话',
+      })),
+    });
+  }
+  elements.push({
+    tag: 'select_static',
+    element_id: 'bind_select_dropdown',
+    placeholder: { tag: 'plain_text', content: table ? '选择要绑定的会话序号...' : '选择 Codex 会话...' },
+    value: { action: 'binding' },
+    options,
+  });
   return {
     schema: '2.0',
     config: { wide_screen_mode: true },
     header: {
       template: 'indigo',
-      title: { tag: 'plain_text', content: '📂 Codex 绑定会话' },
+      title: { tag: 'plain_text', content: table ? '📂 Codex 绑定会话 (Table 视图)' : '📂 Codex 绑定会话' },
     },
-    body: {
-      elements: [
-        {
-          tag: 'div',
-          text: {
-            tag: 'lark_md',
-            content: '请从下方下拉菜单中选择一个 Codex 活跃会话绑定至当前聊天。选项已按本地项目分组：',
-          },
-        },
-        {
-          tag: 'select_static',
-          element_id: 'bind_select_dropdown',
-          placeholder: { tag: 'plain_text', content: '选择 Codex 会话...' },
-          value: { action: 'binding' },
-          options,
-        },
-      ],
-    },
+    body: { elements },
   };
 }
 
@@ -310,7 +328,6 @@ function createToken(
     revision,
     tenantKey: message.tenantKey,
     chatId: message.chatId,
-    messageId: message.messageId,
     expiresAtMs: now() + TOKEN_TTL_MS,
   })).toString('base64url');
   const signature = createHmac('sha256', secret).update(payload).digest('base64url');
@@ -338,7 +355,6 @@ function verifyToken(
       || typeof parsed.revision !== 'number'
       || typeof parsed.tenantKey !== 'string'
       || typeof parsed.chatId !== 'string'
-      || typeof parsed.messageId !== 'string'
       || typeof parsed.expiresAtMs !== 'number'
       || parsed.tenantKey !== action.tenantKey
       || parsed.chatId !== action.chatId

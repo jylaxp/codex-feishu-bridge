@@ -56,6 +56,7 @@ async function run(): Promise<void> {
     assert.strictEqual(config.maxQueuedTasks, 100);
     assert.strictEqual(config.appServerMode, 'owned_stdio');
     assert.strictEqual(config.appServerSocketPath, null);
+    assert.deepStrictEqual(config.allowedShellCommands, ['ls', 'pwd', 'git', 'find', 'cd']);
     assert.ok(Object.isFrozen(config));
     assert.ok(Object.isFrozen(config.allowedChats));
 
@@ -106,6 +107,14 @@ async function run(): Promise<void> {
     );
     expectThrows(
       () => parseEnvironment({ ...env, APP_SERVER_MODE: 'legacy_ipc' }),
+      ConfigurationError,
+    );
+    assert.deepStrictEqual(
+      parseEnvironment({ ...env, ALLOWED_SHELL_COMMANDS: 'git, ls,git' }).allowedShellCommands,
+      ['git', 'ls'],
+    );
+    expectThrows(
+      () => parseEnvironment({ ...env, ALLOWED_SHELL_COMMANDS: 'git,../../sh' }),
       ConfigurationError,
     );
     expectThrows(

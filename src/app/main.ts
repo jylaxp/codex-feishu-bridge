@@ -124,6 +124,9 @@ export async function startBridge(
         return conversationBindings.handleOpenAction(action);
       }
       if (action.action === 'cancel') {
+        if (!config.authorizedUsers.includes(action.operatorOpenId)) {
+          return toast('你没有取消任务的权限', 'warning');
+        }
         const cancelled = await orchestrator.cancel(action);
         return toast(cancelled ? '已请求取消任务' : '任务已结束或操作已失效', cancelled ? 'success' : 'warning');
       }
