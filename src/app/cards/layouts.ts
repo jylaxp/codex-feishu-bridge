@@ -20,23 +20,6 @@ export interface ApprovalCardOptions {
   readonly actionTokens: Readonly<Partial<Record<ApprovalDecision, string>>>;
 }
 
-const STATUS_PRESENTATION: Readonly<Record<TaskStatus, readonly [string, string]>> = {
-  RECEIVED: ['indigo', '已接收任务'],
-  CARD_CREATING: ['indigo', '正在创建任务卡片'],
-  STARTING: ['indigo', '正在启动 Codex'],
-  RUNNING: ['blue', 'Codex 执行中'],
-  AWAITING_APPROVAL: ['orange', '等待审批'],
-  COMPLETING: ['blue', '正在收敛执行结果'],
-  QUEUED: ['orange', '任务排队中'],
-  DISPATCH_UNKNOWN: ['red', '请求结果待核对'],
-  RECOVERING: ['orange', '正在恢复连接'],
-  NEEDS_REVIEW: ['red', '需要人工核对'],
-  DELIVERY_DELAYED: ['orange', '飞书卡片投递延迟'],
-  SUCCEEDED: ['green', 'Codex 执行成功'],
-  FAILED: ['red', 'Codex 执行失败'],
-  INTERRUPTED: ['grey', 'Codex 执行已取消'],
-};
-
 function markdown(content: SanitizedCardText | string, elementId?: string): Record<string, unknown> {
   return {
     tag: 'markdown',
@@ -68,46 +51,62 @@ function approvalButton(
 
 /** Creates the complete task card from a sanitized projection snapshot. */
 export function createTaskCard(options: TaskCardOptions): CardKitJson {
-  const { payload, status, cancelToken } = options;
-  const [template, statusText] = STATUS_PRESENTATION[status];
-  const terminal = payload.terminal;
-  const elements: Array<Record<string, unknown>> = [
-    markdown(`**输入**\n${payload.prompt}`, 'codex_prompt'),
-    { tag: 'hr' },
-    markdown(`**当前状态**\n${statusText}`, 'codex_status'),
-    { tag: 'hr' },
-    markdown(`**执行过程**\n${payload.commentary || '等待事件...'}`, 'codex_commentary'),
-    markdown(`**工具与命令**\n${payload.toolSummary || '暂无'}`, 'codex_tools'),
-    { tag: 'hr' },
-    markdown(`**最终结果**\n${payload.finalAnswer || '等待中...'}`, 'codex_output'),
-    { tag: 'hr' },
-    markdown(payload.footer, 'codex_footer'),
-  ];
-
-  if (!terminal && cancelToken) {
-    elements.push({
-      tag: 'button',
-      type: 'danger',
-      text: { tag: 'plain_text', content: '取消任务' },
-      value: { action: 'cancel', token: cancelToken },
-    });
-  }
+  const { payload, status } = options;
+  const running = !payload.terminal;
+  const reasoning = payload.commentary || '等待开始...';
+  const answer = payload.finalAnswer || (running ? '等待中...' : '无最终文本输出');
+  const title = running ? '🌌 Codex Remote Control' : terminalTitle(status);
 
   return {
     schema: '2.0',
-    config: terminal
-      ? { wide_screen_mode: true }
-      : {
+    config: running
+      ? {
           streaming_mode: true,
           update_multi: true,
-          summary: { content: statusText },
-        },
+          summary: { content: 'Codex 执行进度' },
+          streaming_config: {
+            print_frequency_ms: { default: 30, android: 30, ios: 30, PC: 30 },
+            print_step: { default: 3, android: 3, ios: 3, PC: 3 },
+            print_strategy: 'delay',
+          },
+        }
+      : { wide_screen_mode: true },
     header: {
-      template,
-      title: { tag: 'plain_text', content: payload.title || statusText },
+      template: headerTemplate(status),
+      title: { tag: 'plain_text', content: title },
     },
-    body: { elements },
+    body: {
+      elements: [
+        markdown(`**📥 输入 Prompt**\n> ${payload.prompt}`, 'codex_prompt'),
+        { tag: 'hr' },
+        markdown(`🧠 **模型推理过程**\n${reasoning}`, 'codex_reasoning'),
+        { tag: 'hr', element_id: 'codex_output_hr' },
+        markdown(`✨ **最终结果输出**\n${answer}`, 'codex_output'),
+        { tag: 'hr' },
+        markdown(`📊 ${payload.footer}`, 'codex_footer'),
+      ],
+    },
   };
+}
+
+function headerTemplate(status: TaskStatus): string {
+  if (status === 'FAILED') {
+    return 'red';
+  }
+  if (status === 'INTERRUPTED') {
+    return 'grey';
+  }
+  return status === 'SUCCEEDED' ? 'green' : 'indigo';
+}
+
+function terminalTitle(status: TaskStatus): string {
+  if (status === 'SUCCEEDED') {
+    return '✅ Codex 执行成功';
+  }
+  if (status === 'INTERRUPTED') {
+    return '🛑 Codex 执行已取消';
+  }
+  return '❌ Codex 执行失败';
 }
 
 /** Creates an approval card whose buttons expose opaque tokens only. */

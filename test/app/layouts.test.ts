@@ -3,7 +3,7 @@ import test from 'node:test';
 import { createApprovalCard, createTaskCard } from '../../src/app/cards/layouts';
 import { sanitizeCardText } from '../../src/app/cards/sanitizer';
 
-test('task card keeps process and final output in stable regions', () => {
+test('task card preserves the original Remote Control streaming layout', () => {
   const card = createTaskCard({
     status: 'RUNNING',
     cancelToken: 'opaque-cancel-token',
@@ -19,11 +19,13 @@ test('task card keeps process and final output in stable regions', () => {
   });
 
   const serialized = JSON.stringify(card);
-  assert.match(serialized, /codex_commentary/);
+  assert.match(serialized, /🌌 Codex Remote Control/);
+  assert.match(serialized, /📥 输入 Prompt/);
+  assert.match(serialized, /codex_reasoning/);
   assert.match(serialized, /codex_output/);
-  assert.doesNotMatch(serialized, /codex_target|目标会话|workspace/);
-  assert.match(serialized, /opaque-cancel-token/);
-  assert.doesNotMatch(serialized, /threadId|turnId|cwd|requestId/);
+  assert.match(serialized, /📊 task ref/);
+  assert.match(serialized, /codex_footer/);
+  assert.doesNotMatch(serialized, /当前状态|执行过程|工具与命令|目标会话|opaque-cancel-token/);
 });
 
 test('terminal task card has no action token and closes streaming mode', () => {
@@ -44,6 +46,7 @@ test('terminal task card has no action token and closes streaming mode', () => {
   const serialized = JSON.stringify(card);
   assert.doesNotMatch(serialized, /must-not-render/);
   assert.doesNotMatch(serialized, /streaming_mode/);
+  assert.match(serialized, /✅ Codex 执行成功/);
 });
 
 test('approval buttons carry decision-bound opaque tokens only', () => {
