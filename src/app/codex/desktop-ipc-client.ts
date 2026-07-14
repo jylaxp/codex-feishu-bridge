@@ -1,10 +1,14 @@
 import { randomUUID } from 'node:crypto';
-import { lstat } from 'node:fs/promises';
 import { createConnection, type Socket } from 'node:net';
-import { tmpdir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
 
 import type { TrackedRequestIdentity } from './app-server-client';
+import { macosDesktopIpcSocketPath } from '../platform/macos-platform-adapter';
+import { createPlatformAdapter } from '../platform/create-platform-adapter';
+import {
+  DesktopIpcEndpointError,
+  type DesktopIpcEndpoint,
+  type PlatformAdapter,
+} from '../platform/platform-adapter';
 import type {
   Turn,
   TurnInterruptParams,
@@ -60,6 +64,7 @@ export interface DesktopIpcHandshake {
   readonly clientId: string;
   readonly epoch: number;
   readonly socketPath: string;
+  readonly transport: DesktopIpcEndpoint['transport'];
 }
 
 export interface DesktopJsonPatch {
@@ -89,6 +94,8 @@ export interface DesktopThreadStreamBroadcast extends Readonly<Record<string, un
 
 export interface DesktopIpcClientOptions {
   readonly socketPath?: string;
+  readonly endpoint?: DesktopIpcEndpoint;
+  readonly platformAdapter?: PlatformAdapter;
   readonly connectTimeoutMs?: number;
   readonly initializeTimeoutMs?: number;
   readonly requestTimeoutMs?: number;
@@ -118,6 +125,7 @@ interface SendRequestOptions {
 }
 
 type ThreadStreamListener = (message: DesktopThreadStreamBroadcast) => void;
+type ConnectionLossListener = (epoch: number) => void;
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 5_000;
 const DEFAULT_INITIALIZE_TIMEOUT_MS = 5_000;
@@ -125,18 +133,21 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_FRAME_BYTES = 256 * 1024 * 1024;
 const MIN_TIMEOUT_MS = 1;
 
-/** Returns the exact UID-scoped socket path used by the current ChatGPT app. */
+/**
+ * Compatibility export for callers which need the established macOS socket
+ * path. New code should obtain an attested endpoint from PlatformAdapter.
+ */
 export function desktopIpcSocketPath(
-  temporaryDirectory = tmpdir(),
+  temporaryDirectory?: string,
   uid = process.getuid?.(),
 ): string {
-  const socketName = uid ? `ipc-${uid}.sock` : 'ipc.sock';
-  return join(temporaryDirectory, 'codex-ipc', socketName);
+  return macosDesktopIpcSocketPath(temporaryDirectory, uid);
 }
 
 /** Length-prefixed client for ChatGPT Desktop's local follower IPC router. */
 export class DesktopIpcClient {
-  private readonly socketPath: string;
+  private readonly endpoint: DesktopIpcEndpoint;
+  private readonly platformAdapter: PlatformAdapter;
   private readonly connectTimeoutMs: number;
   private readonly initializeTimeoutMs: number;
   private readonly requestTimeoutMs: number;
@@ -144,6 +155,7 @@ export class DesktopIpcClient {
   private readonly requestIdFactory: () => string;
   private readonly pendingRequests = new Map<string, PendingRequest>();
   private readonly threadStreamListeners = new Set<ThreadStreamListener>();
+  private readonly connectionLossListeners = new Set<ConnectionLossListener>();
   private socket: Socket | undefined;
   private startPromise: Promise<DesktopIpcHandshake> | undefined;
   private handshake: DesktopIpcHandshake | undefined;
@@ -153,7 +165,12 @@ export class DesktopIpcClient {
   private stopping = false;
 
   public constructor(options: DesktopIpcClientOptions = {}) {
-    this.socketPath = options.socketPath ?? desktopIpcSocketPath();
+    if (options.endpoint && options.socketPath) {
+      throw new RangeError('endpoint and socketPath cannot both be configured');
+    }
+    this.platformAdapter = options.platformAdapter ?? createPlatformAdapter();
+    this.endpoint = options.endpoint
+      ?? this.platformAdapter.desktopIpcEndpoint(options.socketPath);
     this.connectTimeoutMs = positiveTimeout(
       options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS,
       'connectTimeoutMs',
@@ -181,7 +198,7 @@ export class DesktopIpcClient {
   }
 
   public get activeSocketPath(): string {
-    return this.socketPath;
+    return this.endpoint.address;
   }
 
   /** Opens one connection and completes the vscode-client handshake. */
@@ -233,6 +250,12 @@ export class DesktopIpcClient {
   public onThreadStreamStateChanged(listener: ThreadStreamListener): () => void {
     this.threadStreamListeners.add(listener);
     return () => this.threadStreamListeners.delete(listener);
+  }
+
+  /** Notifies lifecycle owners after an established Desktop connection closes. */
+  public onConnectionLost(listener: ConnectionLossListener): () => void {
+    this.connectionLossListeners.add(listener);
+    return () => this.connectionLossListeners.delete(listener);
   }
 
   /** Implements the tracked execution contract consumed by TaskOrchestrator. */
@@ -345,13 +368,16 @@ export class DesktopIpcClient {
   private async connectAndInitialize(): Promise<DesktopIpcHandshake> {
     this.currentState = 'CONNECTING';
     try {
-      await validateSocket(this.socketPath);
+      await this.platformAdapter.attestDesktopIpcEndpoint(this.endpoint);
     } catch (error) {
       this.currentState = 'FAILED';
+      if (error instanceof DesktopIpcEndpointError) {
+        throw endpointErrorToRequestError(error, this.epoch);
+      }
       throw error;
     }
 
-    const socket = createConnection(this.socketPath);
+    const socket = createConnection(this.endpoint.address);
     this.socket = socket;
     this.epoch += 1;
     const epoch = this.epoch;
@@ -383,7 +409,12 @@ export class DesktopIpcClient {
           responseRequestId(response),
         );
       }
-      const handshake = Object.freeze({ clientId, epoch, socketPath: this.socketPath });
+      const handshake = Object.freeze({
+        clientId,
+        epoch,
+        socketPath: this.endpoint.address,
+        transport: this.endpoint.transport,
+      });
       this.handshake = handshake;
       this.currentState = 'READY';
       return handshake;
@@ -394,6 +425,9 @@ export class DesktopIpcClient {
       this.handshake = undefined;
       socket.destroy();
       this.currentState = 'FAILED';
+      if (error instanceof DesktopIpcEndpointError) {
+        throw endpointErrorToRequestError(error, epoch);
+      }
       if (error instanceof DesktopIpcRequestError) {
         if (error.method === 'initialize') {
           throw new DesktopIpcRequestError(
@@ -441,6 +475,9 @@ export class DesktopIpcClient {
       );
       if (!this.stopping) {
         this.currentState = 'DISCONNECTED';
+        for (const listener of this.connectionLossListeners) {
+          listener(epoch);
+        }
       }
     });
   }
@@ -634,52 +671,23 @@ export class DesktopIpcClient {
   }
 }
 
-async function validateSocket(socketPath: string): Promise<void> {
-  const name = basename(socketPath);
-  if (name !== 'ipc.sock' && !/^ipc-\d+\.sock$/.test(name)) {
-    throw new DesktopIpcRequestError(
-      'DESKTOP_IPC_INVALID_SOCKET',
-      'PROVABLY_UNSENT',
-      0,
-    );
-  }
-  try {
-    const stats = await lstat(socketPath);
-    if (!stats.isSocket() || stats.isSymbolicLink()) {
-      throw new DesktopIpcRequestError(
-        'DESKTOP_IPC_INVALID_SOCKET',
-        'PROVABLY_UNSENT',
-        0,
-      );
-    }
-    const uid = process.getuid?.();
-    if (uid !== undefined && stats.uid !== uid) {
-      throw new DesktopIpcRequestError(
-        'DESKTOP_IPC_INVALID_SOCKET',
-        'PROVABLY_UNSENT',
-        0,
-      );
-    }
-  } catch (error) {
-    if (error instanceof DesktopIpcRequestError) {
-      throw error;
-    }
-    throw new DesktopIpcRequestError(
-      'DESKTOP_IPC_SOCKET_NOT_FOUND',
-      'PROVABLY_UNSENT',
-      0,
-      null,
-      null,
-      { cause: error },
-    );
-  }
-  if (basename(dirname(socketPath)) === 'com.openai.codex') {
-    throw new DesktopIpcRequestError(
-      'DESKTOP_IPC_INVALID_SOCKET',
-      'PROVABLY_UNSENT',
-      0,
-    );
-  }
+function endpointErrorToRequestError(
+  error: DesktopIpcEndpointError,
+  epoch: number,
+): DesktopIpcRequestError {
+  const code = error.code === 'DESKTOP_IPC_INVALID_ENDPOINT'
+    ? 'DESKTOP_IPC_INVALID_SOCKET'
+    : error.code === 'DESKTOP_IPC_UNAVAILABLE'
+      ? 'DESKTOP_IPC_SOCKET_NOT_FOUND'
+      : 'DESKTOP_IPC_CONNECT_FAILED';
+  return new DesktopIpcRequestError(
+    code,
+    'PROVABLY_UNSENT',
+    epoch,
+    null,
+    null,
+    { cause: error },
+  );
 }
 
 function waitForConnect(socket: Socket, timeoutMs: number, epoch: number): Promise<void> {
