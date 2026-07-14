@@ -1,0 +1,423 @@
+import type {
+  DesktopJsonPatch,
+  DesktopThreadStreamBroadcast,
+} from './desktop-ipc-client';
+import type {
+  MessagePhase,
+  ServerNotification,
+  ThreadItem,
+  Turn,
+  TurnError,
+  TurnStatus,
+} from './protocol';
+
+type UnknownRecord = Record<string, unknown>;
+
+const THREAD_STREAM_PROTOCOL_VERSION = 11;
+
+/** Converts Desktop state snapshots/patches into canonical App Server events. */
+export class DesktopThreadStreamNormalizer {
+  private readonly statesByThreadId = new Map<string, UnknownRecord>();
+
+  public constructor(private readonly nowMs: () => number = Date.now) {}
+
+  public handle(message: DesktopThreadStreamBroadcast): readonly ServerNotification[] {
+    if (message.version !== THREAD_STREAM_PROTOCOL_VERSION) {
+      return [];
+    }
+    const threadId = message.params.conversationId;
+    const previous = this.statesByThreadId.get(threadId);
+    const change = message.params.change;
+    if (change.type === 'snapshot') {
+      const current = cloneRecord(change.conversationState);
+      this.statesByThreadId.set(threadId, current);
+      return diffThreadState(threadId, previous, current, this.nowMs());
+    }
+    if (!previous) {
+      return [];
+    }
+    const current = cloneRecord(previous);
+    for (const patch of change.patches) {
+      applyPatch(current, patch);
+    }
+    this.statesByThreadId.set(threadId, current);
+    return diffThreadState(threadId, previous, current, this.nowMs());
+  }
+
+  public reset(): void {
+    this.statesByThreadId.clear();
+  }
+}
+
+function diffThreadState(
+  threadId: string,
+  previousState: UnknownRecord | undefined,
+  currentState: UnknownRecord,
+  nowMs: number,
+): readonly ServerNotification[] {
+  const notifications: ServerNotification[] = [];
+  const previousTurns = turnsById(previousState);
+  const currentTurns = turnsById(currentState);
+  const currentEntries = [...currentTurns.entries()];
+  const entriesToDiff = previousState ? currentEntries : currentEntries.slice(-1);
+  for (const [turnId, currentTurn] of entriesToDiff) {
+    const previousTurn = previousTurns.get(turnId);
+    if (!previousTurn) {
+      notifications.push({
+        method: 'turn/started',
+        params: { threadId, turn: currentTurn },
+      });
+    }
+    notifications.push(...diffItems(threadId, previousTurn, currentTurn, nowMs));
+    if (isTerminalTurn(currentTurn) && !isTerminalTurn(previousTurn)) {
+      notifications.push({
+        method: 'turn/completed',
+        params: { threadId, turn: currentTurn },
+      });
+    }
+  }
+  return notifications;
+}
+
+function diffItems(
+  threadId: string,
+  previousTurn: Turn | undefined,
+  currentTurn: Turn,
+  nowMs: number,
+): readonly ServerNotification[] {
+  const notifications: ServerNotification[] = [];
+  const previousItems = new Map((previousTurn?.items ?? []).map((item) => [item.id, item]));
+  for (const currentItem of currentTurn.items) {
+    const previousItem = previousItems.get(currentItem.id);
+    if (!previousItem) {
+      notifications.push({
+        method: 'item/started',
+        params: {
+          threadId,
+          turnId: currentTurn.id,
+          item: currentItem,
+          startedAtMs: nowMs,
+        },
+      });
+    }
+    notifications.push(...itemDeltas(threadId, currentTurn.id, previousItem, currentItem));
+    if (
+      isCompletedItem(currentItem, currentTurn)
+      && !isCompletedItem(previousItem, previousTurn)
+    ) {
+      notifications.push({
+        method: 'item/completed',
+        params: {
+          threadId,
+          turnId: currentTurn.id,
+          item: currentItem,
+          completedAtMs: nowMs,
+        },
+      });
+    }
+  }
+  return notifications;
+}
+
+function itemDeltas(
+  threadId: string,
+  turnId: string,
+  previousItem: ThreadItem | undefined,
+  currentItem: ThreadItem,
+): readonly ServerNotification[] {
+  if (currentItem.type === 'agentMessage') {
+    const delta = suffixDelta(previousItem?.text ?? currentItem.text ?? '', currentItem.text ?? '');
+    return previousItem && delta
+      ? [{
+          method: 'item/agentMessage/delta',
+          params: { threadId, turnId, itemId: currentItem.id, delta },
+        }]
+      : [];
+  }
+  if (currentItem.type === 'reasoning') {
+    return reasoningDeltas(threadId, turnId, previousItem, currentItem);
+  }
+  if (currentItem.type === 'commandExecution') {
+    const before = previousItem?.aggregatedOutput ?? '';
+    const after = currentItem.aggregatedOutput ?? '';
+    const delta = suffixDelta(before, after);
+    if (delta) {
+      return [{
+        method: 'item/commandExecution/outputDelta',
+        params: { threadId, turnId, itemId: currentItem.id, delta },
+      }];
+    }
+  }
+  return [];
+}
+
+function reasoningDeltas(
+  threadId: string,
+  turnId: string,
+  previousItem: ThreadItem | undefined,
+  currentItem: ThreadItem,
+): readonly ServerNotification[] {
+  const previousSummary = previousItem?.summary ?? [];
+  const currentSummary = currentItem.summary ?? [];
+  const notifications: ServerNotification[] = [];
+  for (let index = 0; index < currentSummary.length; index += 1) {
+    const current = currentSummary[index] ?? '';
+    const previous = previousSummary[index] ?? '';
+    const delta = suffixDelta(previous, current);
+    if (delta) {
+      notifications.push({
+        method: 'item/reasoning/summaryTextDelta',
+        params: {
+          threadId,
+          turnId,
+          itemId: currentItem.id,
+          delta,
+          summaryIndex: index,
+        },
+      });
+    }
+  }
+  return notifications;
+}
+
+function turnsById(state: UnknownRecord | undefined): ReadonlyMap<string, Turn> {
+  const turns = turnValues(state);
+  const result = new Map<string, Turn>();
+  for (const value of turns) {
+    const turn = normalizeTurn(value);
+    if (turn) {
+      result.set(turn.id, turn);
+    }
+  }
+  return result;
+}
+
+function turnValues(state: UnknownRecord | undefined): readonly unknown[] {
+  const turns = Array.isArray(state?.turns) ? state.turns : [];
+  if (turns.length > 0) {
+    return turns;
+  }
+  const turnHistory = asRecord(state?.turnHistory);
+  const history = asRecord(turnHistory?.history);
+  const entitiesByKey = asRecord(history?.entitiesByKey);
+  if (turnHistory?.kind !== 'canonical' || !entitiesByKey) {
+    return turns;
+  }
+  const ordered: unknown[] = [];
+  const visitedKeys = new Set<string>();
+  const islands = Array.isArray(history?.islands) ? history.islands : [];
+  for (const islandValue of islands) {
+    const island = asRecord(islandValue);
+    const entries = Array.isArray(island?.entries) ? island.entries : [];
+    for (const entryValue of entries) {
+      const entry = asRecord(entryValue);
+      const key = stringValue(entry?.value) ?? stringValue(entry?.key);
+      if (!key || visitedKeys.has(key) || !(key in entitiesByKey)) {
+        continue;
+      }
+      visitedKeys.add(key);
+      ordered.push(entitiesByKey[key]);
+    }
+  }
+  for (const [key, value] of Object.entries(entitiesByKey)) {
+    if (!visitedKeys.has(key)) {
+      ordered.push(value);
+    }
+  }
+  return ordered;
+}
+
+function normalizeTurn(value: unknown): Turn | null {
+  const record = asRecord(value);
+  const id = stringValue(record?.id) ?? stringValue(record?.turnId);
+  const status = turnStatus(record?.status);
+  if (!record || !id || !status) {
+    return null;
+  }
+  const items = Array.isArray(record.items)
+    ? record.items
+        .map((item, index) => normalizeItem(item, `desktop:${id}:${index}`))
+        .filter((item): item is ThreadItem => item !== null)
+    : [];
+  const startedAt = nullableNumber(record.startedAt)
+    ?? nullableNumber(record.turnStartedAtMs);
+  const durationMs = nullableNumber(record.durationMs);
+  const completedAt = nullableNumber(record.completedAt)
+    ?? (status !== 'inProgress' && startedAt !== null && durationMs !== null
+      ? startedAt + durationMs
+      : null);
+  return {
+    id,
+    items,
+    itemsView: items.length > 0 ? 'full' : 'notLoaded',
+    status,
+    error: normalizeTurnError(record.error),
+    startedAt,
+    completedAt,
+    durationMs,
+  };
+}
+
+function normalizeItem(value: unknown, fallbackId: string): ThreadItem | null {
+  const record = asRecord(value);
+  const id = stringValue(record?.id) ?? stringValue(record?.itemId) ?? fallbackId;
+  const type = stringValue(record?.type);
+  if (!record || !id || !type) {
+    return null;
+  }
+  return {
+    ...record,
+    id,
+    type,
+    ...(typeof record.text === 'string' ? { text: record.text } : {}),
+    ...(messagePhase(record.phase) ? { phase: messagePhase(record.phase) } : {}),
+    ...(Array.isArray(record.summary) ? { summary: record.summary.map(slateText) } : {}),
+    ...(typeof record.command === 'string' ? { command: record.command } : {}),
+    ...(typeof record.aggregatedOutput === 'string'
+      ? { aggregatedOutput: record.aggregatedOutput }
+      : {}),
+    ...(typeof record.exitCode === 'number' ? { exitCode: record.exitCode } : {}),
+  };
+}
+
+function applyPatch(root: UnknownRecord, patch: DesktopJsonPatch): void {
+  if (patch.path.length === 0) {
+    return;
+  }
+  let parent: unknown = root;
+  for (let index = 0; index < patch.path.length - 1; index += 1) {
+    parent = childAt(parent, patch.path[index]);
+    if (!parent || typeof parent !== 'object') {
+      return;
+    }
+  }
+  const key = patch.path[patch.path.length - 1];
+  if (key === undefined || !parent || typeof parent !== 'object') {
+    return;
+  }
+  if (Array.isArray(parent)) {
+    applyArrayPatch(parent, key, patch);
+    return;
+  }
+  if (typeof key !== 'string') {
+    return;
+  }
+  const record = parent as UnknownRecord;
+  if (patch.op === 'remove') {
+    delete record[key];
+  } else {
+    record[key] = structuredClone(patch.value);
+  }
+}
+
+function applyArrayPatch(array: unknown[], key: string | number, patch: DesktopJsonPatch): void {
+  if (patch.op === 'add' && key === '-') {
+    array.push(structuredClone(patch.value));
+    return;
+  }
+  const index = typeof key === 'number' ? key : Number(key);
+  if (!Number.isSafeInteger(index) || index < 0) {
+    return;
+  }
+  if (patch.op === 'add') {
+    array.splice(index, 0, structuredClone(patch.value));
+  } else if (patch.op === 'replace' && index < array.length) {
+    array[index] = structuredClone(patch.value);
+  } else if (patch.op === 'remove' && index < array.length) {
+    array.splice(index, 1);
+  }
+}
+
+function childAt(parent: unknown, key: string | number | undefined): unknown {
+  if (key === undefined || !parent || typeof parent !== 'object') {
+    return undefined;
+  }
+  if (Array.isArray(parent)) {
+    const index = typeof key === 'number' ? key : Number(key);
+    return Number.isSafeInteger(index) && index >= 0 ? parent[index] : undefined;
+  }
+  return typeof key === 'string' ? (parent as UnknownRecord)[key] : undefined;
+}
+
+function cloneRecord(value: Readonly<Record<string, unknown>>): UnknownRecord {
+  return structuredClone(value) as UnknownRecord;
+}
+
+function suffixDelta(previous: string, current: string): string {
+  return current.startsWith(previous) ? current.slice(previous.length) : '';
+}
+
+function isTerminalTurn(turn: Turn | undefined): boolean {
+  return Boolean(turn && turn.status !== 'inProgress');
+}
+
+function isCompletedItem(
+  item: ThreadItem | undefined,
+  turn: Turn | undefined,
+): boolean {
+  return Boolean(item && (
+    item.status === 'completed'
+    || item.status === 'failed'
+    || item.status === 'interrupted'
+    || isTerminalTurn(turn)
+  ));
+}
+
+function turnStatus(value: unknown): TurnStatus | null {
+  return value === 'inProgress'
+    || value === 'completed'
+    || value === 'failed'
+    || value === 'interrupted'
+    ? value
+    : null;
+}
+
+function messagePhase(value: unknown): MessagePhase | null {
+  return value === 'commentary' || value === 'final_answer' ? value : null;
+}
+
+function normalizeTurnError(value: unknown): TurnError | null {
+  const record = asRecord(value);
+  if (!record || typeof record.message !== 'string') {
+    return null;
+  }
+  return {
+    message: record.message,
+    codexErrorInfo: record.codexErrorInfo ?? null,
+    additionalDetails: typeof record.additionalDetails === 'string'
+      ? record.additionalDetails
+      : null,
+  };
+}
+
+function nullableNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === 'string' && value ? value : null;
+}
+
+function slateText(value: unknown): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map(slateText).join('');
+  }
+  const record = asRecord(value);
+  if (!record) {
+    return '';
+  }
+  if (typeof record.text === 'string') {
+    return record.text;
+  }
+  return Array.isArray(record.children) ? record.children.map(slateText).join('') : '';
+}
+
+function asRecord(value: unknown): UnknownRecord | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  return value as UnknownRecord;
+}

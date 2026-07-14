@@ -10,6 +10,7 @@ import {
   AppServerRpcError,
   TrackedRequestIdentity,
 } from '../../src/app/codex/app-server-client';
+import { DesktopIpcRequestError } from '../../src/app/codex/desktop-ipc-client';
 import { Thread, Turn } from '../../src/app/codex/protocol';
 import { BridgeDatabase } from '../../src/app/db/database';
 import { BridgeRepositories } from '../../src/app/db/repositories';
@@ -48,6 +49,7 @@ class FakeAppServer implements OrchestratorAppServer {
   private nextId = 1;
   public failBeforeSendMethod: string | undefined;
   public failAfterSendMethod: string | undefined;
+  public desktopProvablyUnsentMethod: string | undefined;
   public rpcFailureMethod: string | undefined;
   public threadResponseId = 'thread-test';
   public turnResponseId = 'turn-test';
@@ -68,6 +70,15 @@ class FakeAppServer implements OrchestratorAppServer {
     this.calls.push({ method, params });
     if (method === this.failAfterSendMethod) {
       throw new AppServerConnectionError('connection lost after transport write', this.connectionEpoch);
+    }
+    if (method === this.desktopProvablyUnsentMethod) {
+      throw new DesktopIpcRequestError(
+        'DESKTOP_IPC_REMOTE_REJECTED',
+        'PROVABLY_UNSENT',
+        this.connectionEpoch,
+        method,
+        String(id),
+      );
     }
     if (method === this.rpcFailureMethod) {
       throw new AppServerRpcError(method, {
@@ -171,9 +182,18 @@ interface Fixture {
   readonly projections: FakeProjections;
   readonly turnEvents: FakeTurnEvents;
   readonly orchestrator: TaskOrchestrator;
+  readonly executionClient: FakeAppServer;
 }
 
-function createFixture(configOverride: Partial<BridgeConfig> = {}): Fixture {
+interface FixtureOptions {
+  readonly useSeparateExecutionClient?: boolean;
+  readonly resumeThreadBeforeTurnStart?: boolean;
+}
+
+function createFixture(
+  configOverride: Partial<BridgeConfig> = {},
+  options: FixtureOptions = {},
+): Fixture {
   const root = mkdtempSync(join(tmpdir(), 'codex-orchestrator-'));
   const database = new BridgeDatabase(join(root, 'bridge.db'));
   database.open();
@@ -187,6 +207,9 @@ function createFixture(configOverride: Partial<BridgeConfig> = {}): Fixture {
     nowMs: 9_500,
   });
   const appServer = new FakeAppServer();
+  const executionClient = options.useSeparateExecutionClient
+    ? new FakeAppServer()
+    : appServer;
   const cards = new FakeCardClient();
   const projections = new FakeProjections();
   const turnEvents = new FakeTurnEvents(database);
@@ -201,13 +224,24 @@ function createFixture(configOverride: Partial<BridgeConfig> = {}): Fixture {
     {
       runtimeInstanceId: 'runtime-orchestrator-test',
       turnEvents,
+      executionClient,
+      resumeThreadBeforeTurnStart: options.resumeThreadBeforeTurnStart,
       now: () => {
         nowMs += 1;
         return nowMs;
       },
     },
   );
-  return { root, database, appServer, cards, projections, turnEvents, orchestrator };
+  return {
+    root,
+    database,
+    appServer,
+    cards,
+    projections,
+    turnEvents,
+    orchestrator,
+    executionClient,
+  };
 }
 
 function dispose(fixture: Fixture): void {
@@ -296,6 +330,77 @@ test('persists, creates the initial card, then starts exactly one App Server tur
     assert.deepEqual(fixture.turnEvents.calls.map((call) => call.kind), ['begin', 'drain']);
     assert.equal(fixture.turnEvents.calls[1]?.turnId, 'turn-test');
     assert.equal(fixture.turnEvents.calls[1]?.persisted, true);
+  } finally {
+    dispose(fixture);
+  }
+});
+
+test('dispatches through the Desktop execution client without resuming a second runtime', async () => {
+  const fixture = createFixture({}, {
+    useSeparateExecutionClient: true,
+    resumeThreadBeforeTurnStart: false,
+  });
+  fixture.executionClient.turnResponseId = 'turn-desktop';
+  try {
+    const result = await fixture.orchestrator.handleInbound(message());
+    const repositories = new BridgeRepositories(fixture.database);
+
+    assert.equal(result.type, 'started');
+    assert.deepEqual(fixture.appServer.methods, []);
+    assert.deepEqual(fixture.executionClient.methods, ['turn/start']);
+    assert.equal(repositories.tasks.findByTurnId('turn-desktop')?.status, 'RUNNING');
+    assert.deepEqual(fixture.turnEvents.calls.map((call) => call.kind), ['begin', 'drain']);
+  } finally {
+    dispose(fixture);
+  }
+});
+
+test('keeps the early event window when Desktop accepted a turn with an unknown outcome', async () => {
+  const fixture = createFixture({}, {
+    useSeparateExecutionClient: true,
+    resumeThreadBeforeTurnStart: false,
+  });
+  fixture.executionClient.failAfterSendMethod = 'turn/start';
+  try {
+    const result = await fixture.orchestrator.handleInbound(message());
+    const task = new BridgeRepositories(fixture.database).tasks.findAnyActive();
+
+    assert.equal(result.type, 'failed');
+    assert.equal(task?.status, 'DISPATCH_UNKNOWN');
+    assert.deepEqual(fixture.turnEvents.calls.map((call) => call.kind), ['begin']);
+    assert.equal(
+      fixture.executionClient.methods.filter((method) => method === 'turn/start').length,
+      1,
+    );
+  } finally {
+    dispose(fixture);
+  }
+});
+
+test('fails a Desktop turn cleanly when the router proves it was not delivered', async () => {
+  const fixture = createFixture({}, {
+    useSeparateExecutionClient: true,
+    resumeThreadBeforeTurnStart: false,
+  });
+  fixture.executionClient.desktopProvablyUnsentMethod = 'turn/start';
+  try {
+    const result = await fixture.orchestrator.handleInbound(message());
+    const task = fixture.database.prepare('SELECT status FROM task').get();
+    const intent = fixture.database.prepare(`
+      SELECT state FROM rpc_intent WHERE method = 'turn/start'
+    `).get();
+
+    assert.equal(result.type, 'failed');
+    assert.equal(task?.status, 'FAILED');
+    assert.equal(intent?.state, 'FAILED');
+    assert.deepEqual(fixture.turnEvents.calls.map((call) => call.kind), [
+      'begin',
+      'abandon',
+    ]);
+    assert.equal(
+      fixture.executionClient.methods.filter((method) => method === 'turn/start').length,
+      1,
+    );
   } finally {
     dispose(fixture);
   }

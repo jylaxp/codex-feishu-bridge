@@ -9,6 +9,7 @@ import {
   AppServerRpcError,
   TrackedRequestIdentity,
 } from './codex/app-server-client';
+import { DesktopIpcRequestError } from './codex/desktop-ipc-client';
 import {
   Thread,
   ThreadResumeParams,
@@ -59,6 +60,8 @@ export interface TaskOrchestratorOptions {
   readonly runtimeInstanceId: string;
   readonly now?: () => number;
   readonly turnEvents?: TurnStartEventCoordinator;
+  readonly executionClient?: OrchestratorAppServer;
+  readonly resumeThreadBeforeTurnStart?: boolean;
 }
 
 export type RecoverableDispatchMethod = 'thread/resume' | 'turn/start';
@@ -108,6 +111,8 @@ export class TaskOrchestrator {
   private readonly runtimeInstanceId: string;
   private readonly now: () => number;
   private readonly turnEvents: TurnStartEventCoordinator | undefined;
+  private readonly executionClient: OrchestratorAppServer;
+  private readonly resumeThreadBeforeTurnStart: boolean;
   private readonly inFlightSteers = new Map<string, Promise<InboundTaskOutcome>>();
 
   public constructor(
@@ -124,6 +129,8 @@ export class TaskOrchestrator {
     this.runtimeInstanceId = options.runtimeInstanceId;
     this.now = options.now ?? Date.now;
     this.turnEvents = options.turnEvents;
+    this.executionClient = options.executionClient ?? appServer;
+    this.resumeThreadBeforeTurnStart = options.resumeThreadBeforeTurnStart ?? true;
   }
 
   public async handleInbound(message: InboundTextMessage): Promise<InboundTaskOutcome> {
@@ -318,7 +325,7 @@ export class TaskOrchestrator {
       task,
       params,
       `${task.id}:turn-interrupt:recovery:${this.runtimeInstanceId}:` +
-        `${this.appServer.connectionEpoch}`,
+        `${this.executionClient.connectionEpoch}`,
       false,
     );
   }
@@ -338,7 +345,7 @@ export class TaskOrchestrator {
     try {
       const target = requireDispatchTarget(binding, this.config);
 
-      if (method === 'thread/resume') {
+      if (method === 'thread/resume' && this.resumeThreadBeforeTurnStart) {
         await this.resumeThread(
           task,
           target,
@@ -446,7 +453,7 @@ export class TaskOrchestrator {
           taskId: activeTask.id,
           method: 'turn/steer',
           requestDigest: sha256(JSON.stringify(params)),
-          connectionEpoch: this.appServer.connectionEpoch,
+          connectionEpoch: this.executionClient.connectionEpoch,
           nowMs: this.now(),
         });
       } else if (repositories.tasks.countWaiting() >= this.config.maxQueuedTasks) {
@@ -693,7 +700,9 @@ export class TaskOrchestrator {
 
     try {
       const target = requireDispatchTarget(binding, this.config);
-      await this.resumeThread(task, target);
+      if (this.resumeThreadBeforeTurnStart) {
+        await this.resumeThread(task, target);
+      }
       const turn = await this.startTurn(task, target);
       await this.completeDispatch(task, target.threadId, turn.id);
     } catch (error) {
@@ -889,7 +898,9 @@ export class TaskOrchestrator {
       }
       return response.turn;
     } catch (error) {
-      this.turnEvents?.abandonTurnStart(task.id, target.threadId);
+      if (!(error instanceof DurableRpcError && error.outcomeUnknown)) {
+        this.turnEvents?.abandonTurnStart(task.id, target.threadId);
+      }
       throw error;
     }
   }
@@ -901,7 +912,8 @@ export class TaskOrchestrator {
     params: unknown,
     allowUnsentRetry = false,
   ): Promise<TResult> {
-    const epoch = this.appServer.connectionEpoch;
+    const client = method === 'thread/resume' ? this.appServer : this.executionClient;
+    const epoch = client.connectionEpoch;
     const repositories = new BridgeRepositories(this.database);
     const preparedInput = {
       operationKey,
@@ -929,12 +941,12 @@ export class TaskOrchestrator {
 
     let sent = false;
     try {
-      const response = await this.appServer.requestTracked<TResult>(
+      const response = await client.requestTracked<TResult>(
         method,
         params,
         (identity) => {
           if (identity.epoch !== epoch) {
-            throw new Error('App Server connection changed before request send');
+            throw new Error('Execution connection changed before request send');
           }
           const marked = new BridgeRepositories(this.database).rpcIntents.markSent(
             intent.id,
@@ -1086,7 +1098,11 @@ function requireThreadId(thread: Thread): string {
 }
 
 function isDefinitiveRpcFailure(error: unknown): boolean {
-  return error instanceof AppServerRpcError;
+  return error instanceof AppServerRpcError
+    || (
+      error instanceof DesktopIpcRequestError
+      && error.disposition !== 'OUTCOME_UNKNOWN'
+    );
 }
 
 function isActiveSlotConstraint(error: unknown): boolean {
@@ -1121,6 +1137,9 @@ function stableRpcErrorCode(error: unknown): string {
   }
   if (error instanceof AppServerConnectionError) {
     return 'APP_SERVER_CONNECTION_LOST';
+  }
+  if (error instanceof DesktopIpcRequestError) {
+    return error.code;
   }
   if (error instanceof Error && error.message.includes('timeout')) {
     return 'APP_SERVER_TIMEOUT';

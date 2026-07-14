@@ -9,6 +9,8 @@ import { CardOutboxWorker } from './cards/outbox-worker';
 import { DurableCardProjector } from './cards/projector';
 import { AppServerClient, AppServerTransportOptions } from './codex/app-server-client';
 import { SUPPORTED_APP_SERVER_VERSION } from './codex/contract';
+import { DesktopIpcClient } from './codex/desktop-ipc-client';
+import { DesktopThreadStreamNormalizer } from './codex/desktop-thread-stream-normalizer';
 import { AppServerEventCoordinator } from './codex/event-coordinator';
 import { ServerNotification } from './codex/protocol';
 import { verifyCodexRuntimeContract } from './codex/runtime-contract';
@@ -96,6 +98,8 @@ async function startOpenedBridge(
     },
     expectedServerVersion: SUPPORTED_APP_SERVER_VERSION,
   });
+  const desktopIpc = new DesktopIpcClient();
+  const desktopStreamNormalizer = new DesktopThreadStreamNormalizer();
   const conversationBindings = new ConversationBindingService(
     database,
     config,
@@ -148,7 +152,12 @@ async function startOpenedBridge(
     appServer,
     cardKit,
     projector,
-    { runtimeInstanceId, turnEvents: coordinator },
+    {
+      runtimeInstanceId,
+      turnEvents: coordinator,
+      executionClient: desktopIpc,
+      resumeThreadBeforeTurnStart: false,
+    },
   );
   const approvals = new ApprovalService(
     database,
@@ -217,6 +226,24 @@ async function startOpenedBridge(
       logger,
     );
   });
+  const unsubscribeDesktopStream = desktopIpc.onThreadStreamStateChanged((message) => {
+    try {
+      for (const notification of desktopStreamNormalizer.handle(message)) {
+        handleNotification(
+          notification,
+          coordinator,
+          orchestrator,
+          appServerWork,
+          logger,
+        );
+      }
+    } catch (error) {
+      logger.error('desktop_ipc_stream_reduction_failed', error, {
+        method: message.method,
+        version: message.version,
+      });
+    }
+  });
   const unsubscribeRequest = appServer.onServerRequest((request, epoch) => {
     void appServerWork.track(
       () => approvals.handleServerRequest(request, epoch),
@@ -234,12 +261,17 @@ async function startOpenedBridge(
 
   let started = false;
   try {
+    const desktopHandshake = await desktopIpc.start();
+    logger.info('desktop_ipc_ready', {
+      epoch: desktopHandshake.epoch,
+    });
     await supervisor.start();
     outboxWorker.start();
     await eventServer.start();
     started = true;
     logger.info('bridge_started', {
       appServerMode: config.appServerMode,
+      executionMode: 'desktop_follower',
       schemaVersion: database.getSchemaVersion(),
     });
   } catch (error) {
@@ -248,6 +280,8 @@ async function startOpenedBridge(
         eventServer,
         larkWork,
         supervisor,
+        desktopIpc,
+        unsubscribeDesktopStream,
         unsubscribeNotification,
         unsubscribeRequest,
         unsubscribeDiagnostics,
@@ -278,6 +312,8 @@ async function startOpenedBridge(
         eventServer,
         larkWork,
         supervisor,
+        desktopIpc,
+        unsubscribeDesktopStream,
         unsubscribeNotification,
         unsubscribeRequest,
         unsubscribeDiagnostics,
@@ -340,6 +376,8 @@ interface RuntimeResources {
   readonly eventServer: LarkEventServer;
   readonly larkWork: AsyncWorkTracker;
   readonly supervisor: AppServerSupervisor;
+  readonly desktopIpc: DesktopIpcClient;
+  readonly unsubscribeDesktopStream: () => void;
   readonly unsubscribeNotification: () => void;
   readonly unsubscribeRequest: () => void;
   readonly unsubscribeDiagnostics: () => void;
@@ -356,6 +394,8 @@ async function stopRuntime(resources: RuntimeResources): Promise<void> {
   resources.larkWork.close();
   await captureAsyncCleanupError(errors, () => resources.larkWork.drain());
 
+  captureCleanupError(errors, resources.unsubscribeDesktopStream);
+  await captureAsyncCleanupError(errors, () => resources.desktopIpc.stop());
   await captureAsyncCleanupError(errors, () => resources.supervisor.stop());
   captureCleanupError(errors, resources.unsubscribeNotification);
   captureCleanupError(errors, resources.unsubscribeRequest);
