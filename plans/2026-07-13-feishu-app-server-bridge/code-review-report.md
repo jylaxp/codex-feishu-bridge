@@ -36,7 +36,8 @@ Review 范围：`chatgpt-v2` 相对基线 `f41396b` 的完整实现
 | P2 | 并发 CardKit 建卡可让后到 root 先执行 | `CARD_CREATING` 纳入 durable FIFO；更早任务失败后显式释放队列 |
 | P1 | bind/unbind 后旧选择卡可能发生 ABA 重放 | 绑定保留 tombstone 与单调 revision；token 绑定 revision 并补回归测试 |
 | P1 | 未绑定消息在后续绑定后可能因飞书重投被执行 | 入站事件持久化为 `REJECTED`，同 eventId 后续始终幂等拒绝 |
-| P1 | thread workspace 与固定 `CODEX_CWD` 不一致时可能错误执行 | `/bind` 只列当前工作区；点击后校验并持久化 canonical workspace，执行/恢复均使用绑定值 |
+| P2 | `/bind` 的精确 cwd 过滤只返回 3 条且均无显式名称 | 改为全局最近 8 条 CLI/Desktop 会话；真实探针为 5 条已命名加 3 条未命名 |
+| P1 | 全局 thread 的历史 cwd 可能扩大本地执行权限 | 目录元数据仅用于识别；绑定只授予 thread 身份，执行/恢复固定使用预检后的 `CODEX_CWD` |
 | P1 | `turn/start` 响应前收到事件可能丢失或串到同 thread 的其他 turn | 使用有界早到缓冲，持久化返回的 turnId 后仅按精确 threadId + turnId drain |
 | P2 | 旧 root 仍固定旧 thread，但 `/binding` 与任务卡不显示覆盖关系 | `/binding` 显示默认绑定与当前 root 固定目标；每张任务卡显示实际目标指纹 |
 | P2 | `/unbind` 重投可能清除后来建立的新绑定 | 命令纳入 durable inbox 幂等，重复 eventId 不产生第二次副作用 |

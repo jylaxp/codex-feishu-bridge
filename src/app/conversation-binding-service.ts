@@ -1,6 +1,4 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { realpathSync, statSync } from 'node:fs';
-import { isAbsolute } from 'node:path';
 
 import { CardKitJson } from './cards/layouts';
 import { sanitizeCardText } from './cards/sanitizer';
@@ -13,7 +11,6 @@ import {
 import { BridgeConfig } from './domain';
 import { InboundTextMessage } from './lark/intake';
 import { toast } from './lark/event-server';
-import { isPathWithinRoot } from './preflight';
 
 const BINDING_TOKEN_VERSION = 'b1';
 const BINDING_TOKEN_TTL_MS = 10 * 60_000;
@@ -53,7 +50,8 @@ interface ThreadCandidate {
   readonly id: string;
   readonly title: string;
   readonly workspacePath: string;
-  readonly workspaceName: string;
+  readonly sourceWorkspaceName: string;
+  readonly executionWorkspaceName: string;
   readonly updatedAt: number | null;
 }
 
@@ -154,7 +152,7 @@ export class ConversationBindingService {
       thread = requireReadThread(
         response,
         payload.threadId,
-        this.config.allowedWorkspaceRoots,
+        this.config.codexCwd,
       );
     } catch {
       return toast('所选会话不存在或暂时不可用，请重新 /bind', 'warning');
@@ -174,12 +172,12 @@ export class ConversationBindingService {
   private async replyWithPicker(message: InboundTextMessage): Promise<void> {
     const response = await this.catalog.request<unknown>('thread/list', {
       limit: MAX_CANDIDATES,
-      cwd: this.config.codexCwd,
       sortKey: 'updated_at',
       sortDirection: 'desc',
+      sourceKinds: ['cli', 'vscode'],
       archived: false,
     });
-    const candidates = parseThreadCandidates(response, this.config.allowedWorkspaceRoots);
+    const candidates = parseThreadCandidates(response, this.config.codexCwd);
     const expectedRevision = new BridgeRepositories(this.database).chatThreadBindings.getRevision(
       message.tenantKey,
       message.chatId,
@@ -313,14 +311,14 @@ export class ConversationBindingService {
 
 function parseThreadCandidates(
   response: unknown,
-  allowedWorkspaceRoots: readonly string[],
+  executionWorkspacePath: string,
 ): readonly ThreadCandidate[] {
   const record = asRecord(response);
   if (!Array.isArray(record?.data)) {
     throw new TypeError('App Server thread/list returned invalid data');
   }
   return record.data.slice(0, MAX_CANDIDATES).flatMap((value) => {
-    const thread = parseThread(value, allowedWorkspaceRoots);
+    const thread = parseThread(value, executionWorkspacePath);
     return thread ? [thread] : [];
   });
 }
@@ -328,10 +326,10 @@ function parseThreadCandidates(
 function requireReadThread(
   response: unknown,
   expectedThreadId: string,
-  allowedWorkspaceRoots: readonly string[],
+  executionWorkspacePath: string,
 ): ThreadCandidate {
   const record = asRecord(response);
-  const thread = parseThread(record?.thread, allowedWorkspaceRoots);
+  const thread = parseThread(record?.thread, executionWorkspacePath);
   if (!thread || thread.id !== expectedThreadId) {
     throw new TypeError('App Server thread/read returned a different thread');
   }
@@ -340,7 +338,7 @@ function requireReadThread(
 
 function parseThread(
   value: unknown,
-  allowedWorkspaceRoots: readonly string[],
+  executionWorkspacePath: string,
 ): ThreadCandidate | null {
   const record = asRecord(value);
   const id = nonBlankString(record?.id);
@@ -351,43 +349,24 @@ function parseThread(
   ) {
     return null;
   }
-  const title = nonBlankString(record?.name)
-    ?? nonBlankString(record?.title)
-    ?? '未命名会话';
-  const workspacePath = canonicalAllowedWorkspace(
-    nonBlankString(record?.cwd),
-    allowedWorkspaceRoots,
-  );
-  if (!workspacePath) {
-    return null;
-  }
-  const workspaceName = workspaceBasename(workspacePath);
+  const title = nonBlankString(record?.name) ?? '未命名会话';
+  const sourceWorkspaceName = workspaceBasename(nonBlankString(record?.cwd) ?? '');
+  const executionWorkspaceName = workspaceBasename(executionWorkspacePath);
   const updatedAtValue = record?.updatedAt;
   const updatedAt = typeof updatedAtValue === 'number' && Number.isFinite(updatedAtValue)
     && updatedAtValue >= 0
     ? updatedAtValue
     : null;
-  return { id, title, workspacePath, workspaceName, updatedAt };
-}
-
-function canonicalAllowedWorkspace(
-  cwd: string | null,
-  allowedWorkspaceRoots: readonly string[],
-): string | null {
-  if (!cwd || !isAbsolute(cwd)) {
-    return null;
-  }
-  try {
-    const canonicalPath = realpathSync.native(cwd);
-    if (!statSync(canonicalPath).isDirectory()) {
-      return null;
-    }
-    return allowedWorkspaceRoots.some((root) => isPathWithinRoot(canonicalPath, root))
-      ? canonicalPath
-      : null;
-  } catch {
-    return null;
-  }
+  // A catalog entry grants conversation identity only. Its historical cwd must
+  // never expand the filesystem authority configured for this Bridge process.
+  return {
+    id,
+    title,
+    workspacePath: executionWorkspacePath,
+    sourceWorkspaceName,
+    executionWorkspaceName,
+    updatedAt,
+  };
 }
 
 function workspaceBasename(cwd: string): string {
@@ -399,7 +378,10 @@ function createPickerCard(
   choices: readonly { readonly candidate: ThreadCandidate; readonly token: string }[],
 ): CardKitJson {
   const elements: Array<Record<string, unknown>> = [
-    markdown('请选择要绑定的 ChatGPT 会话。选择卡 10 分钟内有效。'),
+    markdown(
+      '请选择要绑定的 ChatGPT 会话。当前显示全局最近 8 条；' +
+        '未命名表示该会话没有显式名称。选择卡 10 分钟内有效。',
+    ),
     { tag: 'hr' },
   ];
   if (choices.length === 0) {
@@ -407,7 +389,12 @@ function createPickerCard(
   } else {
     choices.forEach(({ candidate, token }, index) => {
       const title = sanitizeCardText(candidate.title, { maxLength: 80 });
-      const workspaceName = sanitizeCardText(candidate.workspaceName, { maxLength: 80 });
+      const sourceWorkspaceName = sanitizeCardText(candidate.sourceWorkspaceName, {
+        maxLength: 80,
+      });
+      const executionWorkspaceName = sanitizeCardText(candidate.executionWorkspaceName, {
+        maxLength: 80,
+      });
       const threadFingerprint = sanitizeCardText(shortThreadFingerprint(candidate.id), {
         maxLength: 24,
       });
@@ -417,7 +404,8 @@ function createPickerCard(
       elements.push(
         markdown(
           `**${index + 1}. ${title}**\n` +
-            `更新时间：${updatedAt}\n工作区：${workspaceName}\n` +
+            `更新时间：${updatedAt}\n会话来源：${sourceWorkspaceName}\n` +
+            `执行工作区：${executionWorkspaceName}\n` +
             `会话标识：${threadFingerprint}`,
         ),
         {
@@ -454,7 +442,8 @@ function createBindingStatusCard(
   });
   const elements: Array<Record<string, unknown>> = [
     markdown(
-      `**当前绑定**\n${title}\n\n工作区：${workspaceName}\n会话标识：${threadFingerprint}`,
+      `**当前绑定**\n${title}\n\n执行工作区：${workspaceName}\n` +
+        `会话标识：${threadFingerprint}`,
     ),
   ];
   if (rootBinding?.threadId && rootBinding.threadId !== binding.threadId) {

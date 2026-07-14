@@ -99,7 +99,8 @@ stdout 日志权限、轮转和保留策略由部署侧负责。
 - `failedOutboxCount=0`；非零必须先对账对应 CardKit 卡片。
 - 合法消息先产生初始卡，再启动一个 turn；durable 重投不重复启动 thread/turn。
 - 未绑定的普通消息持久化为拒绝且不启动 turn；绑定后重投同一 eventId 也不得执行。
-- `/bind` 只列当前 `CODEX_CWD` 下的会话，点击后再次读取确认；后续任务和恢复使用持久化 workspace。
+- `/bind` 全局列出最近 8 个非归档 CLI/Desktop 会话，点击后再次读取确认；来源 cwd 不授予文件权限，后续
+  任务和恢复固定使用经过预检的 `CODEX_CWD`。
 - 非授权 tenant/chat/user、机器人、非文本和超长输入 fail closed。
 - `accept`、`acceptForSession`、`decline`、`cancel`，以及非审批人、双击、过期、跨群和旧 runtime token
   行为正确。

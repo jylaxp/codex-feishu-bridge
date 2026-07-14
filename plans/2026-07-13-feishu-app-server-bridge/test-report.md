@@ -6,17 +6,18 @@
 
 ## 1. 结论
 
-新 `src/app` 生产链通过类型检查、189 个自动化测试、构建、发布包检查、doctor、真实 owned-stdio App
+新 `src/app` 生产链通过类型检查、190 个自动化测试、构建、发布包检查、doctor、真实 owned-stdio App
 Server turn，以及飞书单聊文本输入到 CardKit 终态的基础闭环。当前版本要求用户先在飞书执行 `/bind`，从
-当前工作区的既有 ChatGPT 会话中显式选择并持久绑定；后续消息固定进入该会话，不读取或跟随 Desktop 当前
-页面。未执行的审批、工具流和故障恢复实机用例仍保持未验收状态。
+全局最近的既有 ChatGPT 交互会话中显式选择并持久绑定；后续消息固定进入该会话，不读取或跟随 Desktop 当前
+页面。执行权限始终由配置的 `CODEX_CWD` 控制，不继承会话历史 cwd。未执行的审批、工具流和故障恢复实机
+用例仍保持未验收状态。
 
 ## 2. 自动化门禁
 
 | 范围 | 命令 | 结果 | 证据 |
 | --- | --- | --- | --- |
-| 全部门禁 | `npm run check` | PASS | typecheck、189/189 tests、build、pack dry-run 均通过 |
-| 发布包 | `npm run check:package` | PASS | 139 files，172.2 kB（unpacked 819.5 kB）；仅 `dist/app`、README、env inventory |
+| 全部门禁 | `npm run check` | PASS | typecheck、190/190 tests、build、pack dry-run 均通过 |
+| 发布包 | `npm run check:package` | PASS | 139 files，172.3 kB（unpacked 819.1 kB）；仅 `dist/app`、README、env inventory |
 | 架构隔离 | `test/app/architecture.test.ts` | PASS | 新入口不 import 旧 IPC/injector/session/media；package 仅发布新图 |
 | 格式 | `git diff --check` 与 `git diff --cached --check` | PASS | 最终改动无 whitespace error |
 
@@ -28,8 +29,8 @@ Server turn，以及飞书单聊文本输入到 CardKit 终态的基础闭环。
 | 领域 | 已验证行为 |
 | --- | --- |
 | App Server | initialize/initialized、三类 JSON-RPC 分流、UTF-8 分片、严格版本、timeout/exit/write UNKNOWN、旧 epoch 隔离、SIGKILL 收口 |
-| 会话绑定 | `/bind` 工作区过滤与点击复核、HMAC token、单调 revision/tombstone、防 ABA 重放、`/binding`、幂等 `/unbind`、未绑定消息永久拒绝 |
-| 入站与编排 | tenant/chat/user fail closed、durable 幂等、初始卡先行、绑定 thread 的 resume/start/steer/queue/cancel、持久化 workspace、队列硬上限 |
+| 会话绑定 | `/bind` 全局最近交互会话、点击复核、来源 cwd 与执行权限解耦、HMAC token、单调 revision/tombstone、防 ABA 重放、`/binding`、幂等 `/unbind` |
+| 入站与编排 | tenant/chat/user fail closed、durable 幂等、初始卡先行、绑定 thread 的 resume/start/steer/queue/cancel、固定安全执行 workspace、队列硬上限 |
 | 事件归属 | `turn/start` 响应前的早到事件有界缓冲；仅精确 `threadId + turnId` 可认领，同 thread 外部 turn 不串入 |
 | 崩溃恢复 | PREPARED 可证明未发送才恢复；SENT/UNKNOWN 不重放；resume/snapshot、pending cancel、terminal 重投影 |
 | 审批 | `accept`、`acceptForSession`、`decline`、`cancel`；权限、作用域、TTL、旧 epoch、双击与 UNKNOWN |

@@ -96,7 +96,7 @@ src/app/domain.ts         immutable domain contracts
 关键事务：
 
 - `/bind`：选择已有 ChatGPT thread，按 tenant + chat 持久化；不自动创建 thread。
-- 新 root 入站：先幂等写 inbox；未绑定则持久化拒绝。已绑定时读取 chat binding，固定 thread/workspace 到 root 后写 task 草稿；网络调用在事务外。
+- 新 root 入站：先幂等写 inbox；未绑定则持久化拒绝。已绑定时读取 chat binding，把 thread 身份与预检后的固定 `CODEX_CWD` 写入 root 后创建 task 草稿；会话历史 cwd 不授予执行权限，网络调用在事务外。
 - steer 入站：inbox 原文 + PREPARED RPC intent 原子写入；只有可证明尚未写 transport 的 intent 可恢复发送。
 - RPC：prepare intent；发送前 mark SENT；response 后 RESOLVED；timeout/exit 后 UNKNOWN。
 - 事件：task/item reduction + projection revision + outbox。

@@ -7,7 +7,7 @@
 
 ## 1. 目标
 
-建立一条全新的生产主链：用户先在飞书通过 `/bind` 显式选择当前工作区的既有 ChatGPT thread；之后文本消息经过权限与幂等校验，仅通过 `thread/resume + turn/start/steer` 进入该会话。Codex App Server 负责执行智能体循环，Bridge 以 App Server 事件流驱动飞书 CardKit 的过程、审批和最终结果。
+建立一条全新的生产主链：用户先在飞书通过 `/bind` 从全局最近交互会话中显式选择既有 ChatGPT thread；之后文本消息经过权限与幂等校验，仅通过 `thread/resume + turn/start/steer` 进入该会话。Codex App Server 负责执行智能体循环，Bridge 以 App Server 事件流驱动飞书 CardKit 的过程、审批和最终结果。
 
 ChatGPT 页面实时同步作为独立 capability 验证：只有同 runtime 的正向、反向 nonce 实验通过后，才能声明页面实时同步；失败不会影响飞书主链，也不得回退到 Desktop IPC、ChatGPT SQLite、Electron 注入、Noise relay 或 deep-link 强刷。
 
@@ -40,7 +40,7 @@ event/message ID 唯一，durable intake 完成后的重复投递不得重复建
 
 ### R6. 工作区与执行权限
 
-`thread/list` 只列出管理员配置 `CODEX_CWD` 下的会话；点击后再次读取并把 canonical workspace 持久化，执行与恢复都使用该路径且必须落在允许根目录内。首期单 Bridge 只允许一个写 turn；sandbox 为 `workspace-write`，approval policy 为 `on-request`，reviewer 为 `user`。
+`thread/list` 全局列出最近 8 个非归档 CLI/Desktop 交互会话；点击后再次读取确认 thread 身份。历史 cwd 只作为目录名显示，不成为执行授权；绑定、执行与恢复均固定使用管理员配置且通过允许根校验的 `CODEX_CWD`。首期单 Bridge 只允许一个写 turn；sandbox 为 `workspace-write`，approval policy 为 `on-request`，reviewer 为 `user`。
 
 ### R7. 事件事实源
 

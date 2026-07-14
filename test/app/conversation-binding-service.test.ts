@@ -66,6 +66,10 @@ class FakeCatalog implements ConversationBindingCatalog {
 
   private materializeWorkspace(value: unknown): unknown {
     const record = value as Readonly<Record<string, unknown>>;
+    if (record.preserveCwd === true) {
+      const { preserveCwd: _preserveCwd, ...materialized } = record;
+      return materialized;
+    }
     const rawCwd = typeof record.cwd === 'string' ? record.cwd : 'default';
     const workspaceName = rawCwd.replaceAll('\\', '/').split('/').filter(Boolean).at(-1)
       ?? 'default';
@@ -189,7 +193,7 @@ function toastContent(result: unknown): string {
   return String((result as { readonly toast?: { readonly content?: string } }).toast?.content ?? '');
 }
 
-test('/bind lists eight workspace-scoped threads without absolute-path disclosure', async () => {
+test('/bind lists eight recent global threads without absolute-path disclosure', async () => {
   const fixture = createFixture();
   try {
     fixture.catalog.threads = Array.from({ length: 9 }, (_, index) => ({
@@ -206,9 +210,9 @@ test('/bind lists eight workspace-scoped threads without absolute-path disclosur
       method: 'thread/list',
       params: {
         limit: 8,
-        cwd: fixture.workspaceRoot,
         sortKey: 'updated_at',
         sortDirection: 'desc',
+        sourceKinds: ['cli', 'vscode'],
         archived: false,
       },
     }]);
@@ -228,6 +232,44 @@ test('/bind lists eight workspace-scoped threads without absolute-path disclosur
     const tokens = buttonTokens(fixture.cards.cards[0] as CardKitJson);
     assert.equal(tokens.length, 8);
     assert.ok(tokens.every((token) => token.length <= 256));
+  } finally {
+    dispose(fixture);
+  }
+});
+
+test('a thread outside the execution roots remains selectable without expanding execution access', async () => {
+  const fixture = createFixture();
+  try {
+    fixture.catalog.threads = [{
+      id: 'global-thread',
+      name: 'Named ChatGPT task',
+      preview: 'Private prompt content',
+      cwd: fixture.root,
+      preserveCwd: true,
+      updatedAt: NOW_MS,
+    }];
+    fixture.catalog.readableThreadIds.add('global-thread');
+
+    await fixture.service.handleCommand(message('/bind'));
+
+    const serialized = JSON.stringify(fixture.cards.cards[0]);
+    assert.match(serialized, /Named ChatGPT task/);
+    assert.equal(serialized.includes('Private prompt content'), false);
+    assert.equal(serialized.includes(fixture.root), false);
+    assert.match(serialized, /会话来源/);
+    assert.match(serialized, /执行工作区/);
+    const [token] = buttonTokens(fixture.cards.cards[0] as CardKitJson);
+    assert.ok(token);
+
+    const result = await fixture.service.handleCardAction(bindingAction(token));
+
+    assert.match(toastContent(result), /绑定成功/);
+    const binding = new BridgeRepositories(fixture.database).chatThreadBindings.get(
+      'tenant-test',
+      'chat-test',
+    );
+    assert.equal(binding?.threadId, 'global-thread');
+    assert.equal(binding?.workspacePath, fixture.workspaceRoot);
   } finally {
     dispose(fixture);
   }
@@ -370,7 +412,7 @@ test('authorized selection validates thread/read and persists the chat binding',
     assert.equal(binding?.threadId, 'thread1');
     assert.equal(binding?.boundByOpenId, 'user-test');
     assert.equal(binding?.threadTitle, 'Selected task');
-    assert.match(binding?.workspacePath ?? '', /project-one$/);
+    assert.equal(binding?.workspacePath, fixture.workspaceRoot);
   } finally {
     dispose(fixture);
   }
