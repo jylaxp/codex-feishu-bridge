@@ -37,6 +37,12 @@ export interface InMemoryOrchestratorOptions {
 
 export type InMemoryInboundOutcome = 'started' | 'queued' | 'steered' | 'duplicate';
 
+export interface RuntimeApprovalContext {
+  readonly taskId: string;
+  readonly chatId: string;
+  readonly rootMessageId: string;
+}
+
 interface RuntimeTask {
   readonly id: string;
   readonly message: InboundTextMessage;
@@ -151,6 +157,41 @@ export class InMemoryOrchestrator {
     await this.flushCard(task, true);
     this.finish(task);
     return true;
+  }
+
+  /** Returns the source conversation for a still-live, exact Desktop turn. */
+  public approvalContext(threadId: string, turnId: string | null): RuntimeApprovalContext | undefined {
+    const task = this.activeByThreadId.get(threadId);
+    if (!task || TERMINAL.has(task.status) || (turnId && task.turnId !== turnId)) {
+      return undefined;
+    }
+    return Object.freeze({
+      taskId: task.id,
+      chatId: task.message.chatId,
+      rootMessageId: task.message.rootMessageId,
+    });
+  }
+
+  /** Marks an exact live turn as waiting for an in-process approval response. */
+  public setAwaitingApproval(threadId: string, turnId: string | null, waiting: boolean): boolean {
+    const task = this.activeByThreadId.get(threadId);
+    if (!task || TERMINAL.has(task.status) || (turnId && task.turnId !== turnId)) {
+      return false;
+    }
+    task.status = waiting ? 'AWAITING_APPROVAL' : 'RUNNING';
+    this.requestCardUpdate(task, true);
+    return true;
+  }
+
+  /** Ends a task after an approval response has an unknown delivery result. */
+  public failForApprovalDelivery(threadId: string, turnId: string | null): void {
+    const task = this.activeByThreadId.get(threadId);
+    if (!task || TERMINAL.has(task.status) || (turnId && task.turnId !== turnId)) {
+      return;
+    }
+    task.status = 'FAILED';
+    task.tools = '审批结果未能确认送达 Desktop，任务已停止跟踪。';
+    void this.flushCard(task, true).finally(() => this.finish(task));
   }
 
   /** Ends all local state on Desktop loss; it never retries or replays a turn. */

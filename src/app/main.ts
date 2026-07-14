@@ -10,6 +10,7 @@ import { DesktopThreadStreamNormalizer } from './codex/desktop-thread-stream-nor
 import { verifyCodexRuntimeContract } from './codex/runtime-contract';
 import { parseEnvironment } from './config';
 import { ConversationBindingServiceV3 } from './conversation-binding-service-v3';
+import { DesktopApprovalService } from './desktop-approval-service';
 import { BridgeConfig } from './domain';
 import { InMemoryOrchestrator } from './in-memory-orchestrator';
 import { CachedTenantTokenProvider, createLarkRuntimeClients } from './lark/client';
@@ -65,6 +66,7 @@ export async function startBridge(
   const orchestrator = new InMemoryOrchestrator(config, desktop, cards, {
     onCardError: (error) => logger.error('card_update_failed', error),
   });
+  const approvals = new DesktopApprovalService(config, desktop, cards, orchestrator);
   const conversationBindings = new ConversationBindingServiceV3(
     config,
     bindings,
@@ -78,6 +80,7 @@ export async function startBridge(
     },
     onDisconnected: async (epoch) => {
       normalizer.reset();
+      approvals.abandonAll();
       orchestrator.abandonAll();
       logger.warn('desktop_ipc_abandoned_runtime', { epoch });
     },
@@ -103,7 +106,7 @@ export async function startBridge(
         const cancelled = await orchestrator.cancel(action);
         return toast(cancelled ? '已请求取消任务' : '任务已结束或操作已失效', cancelled ? 'success' : 'warning');
       }
-      return toast('当前 Desktop 审批适配不可用，操作未提交', 'warning');
+      return approvals.handleAction(action);
     },
     onRejectedEvent: (reason) => logger.warn('lark_event_rejected', { reason }),
     onHandlerError: (kind, error) => logger.error('lark_event_handler_failed', error, { kind }),
@@ -112,6 +115,11 @@ export async function startBridge(
     for (const notification of normalizer.handle(message)) {
       orchestrator.handleNotification(notification);
     }
+  });
+  const unsubscribeApproval = normalizer.onApprovalRequest((approval, epoch) => {
+    void approvals.present(approval, epoch).catch((error: unknown) => {
+      logger.error('desktop_approval_projection_failed', toError(error));
+    });
   });
 
   let stopped = false;
@@ -126,7 +134,15 @@ export async function startBridge(
       runtimeInstance: randomUUID().slice(0, 8),
     });
   } catch (error) {
-    await stopResources(eventServer, desktopSupervisor, appServer, unsubscribeDesktop, processLock);
+    await stopResources(
+      eventServer,
+      desktopSupervisor,
+      appServer,
+      unsubscribeDesktop,
+      unsubscribeApproval,
+      approvals,
+      processLock,
+    );
     throw error;
   }
 
@@ -138,7 +154,15 @@ export async function startBridge(
         return;
       }
       stopped = true;
-      await stopResources(eventServer, desktopSupervisor, appServer, unsubscribeDesktop, processLock);
+      await stopResources(
+        eventServer,
+        desktopSupervisor,
+        appServer,
+        unsubscribeDesktop,
+        unsubscribeApproval,
+        approvals,
+        processLock,
+      );
       logger.info('bridge_stopped');
     },
   });
@@ -165,6 +189,8 @@ async function stopResources(
   desktopSupervisor: DesktopIpcSupervisor,
   appServer: AppServerClient,
   unsubscribeDesktop: () => void,
+  unsubscribeApproval: () => void,
+  approvals: DesktopApprovalService,
   processLock: BridgeProcessLock,
 ): Promise<void> {
   const errors: Error[] = [];
@@ -174,6 +200,8 @@ async function stopResources(
     errors.push(toError(error));
   }
   unsubscribeDesktop();
+  unsubscribeApproval();
+  approvals.abandonAll();
   try {
     await desktopSupervisor.stop();
   } catch (error) {

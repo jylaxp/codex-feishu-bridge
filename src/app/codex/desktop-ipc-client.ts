@@ -15,6 +15,10 @@ import type {
   TurnStartParams,
   TurnSteerParams,
 } from './protocol';
+import {
+  approvalResponseMethod,
+  type DesktopApprovalKind,
+} from './desktop-approval-adapter';
 
 export type DesktopIpcConnectionState =
   | 'DISCONNECTED'
@@ -101,6 +105,13 @@ export interface DesktopIpcClientOptions {
   readonly requestTimeoutMs?: number;
   readonly maxFrameBytes?: number;
   readonly requestIdFactory?: () => string;
+}
+
+export interface DesktopApprovalResponse {
+  readonly threadId: string;
+  readonly requestId: string | number;
+  readonly kind: DesktopApprovalKind;
+  readonly decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel';
 }
 
 type WireRecord = Readonly<Record<string, unknown>>;
@@ -360,6 +371,35 @@ export class DesktopIpcClient {
         turnId: params.turnId,
       },
       version: 2,
+      timeoutMs: positiveTimeout(timeoutMs, 'timeoutMs'),
+      beforeSend,
+    });
+  }
+
+  /**
+   * Sends one approval decision back to the same live Desktop epoch. The
+   * caller must never retry an outcome-unknown response on a replacement
+   * connection because the owner may already have applied it.
+   */
+  public async respondToApproval(
+    approval: DesktopApprovalResponse,
+    beforeSend: (identity: TrackedRequestIdentity) => void,
+    timeoutMs = this.requestTimeoutMs,
+  ): Promise<void> {
+    const method = approvalResponseMethod(approval.kind);
+    const baseParams: Record<string, unknown> = {
+      conversationId: approval.threadId,
+      requestId: approval.requestId,
+    };
+    if (approval.kind === 'permissions') {
+      baseParams.response = { decision: approval.decision };
+    } else {
+      baseParams.decision = approval.decision;
+    }
+    await this.sendRequest({
+      method,
+      params: baseParams,
+      version: 1,
       timeoutMs: positiveTimeout(timeoutMs, 'timeoutMs'),
       beforeSend,
     });

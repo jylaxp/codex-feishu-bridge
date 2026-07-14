@@ -2,6 +2,10 @@ import type {
   DesktopJsonPatch,
   DesktopThreadStreamBroadcast,
 } from './desktop-ipc-client';
+import {
+  collectDesktopApprovals,
+  type DesktopApprovalRequest,
+} from './desktop-approval-adapter';
 import type {
   MessagePhase,
   ServerNotification,
@@ -18,6 +22,8 @@ const THREAD_STREAM_PROTOCOL_VERSION = 11;
 /** Converts Desktop state snapshots/patches into canonical App Server events. */
 export class DesktopThreadStreamNormalizer {
   private readonly statesByThreadId = new Map<string, UnknownRecord>();
+  private readonly approvalListeners = new Set<(approval: DesktopApprovalRequest, epoch: number) => void>();
+  private readonly emittedApprovalKeys = new Set<string>();
   private activeEpoch: number | undefined;
 
   public constructor(private readonly nowMs: () => number = Date.now) {}
@@ -32,6 +38,7 @@ export class DesktopThreadStreamNormalizer {
     if (change.type === 'snapshot') {
       const current = cloneRecord(change.conversationState);
       this.statesByThreadId.set(threadId, current);
+      this.emitApprovals(threadId, current);
       return diffThreadState(threadId, previous, current, this.nowMs());
     }
     if (!previous) {
@@ -42,11 +49,20 @@ export class DesktopThreadStreamNormalizer {
       applyPatch(current, patch);
     }
     this.statesByThreadId.set(threadId, current);
+    this.emitApprovals(threadId, current);
     return diffThreadState(threadId, previous, current, this.nowMs());
+  }
+
+  public onApprovalRequest(
+    listener: (approval: DesktopApprovalRequest, epoch: number) => void,
+  ): () => void {
+    this.approvalListeners.add(listener);
+    return () => this.approvalListeners.delete(listener);
   }
 
   public reset(): void {
     this.statesByThreadId.clear();
+    this.emittedApprovalKeys.clear();
   }
 
   /**
@@ -59,12 +75,30 @@ export class DesktopThreadStreamNormalizer {
     }
     if (this.activeEpoch !== epoch) {
       this.statesByThreadId.clear();
+      this.emittedApprovalKeys.clear();
       this.activeEpoch = epoch;
     }
   }
 
   public get connectionEpoch(): number | undefined {
     return this.activeEpoch;
+  }
+
+  private emitApprovals(threadId: string, state: UnknownRecord): void {
+    const epoch = this.activeEpoch;
+    if (!epoch) {
+      return;
+    }
+    for (const approval of collectDesktopApprovals(threadId, state)) {
+      const key = `${epoch}:${threadId}:${String(approval.requestId)}`;
+      if (this.emittedApprovalKeys.has(key)) {
+        continue;
+      }
+      this.emittedApprovalKeys.add(key);
+      for (const listener of this.approvalListeners) {
+        listener(approval, epoch);
+      }
+    }
   }
 }
 

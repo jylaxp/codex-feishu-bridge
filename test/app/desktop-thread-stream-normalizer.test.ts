@@ -262,6 +262,39 @@ test('clears authoritative state when the Desktop connection epoch changes', () 
   assert.deepEqual(normalizer.handle(completionBroadcast()), []);
 });
 
+test('emits one scoped Desktop approval per epoch from authoritative state', () => {
+  const normalizer = new DesktopThreadStreamNormalizer();
+  const approvals: unknown[] = [];
+  normalizer.beginEpoch(7);
+  normalizer.onApprovalRequest((approval, epoch) => approvals.push({ approval, epoch }));
+  const broadcast = snapshotBroadcast();
+  const change = broadcast.params.change;
+  if (change.type !== 'snapshot') {
+    throw new Error('snapshot fixture must provide an authoritative state');
+  }
+  const state = change.conversationState as Record<string, unknown>;
+  state.requests = [{
+    id: 'approval-1',
+    method: 'item/commandExecution/requestApproval',
+    params: {
+      turnId: 'turn-desktop', itemId: 'command-pwd', command: 'pwd', reason: 'Need permission',
+      availableDecisions: ['accept', 'decline'],
+    },
+  }];
+
+  normalizer.handle(broadcast);
+  normalizer.handle(broadcast);
+
+  assert.deepEqual(approvals, [{
+    epoch: 7,
+    approval: {
+      requestId: 'approval-1', threadId: 'thread-bound', turnId: 'turn-desktop',
+      itemId: 'command-pwd', kind: 'command', reason: 'Need permission', operationSummary: 'pwd',
+      availableDecisions: ['accept', 'decline'],
+    },
+  }]);
+});
+
 test('does not synthesize a suffix delta when Desktop rewrites existing text', () => {
   const normalizer = new DesktopThreadStreamNormalizer();
   normalizer.handle(snapshotBroadcast());

@@ -220,6 +220,42 @@ test('initializes, starts a follower turn, and preserves an interleaved stream b
   }
 });
 
+test('returns an approval decision to the same follower owner runtime', async () => {
+  const mock = await createMockServer((message, socket) => {
+    if (message.method === 'initialize') {
+      socket.write(encodeFrame({
+        type: 'response', requestId: message.requestId, method: 'initialize', resultType: 'success',
+        result: { clientId: 'bridge-client' },
+      }));
+      return;
+    }
+    socket.write(encodeFrame({
+      type: 'response', requestId: message.requestId, method: message.method, resultType: 'success',
+      result: {},
+    }));
+  });
+  const client = new DesktopIpcClient({ socketPath: mock.socketPath });
+
+  try {
+    await client.start();
+    await client.respondToApproval({
+      threadId: 'thread-bound', requestId: 'approval-1', kind: 'command', decision: 'accept',
+    }, () => undefined);
+    assert.deepEqual(mock.messages[1], {
+      type: 'request',
+      requestId: mock.messages[1]?.requestId,
+      sourceClientId: 'bridge-client',
+      version: 1,
+      method: 'thread-follower-command-approval-decision',
+      params: { conversationId: 'thread-bound', requestId: 'approval-1', decision: 'accept' },
+      timeoutMs: 30_000,
+    });
+  } finally {
+    await client.stop();
+    await mock.close();
+  }
+});
+
 test('classifies a sent request timeout as outcome unknown without retrying', async () => {
   const mock = await createMockServer((message, socket) => {
     if (message.method === 'initialize') {
