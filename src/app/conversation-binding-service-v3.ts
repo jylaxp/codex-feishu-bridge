@@ -3,6 +3,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import { type BindingStore, type ChatThreadBinding } from './binding-store';
 import type { CardKitJson } from './cards/layouts';
 import { sanitizeCardText } from './cards/sanitizer';
+import { type ThreadNavigation } from './codex/app-navigation-adapter';
 import type { BridgeConfig } from './domain';
 import type { InboundTextMessage } from './lark/intake';
 import { toast } from './lark/event-server';
@@ -42,6 +43,7 @@ export class ConversationBindingServiceV3 {
     private readonly catalog: BindingCatalogV3,
     private readonly cards: BindingCardsV3,
     private readonly now: () => number = Date.now,
+    private readonly navigation: ThreadNavigation | undefined = undefined,
   ) {}
 
   public getBinding(tenantKey: string, chatId: string): ChatThreadBinding | undefined {
@@ -56,6 +58,10 @@ export class ConversationBindingServiceV3 {
     }
     if (message.text === '/binding') {
       await this.sendStatus(message);
+      return true;
+    }
+    if (command === '/open') {
+      await this.openBoundThread(message);
       return true;
     }
     if (message.text === '/unbind') {
@@ -97,7 +103,19 @@ export class ConversationBindingServiceV3 {
       threadId: payload.threadId,
       workspaceId: this.config.codexCwd,
     });
-    return toast('绑定成功', 'success');
+    return this.openAfterBinding(payload.threadId);
+  }
+
+  public async handleOpenAction(action: BindingActionV3): Promise<object> {
+    if (!this.config.authorizedUsers.includes(action.operatorOpenId)) {
+      return toast('你没有打开会话的权限', 'warning');
+    }
+    const payload = verifyToken(action.token, action, this.config.larkAppSecret, this.now);
+    const binding = this.getBinding(action.tenantKey, action.chatId);
+    if (!payload || !binding || payload.threadId !== binding.threadId || payload.revision !== binding.revision) {
+      return toast('会话打开操作已过期，请重新发送 /binding', 'warning');
+    }
+    return this.openThread(binding.threadId);
   }
 
   private async sendPicker(message: InboundTextMessage): Promise<void> {
@@ -117,7 +135,40 @@ export class ConversationBindingServiceV3 {
   }
 
   private async sendStatus(message: InboundTextMessage): Promise<void> {
-    await this.reply(message, statusCard(this.getBinding(message.tenantKey, message.chatId)), 'status');
+    const binding = this.getBinding(message.tenantKey, message.chatId);
+    const token = binding
+      ? createToken(binding.threadId, binding.revision, message, this.config.larkAppSecret, this.now)
+      : undefined;
+    await this.reply(message, statusCard(binding, token), 'status');
+  }
+
+  private async openBoundThread(message: InboundTextMessage): Promise<void> {
+    const binding = this.getBinding(message.tenantKey, message.chatId);
+    if (!binding) {
+      await this.sendStatus(message);
+      return;
+    }
+    const result = await this.openThread(binding.threadId);
+    await this.reply(message, openResultCard(result), 'open');
+  }
+
+  private async openAfterBinding(threadId: string): Promise<object> {
+    const result = await this.openThread(threadId);
+    return result.type === 'success'
+      ? toast('绑定成功，已打开对应 ChatGPT 会话', 'success')
+      : toast('绑定成功；未能自动打开 ChatGPT 会话，可发送 /open 重试', 'warning');
+  }
+
+  private async openThread(threadId: string): Promise<{ readonly type: 'success' | 'warning' }> {
+    if (!this.navigation) {
+      return { type: 'warning' };
+    }
+    try {
+      await this.navigation.openThread(threadId);
+      return { type: 'success' };
+    } catch {
+      return { type: 'warning' };
+    }
   }
 
   private async reply(message: InboundTextMessage, card: CardKitJson, operation: string): Promise<void> {
@@ -162,16 +213,34 @@ function pickerCard(entries: readonly { readonly choice: ThreadChoice; readonly 
   };
 }
 
-function statusCard(binding: ChatThreadBinding | undefined): CardKitJson {
+function statusCard(binding: ChatThreadBinding | undefined, token: string | undefined): CardKitJson {
   if (!binding) {
     return baseCard('ChatGPT 会话绑定', 'orange', [{
       tag: 'markdown',
       content: '当前飞书会话尚未绑定 ChatGPT 会话。发送 `/bind` 进行选择。',
     }]);
   }
-  return baseCard('ChatGPT 会话绑定', 'green', [{
+  const elements: Record<string, unknown>[] = [{
     tag: 'markdown',
     content: `当前已绑定会话：${shortId(binding.threadId)}\n工作区：${binding.workspaceId}`,
+  }];
+  if (token) {
+    elements.push({
+      tag: 'button',
+      text: { tag: 'plain_text', content: '在 ChatGPT 中打开此会话' },
+      type: 'primary',
+      value: { action: 'open', token },
+    });
+  }
+  return baseCard('ChatGPT 会话绑定', 'green', elements);
+}
+
+function openResultCard(result: { readonly type: 'success' | 'warning' }): CardKitJson {
+  return baseCard('ChatGPT 会话', result.type === 'success' ? 'green' : 'orange', [{
+    tag: 'markdown',
+    content: result.type === 'success'
+      ? '已请求在 ChatGPT Desktop 中打开当前绑定会话。'
+      : '当前未能打开 ChatGPT Desktop 会话；绑定未受影响，可稍后再次发送 `/open`。',
   }]);
 }
 

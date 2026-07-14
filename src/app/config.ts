@@ -40,7 +40,8 @@ function requireAbsolutePath(env: NodeJS.ProcessEnv, key: string): string {
   return path.normalize(value);
 }
 
-function configHome(env: NodeJS.ProcessEnv): string {
+/** Resolves the portable configuration home before the full environment is parsed. */
+export function resolveConfigHome(env: NodeJS.ProcessEnv, homeDirectory = os.homedir()): string {
   const configured = env.BRIDGE_CONFIG_HOME?.trim();
   if (configured) {
     if (!path.isAbsolute(configured)) {
@@ -48,7 +49,7 @@ function configHome(env: NodeJS.ProcessEnv): string {
     }
     return path.normalize(configured);
   }
-  return path.join(os.homedir(), '.codex-feishu-bridge');
+  return path.join(homeDirectory, '.codex-feishu-bridge');
 }
 
 function requireLarkAppId(env: NodeJS.ProcessEnv): string {
@@ -142,7 +143,7 @@ export function parseEnvironment(env: NodeJS.ProcessEnv): BridgeConfig {
     codexBin: requireAbsolutePath(env, 'CODEX_BIN'),
     codexCwd: requireAbsolutePath(env, 'CODEX_CWD'),
     allowedWorkspaceRoots: parseRequiredAbsolutePathList(env, 'ALLOWED_WORKSPACE_ROOTS'),
-    configHome: configHome(env),
+    configHome: resolveConfigHome(env),
     maxTextLength: parseBoundedInteger(
       env,
       'MAX_TEXT_LENGTH',

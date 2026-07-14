@@ -2,6 +2,7 @@
 
 import { BridgeLogger } from './logger';
 import { defaultConfigHome, inspectConfigReset, resetConfigHome } from './config-reset';
+import { loadBridgeEnvironment } from './config-file';
 
 type Command = 'run' | 'doctor' | 'validate-ui-sync' | 'config-reset' | 'help';
 
@@ -40,7 +41,7 @@ export async function runCli(
 
   if (parsed.command === 'doctor') {
     const { runDoctor } = await import('./doctor');
-    process.stdout.write(`${JSON.stringify(await runDoctor(baseEnv), null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify(await runDoctor(loadBridgeEnvironment(baseEnv)), null, 2)}\n`);
     return;
   }
   if (parsed.command === 'config-reset') {
@@ -53,7 +54,7 @@ export async function runCli(
   }
   if (parsed.command === 'validate-ui-sync') {
     const { runUiSyncValidator } = await import('./ui-sync-validator');
-    const result = await runUiSyncValidator(baseEnv, parsed.threadId);
+    const result = await runUiSyncValidator(loadBridgeEnvironment(baseEnv), parsed.threadId);
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     return;
   }
@@ -62,7 +63,7 @@ export async function runCli(
     ?? createShutdownSignalWaiter();
   try {
     const startBridge = dependencies.startBridge ?? (await import('./main')).startBridge;
-    const runtime = await startBridge(baseEnv);
+    const runtime = await startBridge(loadBridgeEnvironment(baseEnv));
     const outcome = await Promise.race([
       shutdown.wait.then(() => ({ type: 'shutdown' as const })),
       runtime.failure.then((error) => ({ type: 'failure' as const, error })),
@@ -194,7 +195,8 @@ function helpText(): string {
     '  codex-feishu-bridge validate-ui-sync [--thread THREAD_ID]',
     '  codex-feishu-bridge config reset [--config-home PATH] [--confirm]',
     '',
-    'Configuration is read only from the process environment.',
+    'Configuration is loaded from ~/.codex-feishu-bridge/.env by default.',
+    'Process/service-manager environment values override the .env file.',
     'validate-ui-sync without --thread lists recent workspace tasks.',
     'config reset is a dry run until --confirm; it retains only .env and starts empty bindings.',
     '',

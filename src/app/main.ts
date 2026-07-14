@@ -7,8 +7,10 @@ import { SUPPORTED_APP_SERVER_VERSION } from './codex/contract';
 import { DesktopIpcClient } from './codex/desktop-ipc-client';
 import { DesktopIpcSupervisor } from './codex/desktop-ipc-supervisor';
 import { DesktopThreadStreamNormalizer } from './codex/desktop-thread-stream-normalizer';
+import { CodexAppNavigationAdapter } from './codex/app-navigation-adapter';
 import { verifyCodexRuntimeContract } from './codex/runtime-contract';
 import { parseEnvironment } from './config';
+import { loadBridgeEnvironment } from './config-file';
 import { ConversationBindingServiceV3 } from './conversation-binding-service-v3';
 import { DesktopApprovalService } from './desktop-approval-service';
 import { BridgeConfig } from './domain';
@@ -34,7 +36,8 @@ export async function startBridge(
   env: NodeJS.ProcessEnv = process.env,
   logger: BridgeLogger = new BridgeLogger(),
 ): Promise<BridgeRuntime> {
-  const preflight = runPreflight(parseEnvironment(env));
+  const effectiveEnv = loadBridgeEnvironment(env);
+  const preflight = runPreflight(parseEnvironment(effectiveEnv));
   const config = preflight.config;
   const processLock = new BridgeProcessLock(preflight.configHome);
   processLock.acquire();
@@ -45,7 +48,7 @@ export async function startBridge(
   });
   const bindings = new BindingStore(preflight.configHome);
   const appServer = new AppServerClient({
-    transport: appServerTransport(config, env),
+    transport: appServerTransport(config, effectiveEnv),
     clientInfo: {
       name: 'lark_codex_gateway',
       title: 'Lark Codex Gateway',
@@ -73,6 +76,8 @@ export async function startBridge(
     bindings,
     appServer,
     cards,
+    undefined,
+    new CodexAppNavigationAdapter(),
   );
   const desktopSupervisor = new DesktopIpcSupervisor(desktop, {
     onReady: (handshake) => {
@@ -103,6 +108,9 @@ export async function startBridge(
       if (action.action === 'binding') {
         return conversationBindings.handleCardAction(action);
       }
+      if (action.action === 'open') {
+        return conversationBindings.handleOpenAction(action);
+      }
       if (action.action === 'cancel') {
         const cancelled = await orchestrator.cancel(action);
         return toast(cancelled ? '已请求取消任务' : '任务已结束或操作已失效', cancelled ? 'success' : 'warning');
@@ -126,7 +134,7 @@ export async function startBridge(
   let stopped = false;
   try {
     bindings.load();
-    await verifyCodexRuntimeContract(config, env, preflight.dataDirectory.temporaryDir);
+    await verifyCodexRuntimeContract(config, effectiveEnv, preflight.dataDirectory.temporaryDir);
     await desktopSupervisor.start();
     await appServer.start();
     await eventServer.start();

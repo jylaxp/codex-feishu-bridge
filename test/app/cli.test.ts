@@ -10,7 +10,7 @@ test('rejects the removed --env option before loading runtime configuration', as
   );
 });
 
-test('help documents process-environment configuration only', async () => {
+test('help documents the private configuration file and process overrides', async () => {
   const originalWrite = process.stdout.write;
   let output = '';
   process.stdout.write = ((chunk: string | Uint8Array) => {
@@ -23,7 +23,8 @@ test('help documents process-environment configuration only', async () => {
     process.stdout.write = originalWrite;
   }
 
-  assert.match(output, /read only from the process environment/);
+  assert.match(output, /\.codex-feishu-bridge\/.env/);
+  assert.match(output, /environment values override/);
   assert.doesNotMatch(output, /--env/);
   assert.match(output, /config reset/);
 });

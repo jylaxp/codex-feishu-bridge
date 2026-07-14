@@ -3,6 +3,7 @@ import { statSync } from 'node:fs';
 import { BindingStore } from './binding-store';
 import { verifyCodexRuntimeContract } from './codex/runtime-contract';
 import { parseEnvironment } from './config';
+import { loadBridgeEnvironment } from './config-file';
 import { BridgeConfig } from './domain';
 import { runPreflight } from './preflight';
 
@@ -31,12 +32,13 @@ export async function runDoctor(
   env: NodeJS.ProcessEnv = process.env,
   dependencies: DoctorDependencies = {},
 ): Promise<DoctorReport> {
-  const preflight = runPreflight(parseEnvironment(env), { nodeVersion: dependencies.nodeVersion });
+  const effectiveEnv = loadBridgeEnvironment(env);
+  const preflight = runPreflight(parseEnvironment(effectiveEnv), { nodeVersion: dependencies.nodeVersion });
   const store = new BindingStore(preflight.configHome);
   store.load();
   const contract = await (dependencies.verifyRuntimeContract ?? verifyCodexRuntimeContract)(
     preflight.config,
-    env,
+    effectiveEnv,
     preflight.dataDirectory.temporaryDir,
   );
   const bindingsFileBytes = statSync(store.filePath, { throwIfNoEntry: false })?.size ?? 0;

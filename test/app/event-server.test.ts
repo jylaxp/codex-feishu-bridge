@@ -69,6 +69,18 @@ test('normalizes a signed conversation-binding card action', () => {
   });
 });
 
+test('normalizes a signed bound-thread open action', () => {
+  const action = normalizeCardAction({
+    tenant_key: 'tenant-test',
+    context: { open_chat_id: 'chat-test', open_message_id: 'message-card' },
+    operator: { open_id: 'user-test' },
+    action: { value: { action: 'open', token: 'b1.exp.revision.thread.signature' } },
+  }, config);
+
+  assert.equal(action?.action, 'open');
+  assert.equal(action?.token, 'b1.exp.revision.thread.signature');
+});
+
 test('accepts a bounded signed binding token larger than an opaque action token', () => {
   const token = `${'a'.repeat(260)}.${'b'.repeat(43)}`;
   const action = normalizeCardAction({

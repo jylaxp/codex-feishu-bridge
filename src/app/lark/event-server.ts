@@ -10,7 +10,7 @@ import {
 const MAX_OPAQUE_ACTION_TOKEN_LENGTH = 256;
 const MAX_SIGNED_BINDING_TOKEN_LENGTH = 1024;
 
-export type CardActionKind = 'approval' | 'binding' | 'cancel';
+export type CardActionKind = 'approval' | 'binding' | 'cancel' | 'open';
 
 type CardActionOption = string | { readonly value?: unknown };
 
@@ -97,14 +97,14 @@ export function normalizeCardAction(
   const token = action === 'binding'
     ? selectedOption ?? nonBlank(value.token)
     : nonBlank(value.token);
-  const tokenPattern = action === 'binding'
+  const tokenPattern = action === 'binding' || action === 'open'
     ? /^[A-Za-z0-9_.-]+$/
     : /^[A-Za-z0-9_-]+$/;
-  const maxTokenLength = action === 'binding'
+  const maxTokenLength = action === 'binding' || action === 'open'
     ? MAX_SIGNED_BINDING_TOKEN_LENGTH
     : MAX_OPAQUE_ACTION_TOKEN_LENGTH;
   if (
-    (action !== 'approval' && action !== 'binding' && action !== 'cancel')
+    (action !== 'approval' && action !== 'binding' && action !== 'cancel' && action !== 'open')
     || !token
     || token.length > maxTokenLength
     || !tokenPattern.test(token)

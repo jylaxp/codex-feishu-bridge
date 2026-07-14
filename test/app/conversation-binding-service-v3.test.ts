@@ -99,13 +99,65 @@ test('binds only an explicit signed picker choice to the current Feishu chat', a
 
     assert.deepEqual(result, {
       toast: {
-        type: 'success',
-        content: '绑定成功',
-        i18n: { zh_cn: '绑定成功', en_us: '绑定成功' },
+        type: 'warning',
+        content: '绑定成功；未能自动打开 ChatGPT 会话，可发送 /open 重试',
+        i18n: {
+          zh_cn: '绑定成功；未能自动打开 ChatGPT 会话，可发送 /open 重试',
+          en_us: '绑定成功；未能自动打开 ChatGPT 会话，可发送 /open 重试',
+        },
       },
     });
     assert.equal(store.get('tenant', 'chat')?.threadId, 'thread-selected');
     assert.deepEqual(calls.map((call) => call.method), ['thread/list', 'thread/read']);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('opens the exact bound thread after binding and through /open', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'binding-v3-'));
+  try {
+    const store = new BindingStore(root);
+    store.load();
+    const cards = new FakeCards();
+    const opened: string[] = [];
+    const service = new ConversationBindingServiceV3(
+      config,
+      store,
+      {
+        request: async <TResult>(method: string): Promise<TResult> => (
+          method === 'thread/list'
+            ? { data: [{ id: 'thread-selected', name: 'Feishu test', updatedAt: 1 }] } as TResult
+            : { thread: { id: 'thread-selected' } } as TResult
+        ),
+      },
+      cards,
+      () => 1_000,
+      { openThread: async (threadId) => { opened.push(threadId); } },
+    );
+
+    await service.handleCommand(inbound('/bind'));
+    const result = await service.handleCardAction({
+      tenantKey: 'tenant',
+      chatId: 'chat',
+      messageId: 'card-message',
+      operatorOpenId: 'user',
+      token: firstBindingToken(cards.cards[0]!),
+    });
+    assert.deepEqual(result, {
+      toast: {
+        type: 'success',
+        content: '绑定成功，已打开对应 ChatGPT 会话',
+        i18n: {
+          zh_cn: '绑定成功，已打开对应 ChatGPT 会话',
+          en_us: '绑定成功，已打开对应 ChatGPT 会话',
+        },
+      },
+    });
+
+    assert.equal(await service.handleCommand(inbound('/open')), true);
+    assert.deepEqual(opened, ['thread-selected', 'thread-selected']);
+    assert.equal(cards.cards.at(-1)?.header && (cards.cards.at(-1)?.header as { template: string }).template, 'green');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

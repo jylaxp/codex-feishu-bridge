@@ -14,6 +14,7 @@ import {
   TurnStartResponse,
 } from './codex/protocol';
 import { parseEnvironment } from './config';
+import { loadBridgeEnvironment } from './config-file';
 import { runPreflight } from './preflight';
 
 const DEFAULT_VALIDATION_TIMEOUT_MS = 120_000;
@@ -52,15 +53,16 @@ export async function runUiSyncValidator(
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 10 * 60_000) {
     throw new RangeError('UI sync validation timeout must be between 1s and 10m');
   }
-  const preflight = runPreflight(parseEnvironment(env));
+  const effectiveEnv = loadBridgeEnvironment(env);
+  const preflight = runPreflight(parseEnvironment(effectiveEnv));
   const config = preflight.config;
-  await verifyCodexRuntimeContract(config, env, preflight.dataDirectory.temporaryDir);
+  await verifyCodexRuntimeContract(config, effectiveEnv, preflight.dataDirectory.temporaryDir);
   const client = new AppServerClient({
     transport: {
       mode: 'managed_proxy',
       codexBin: config.codexBin,
       spawnCwd: config.codexCwd,
-      env,
+      env: effectiveEnv,
       ...(config.appServerSocketPath ? { socketPath: config.appServerSocketPath } : {}),
     },
     clientInfo: {
