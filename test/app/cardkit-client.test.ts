@@ -28,7 +28,6 @@ function card() {
     status: 'RUNNING',
     payload: {
       title: sanitizeCardText('Task'),
-      target: sanitizeCardText('workspace · abc123'),
       prompt: sanitizeCardText('Prompt'),
       commentary: sanitizeCardText('Working'),
       toolSummary: sanitizeCardText('None'),

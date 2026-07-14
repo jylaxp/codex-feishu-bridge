@@ -73,7 +73,6 @@ export function createTaskCard(options: TaskCardOptions): CardKitJson {
   const terminal = payload.terminal;
   const elements: Array<Record<string, unknown>> = [
     markdown(`**输入**\n${payload.prompt}`, 'codex_prompt'),
-    markdown(`**目标会话**\n${payload.target}`, 'codex_target'),
     { tag: 'hr' },
     markdown(`**当前状态**\n${statusText}`, 'codex_status'),
     { tag: 'hr' },

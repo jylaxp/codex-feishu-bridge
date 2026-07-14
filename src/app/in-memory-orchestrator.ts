@@ -213,7 +213,7 @@ export class InMemoryOrchestrator {
     binding: ChatThreadBinding,
   ): Promise<InMemoryInboundOutcome> {
     const id = randomUUID();
-    const initialCard = taskCard(message.text, binding, 'CARD_CREATING', '', '', '', id);
+    const initialCard = taskCard(message.text, 'CARD_CREATING', '', '', '', id);
     const cardId = await this.cards.createCard(initialCard);
     const cardMessageId = await this.cards.replyCard(message.rootMessageId, cardId, `task:${id}`);
     const task: RuntimeTask = {
@@ -273,7 +273,7 @@ export class InMemoryOrchestrator {
   private applyNotification(task: RuntimeTask, notification: ServerNotification): void {
     const params = notification.params as Record<string, unknown>;
     if (notification.method === 'item/agentMessage/delta') {
-      appendToTask(task, 'commentary', stringField(params.delta));
+      appendToTask(task, 'finalAnswer', stringField(params.delta));
     } else if (notification.method === 'item/reasoning/summaryTextDelta') {
       appendToTask(task, 'commentary', stringField(params.delta));
     } else if (notification.method === 'item/commandExecution/outputDelta') {
@@ -313,7 +313,6 @@ export class InMemoryOrchestrator {
     try {
       const card = taskCard(
         task.message.text,
-        task.binding,
         task.status,
         task.commentary,
         task.tools,
@@ -397,7 +396,6 @@ function buildSteer(task: RuntimeTask, message: InboundTextMessage): TurnSteerPa
 
 function taskCard(
   prompt: string,
-  binding: ChatThreadBinding,
   status: TaskStatus,
   commentary: string,
   tools: string,
@@ -411,10 +409,6 @@ function taskCard(
     cancelToken,
     payload: Object.freeze({
       title: sanitizeCardText('Codex 任务', { maxLength: 200 }),
-      target: sanitizeCardText(
-        `工作区:${binding.workspaceId} · 会话标识:${shortId(binding.threadId)}`,
-        { maxLength: 200 },
-      ),
       prompt: sanitizeCardText(prompt, { maxLength: 10_000 }),
       commentary: sanitizeCardText(commentary || '等待事件...', { maxLength: 10_000 }),
       toolSummary: sanitizeCardText(tools || '暂无', { maxLength: 10_000 }),
@@ -433,7 +427,11 @@ function eventIdentity(notification: ServerNotification): { threadId: string; tu
   return threadId && turnId ? { threadId, turnId } : null;
 }
 
-function appendToTask(task: RuntimeTask, field: 'commentary' | 'tools', delta: string | null): void {
+function appendToTask(
+  task: RuntimeTask,
+  field: 'commentary' | 'tools' | 'finalAnswer',
+  delta: string | null,
+): void {
   if (!delta) {
     return;
   }

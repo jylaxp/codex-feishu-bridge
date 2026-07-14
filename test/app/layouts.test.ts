@@ -9,7 +9,6 @@ test('task card keeps process and final output in stable regions', () => {
     cancelToken: 'opaque-cancel-token',
     payload: {
       title: sanitizeCardText('Codex task'),
-      target: sanitizeCardText('workspace · abc123'),
       prompt: sanitizeCardText('implement feature'),
       commentary: sanitizeCardText('checking files'),
       toolSummary: sanitizeCardText('rg: completed'),
@@ -22,8 +21,7 @@ test('task card keeps process and final output in stable regions', () => {
   const serialized = JSON.stringify(card);
   assert.match(serialized, /codex_commentary/);
   assert.match(serialized, /codex_output/);
-  assert.match(serialized, /codex_target/);
-  assert.match(serialized, /workspace/);
+  assert.doesNotMatch(serialized, /codex_target|目标会话|workspace/);
   assert.match(serialized, /opaque-cancel-token/);
   assert.doesNotMatch(serialized, /threadId|turnId|cwd|requestId/);
 });
@@ -34,7 +32,6 @@ test('terminal task card has no action token and closes streaming mode', () => {
     cancelToken: 'must-not-render',
     payload: {
       title: sanitizeCardText('done'),
-      target: sanitizeCardText('workspace · abc123'),
       prompt: sanitizeCardText('prompt'),
       commentary: sanitizeCardText('complete'),
       toolSummary: sanitizeCardText('none'),

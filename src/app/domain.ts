@@ -35,7 +35,6 @@ export type ApprovalDecision = 'accept' | 'acceptForSession' | 'decline' | 'canc
 
 export interface CardProjectionPayload {
   readonly title: SanitizedCardText;
-  readonly target: SanitizedCardText;
   readonly prompt: SanitizedCardText;
   readonly commentary: SanitizedCardText;
   readonly toolSummary: SanitizedCardText;
