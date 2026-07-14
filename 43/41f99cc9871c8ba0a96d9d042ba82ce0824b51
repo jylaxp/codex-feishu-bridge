@@ -1,0 +1,22 @@
+src/app/in-memory-orchestrator.ts
+  s_4672ec237d452e::t_65892c6a487e9e 276,430-434
+  s_4672ec237d452e::t_2546efa8e065fd 216
+test/app/layouts.test.ts
+  s_4672ec237d452e::t_65892c6a487e9e 24
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "4341f99cc9871c8ba0a96d9d042ba82ce0824b51",
+  "prompts": {},
+  "sessions": {
+    "s_4672ec237d452e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5be6-2b87-7190-8898-ae985cbeb51e",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    }
+  }
+}
