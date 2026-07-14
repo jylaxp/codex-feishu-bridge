@@ -69,6 +69,33 @@ test('normalizes a signed conversation-binding card action', () => {
   });
 });
 
+test('accepts a bounded signed binding token larger than an opaque action token', () => {
+  const token = `${'a'.repeat(260)}.${'b'.repeat(43)}`;
+  const action = normalizeCardAction({
+    tenant_key: 'tenant-test',
+    context: { open_chat_id: 'chat-test', open_message_id: 'message-card' },
+    operator: { open_id: 'user-test' },
+    action: { value: { action: 'binding', token } },
+  }, config);
+
+  assert.equal(action?.token, token);
+});
+
+test('reads the signed binding token from a select_static option', () => {
+  const action = normalizeCardAction({
+    tenant_key: 'tenant-test',
+    context: { open_chat_id: 'chat-test', open_message_id: 'message-card' },
+    operator: { open_id: 'user-test' },
+    action: {
+      value: { action: 'binding' },
+      option: { value: 'selected-binding-token' },
+    },
+  }, config);
+
+  assert.equal(action?.action, 'binding');
+  assert.equal(action?.token, 'selected-binding-token');
+});
+
 test('rejects card actions from another chat or with malformed tokens', () => {
   const baseEvent = {
     tenant_key: 'tenant-test',

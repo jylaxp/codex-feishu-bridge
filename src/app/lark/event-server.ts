@@ -7,7 +7,8 @@ import {
   RawMessageEvent,
 } from './intake';
 
-const MAX_ACTION_TOKEN_LENGTH = 256;
+const MAX_OPAQUE_ACTION_TOKEN_LENGTH = 256;
+const MAX_SIGNED_BINDING_TOKEN_LENGTH = 1024;
 
 export type CardActionKind = 'approval' | 'binding' | 'cancel';
 
@@ -27,7 +28,10 @@ export interface RawCardActionEvent {
     readonly open_chat_id?: string;
   };
   readonly operator?: { readonly open_id?: string };
-  readonly action?: { readonly value?: unknown };
+  readonly action?: {
+    readonly value?: unknown;
+    readonly option?: { readonly value?: unknown };
+  };
 }
 
 export interface LarkEventHandlers {
@@ -76,14 +80,22 @@ export function normalizeCardAction(
   }
 
   const action = nonBlank(value.action);
-  const token = nonBlank(value.token);
+  const selectedOption = isRecord(event.action?.option)
+    ? nonBlank(event.action?.option?.value)
+    : null;
+  const token = action === 'binding'
+    ? selectedOption ?? nonBlank(value.token)
+    : nonBlank(value.token);
   const tokenPattern = action === 'binding'
     ? /^[A-Za-z0-9_.-]+$/
     : /^[A-Za-z0-9_-]+$/;
+  const maxTokenLength = action === 'binding'
+    ? MAX_SIGNED_BINDING_TOKEN_LENGTH
+    : MAX_OPAQUE_ACTION_TOKEN_LENGTH;
   if (
     (action !== 'approval' && action !== 'binding' && action !== 'cancel')
     || !token
-    || token.length > MAX_ACTION_TOKEN_LENGTH
+    || token.length > maxTokenLength
     || !tokenPattern.test(token)
   ) {
     return null;

@@ -7,7 +7,7 @@ import type { BridgeConfig } from './domain';
 import type { InboundTextMessage } from './lark/intake';
 import { toast } from './lark/event-server';
 
-const PICKER_LIMIT = 8;
+const PICKER_LIMIT = 99;
 const TOKEN_TTL_MS = 10 * 60_000;
 
 export interface BindingCatalogV3 {
@@ -30,6 +30,7 @@ export interface BindingActionV3 {
 interface ThreadChoice {
   readonly id: string;
   readonly title: string;
+  readonly cwd: string | null;
   readonly updatedAt: number | null;
 }
 
@@ -48,7 +49,8 @@ export class ConversationBindingServiceV3 {
   }
 
   public async handleCommand(message: InboundTextMessage): Promise<boolean> {
-    if (message.text === '/bind') {
+    const command = message.text.trim();
+    if (command === '/bind' || command === '/l' || command === '/list') {
       await this.sendPicker(message);
       return true;
     }
@@ -125,28 +127,39 @@ export class ConversationBindingServiceV3 {
 }
 
 function pickerCard(entries: readonly { readonly choice: ThreadChoice; readonly token: string }[]): CardKitJson {
-  const elements: Record<string, unknown>[] = [{
-    tag: 'markdown',
-    content: '请选择要绑定的 ChatGPT 会话。选择卡 10 分钟内有效。',
-  }, { tag: 'hr' }];
-  for (const [index, entry] of entries.entries()) {
-    elements.push({
-      tag: 'markdown',
-      content: `**${index + 1}. ${sanitizeCardText(entry.choice.title, { maxLength: 80 })}**\n`
-        + `更新时间：${formatUpdatedAt(entry.choice.updatedAt)}\n`
-        + `会话标识：${shortId(entry.choice.id)}`,
-    }, {
-      tag: 'button',
-      type: 'primary',
-      width: 'fill',
-      text: { tag: 'plain_text', content: '绑定此会话' },
-      value: { action: 'binding', token: entry.token },
-    }, { tag: 'hr' });
-  }
-  if (entries.length === 0) {
-    elements.push({ tag: 'markdown', content: '没有可绑定的最近会话。请先在 ChatGPT 中创建会话后重试。' });
-  }
-  return baseCard('选择 ChatGPT 会话', 'blue', elements);
+  const options = entries.map((entry) => ({
+    text: {
+      tag: 'plain_text',
+      content: pickerOptionLabel(entry.choice),
+    },
+    value: entry.token,
+  }));
+  return {
+    schema: '2.0',
+    config: { wide_screen_mode: true },
+    header: {
+      template: 'indigo',
+      title: { tag: 'plain_text', content: '📂 Codex 绑定会话' },
+    },
+    body: {
+      elements: [
+        {
+          tag: 'div',
+          text: {
+            tag: 'lark_md',
+            content: '请从下方下拉菜单中选择一个 Codex 活跃会话绑定至当前聊天。选项已按本地项目分组：',
+          },
+        },
+        {
+          tag: 'select_static',
+          element_id: 'bind_select_dropdown',
+          placeholder: { tag: 'plain_text', content: '选择 Codex 会话...' },
+          value: { action: 'binding' },
+          options,
+        },
+      ],
+    },
+  };
 }
 
 function statusCard(binding: ChatThreadBinding | undefined): CardKitJson {
@@ -196,9 +209,24 @@ function parseChoices(value: unknown): readonly ThreadChoice[] {
     return [{
       id,
       title: typeof item?.name === 'string' && item.name.trim() ? item.name.trim() : '未命名会话',
-      updatedAt: typeof item?.updatedAt === 'number' ? item.updatedAt : null,
+      cwd: typeof item?.cwd === 'string' && item.cwd.trim() ? item.cwd : null,
+      updatedAt: normalizeUpdatedAt(item?.updatedAt),
     }];
   });
+}
+
+function pickerOptionLabel(choice: ThreadChoice): string {
+  const name = sanitizeCardText(choice.title, { maxLength: 80 });
+  const workspace = choice.cwd?.split(/[\\/]/).filter(Boolean).at(-1);
+  const label = workspace ? `💬 ${name} (📁 ${workspace})` : `💬 ${name}`;
+  return label.length > 100 ? `${label.slice(0, 97)}...` : label;
+}
+
+function normalizeUpdatedAt(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    return null;
+  }
+  return value < 100_000_000_000 ? value * 1_000 : value;
 }
 
 function createToken(
@@ -265,10 +293,6 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
-}
-
-function formatUpdatedAt(value: number | null): string {
-  return value === null ? '未知' : new Date(value).toISOString().replace('T', ' ').replace('.000Z', ' UTC');
 }
 
 function shortId(value: string): string {

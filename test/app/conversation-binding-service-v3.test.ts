@@ -56,10 +56,11 @@ class FakeCards {
 
 function firstBindingToken(card: CardKitJson): string {
   const body = card.body as { elements: Array<Record<string, unknown>> };
-  const button = body.elements.find((element) => element.tag === 'button');
-  const value = button?.value as { token?: unknown } | undefined;
-  assert.equal(typeof value?.token, 'string');
-  return value?.token as string;
+  const picker = body.elements.find((element) => element.tag === 'select_static');
+  const options = picker?.options as Array<{ value?: unknown }> | undefined;
+  const token = options?.[0]?.value;
+  assert.equal(typeof token, 'string');
+  return token as string;
 }
 
 test('binds only an explicit signed picker choice to the current Feishu chat', async () => {
@@ -148,6 +149,42 @@ test('rejects a picker token when another Feishu chat attempts to use it', async
       },
     });
     assert.equal(store.list().length, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('keeps /l and /list on the legacy binding-picker command surface', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'binding-v3-'));
+  try {
+    const store = new BindingStore(root);
+    store.load();
+    const cards = new FakeCards();
+    const service = new ConversationBindingServiceV3(
+      config,
+      store,
+      {
+        request: async <TResult>(): Promise<TResult> => (
+          {
+            data: [{
+              id: 'thread-selected', name: 'Feishu test', cwd: '/workspace/bridge',
+              updatedAt: 1_752_444_800,
+            }],
+          } as TResult
+        ),
+      },
+      cards,
+      () => 1_000,
+    );
+
+    assert.equal(await service.handleCommand(inbound('/l')), true);
+    assert.equal(await service.handleCommand(inbound('/list')), true);
+    const card = cards.cards[0]!;
+    const header = card.header as { title: { content: string } };
+    const body = card.body as { elements: Array<Record<string, unknown>> };
+    assert.equal(header.title.content, '📂 Codex 绑定会话');
+    assert.equal(body.elements[0]?.tag, 'div');
+    assert.equal(body.elements[1]?.tag, 'select_static');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
