@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 
 import { BridgeLogger } from './logger';
+import { defaultConfigHome, inspectConfigReset, resetConfigHome } from './config-reset';
 
-type Command = 'run' | 'doctor' | 'validate-ui-sync' | 'help';
+type Command = 'run' | 'doctor' | 'validate-ui-sync' | 'config-reset' | 'help';
 
 interface CliArguments {
   readonly command: Command;
   readonly threadId: string | undefined;
+  readonly configHome: string | undefined;
+  readonly confirm: boolean;
 }
 
 export interface CliRuntime {
@@ -38,6 +41,14 @@ export async function runCli(
   if (parsed.command === 'doctor') {
     const { runDoctor } = await import('./doctor');
     process.stdout.write(`${JSON.stringify(await runDoctor(baseEnv), null, 2)}\n`);
+    return;
+  }
+  if (parsed.command === 'config-reset') {
+    const configHome = parsed.configHome ?? defaultConfigHome();
+    const report = parsed.confirm
+      ? resetConfigHome(configHome, { confirm: true })
+      : inspectConfigReset(configHome);
+    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
     return;
   }
   if (parsed.command === 'validate-ui-sync') {
@@ -82,6 +93,8 @@ function toError(error: unknown): Error {
 function parseArguments(args: readonly string[]): CliArguments {
   let command: Command = 'run';
   let threadId: string | undefined;
+  let configHome: string | undefined;
+  let confirm = false;
   let commandSeen = false;
 
   for (let index = 0; index < args.length; index += 1) {
@@ -91,9 +104,24 @@ function parseArguments(args: readonly string[]): CliArguments {
       index += 1;
       continue;
     }
+    if (argument === '--config-home') {
+      configHome = requireOptionValue(args, index, '--config-home');
+      index += 1;
+      continue;
+    }
+    if (argument === '--confirm') {
+      confirm = true;
+      continue;
+    }
     if (argument === '--help' || argument === '-h') {
       command = 'help';
       commandSeen = true;
+      continue;
+    }
+    if (!commandSeen && argument === 'config' && args[index + 1] === 'reset') {
+      command = 'config-reset';
+      commandSeen = true;
+      index += 1;
       continue;
     }
     if (!commandSeen && isCommand(argument)) {
@@ -107,7 +135,13 @@ function parseArguments(args: readonly string[]): CliArguments {
   if (threadId && command !== 'validate-ui-sync') {
     throw new Error('--thread is only valid with validate-ui-sync');
   }
-  return { command, threadId };
+  if (configHome && command !== 'config-reset') {
+    throw new Error('--config-home is only valid with config reset');
+  }
+  if (confirm && command !== 'config-reset') {
+    throw new Error('--confirm is only valid with config reset');
+  }
+  return { command, threadId, configHome, confirm };
 }
 
 function requireOptionValue(
@@ -126,6 +160,7 @@ function isCommand(value: string | undefined): value is Command {
   return value === 'run'
     || value === 'doctor'
     || value === 'validate-ui-sync'
+    || value === 'config-reset'
     || value === 'help';
 }
 
@@ -157,9 +192,11 @@ function helpText(): string {
     '  codex-feishu-bridge run',
     '  codex-feishu-bridge doctor',
     '  codex-feishu-bridge validate-ui-sync [--thread THREAD_ID]',
+    '  codex-feishu-bridge config reset [--config-home PATH] [--confirm]',
     '',
     'Configuration is read only from the process environment.',
     'validate-ui-sync without --thread lists recent workspace tasks.',
+    'config reset is a dry run until --confirm; it retains only .env and starts empty bindings.',
     '',
   ].join('\n');
 }

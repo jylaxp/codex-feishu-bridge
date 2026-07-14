@@ -24,7 +24,25 @@ test('help documents process-environment configuration only', async () => {
   }
 
   assert.match(output, /read only from the process environment/);
-  assert.doesNotMatch(output, /--env|\.env/);
+  assert.doesNotMatch(output, /--env/);
+  assert.match(output, /config reset/);
+});
+
+test('config reset defaults to a read-only dry run and requires explicit confirmation', async () => {
+  const originalWrite = process.stdout.write;
+  let output = '';
+  process.stdout.write = ((chunk: string | Uint8Array) => {
+    output += chunk.toString();
+    return true;
+  }) as typeof process.stdout.write;
+  try {
+    await runCli(['config', 'reset', '--config-home', '/tmp/cli-reset-dry-run'], {});
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+
+  assert.match(output, /reset_required/);
+  assert.match(output, /requiresConfirmation/);
 });
 
 test('registers shutdown signals before starting Bridge and preserves an early signal', async () => {
