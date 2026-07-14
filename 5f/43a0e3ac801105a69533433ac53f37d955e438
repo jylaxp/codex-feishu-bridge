@@ -1,0 +1,36 @@
+test/app/layouts.test.ts
+  s_4672ec237d452e::t_786522d5c1f343 29
+  s_4672ec237d452e::t_82b588f6e1ba09 28,30-47
+test/app/desktop-thread-stream-normalizer.test.ts
+  s_4672ec237d452e::t_2902239fc82a16 207-210
+src/app/cards/layouts.ts
+  s_4672ec237d452e::t_9d3ec61159a2ed 56,59-74,95,100-104,106-112
+  s_4672ec237d452e::t_351a45b8f30c17 105
+  s_4672ec237d452e::t_c51faba67bea63 113-114
+test/app/in-memory-orchestrator.test.ts
+  s_4672ec237d452e::t_2902239fc82a16 152-200,202,207-208
+  s_4672ec237d452e::t_1391cb38904043 201,203-205
+  s_4672ec237d452e::t_04fbbc4347b59e 206
+src/app/codex/desktop-thread-stream-normalizer.ts
+  s_4672ec237d452e::t_9d3ec61159a2ed 213-214,217-223
+src/app/in-memory-orchestrator.ts
+  s_4672ec237d452e::t_caaeef44b0b038 65,68-71,77,90,135-136,151-153,224-226,230,263,266-269,316-317,319-323,334-335,348,353,359-367,388,394,411-421,520-526,533-534,544-545,551-585,608-617,638-655
+  s_4672ec237d452e::t_4dbb90480fb13f 543
+  s_4672ec237d452e::t_d8307a865affac 656
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "5f43a0e3ac801105a69533433ac53f37d955e438",
+  "prompts": {},
+  "sessions": {
+    "s_4672ec237d452e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5be6-2b87-7190-8898-ae985cbeb51e",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    }
+  }
+}
