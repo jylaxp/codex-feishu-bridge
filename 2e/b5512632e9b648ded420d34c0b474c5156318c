@@ -1,0 +1,37 @@
+test/app/conversation-binding-service.test.ts
+  s_4672ec237d452e::t_5e332b017027a7 69-72,196,240-277,415
+  s_4672ec237d452e::t_d46441f27de234 215
+plans/2026-07-13-feishu-app-server-bridge/goal-mode-development-plan.md
+  s_4672ec237d452e::t_88c05703a2a41e 10,43
+README.md
+  s_4672ec237d452e::t_88c05703a2a41e 156-161
+plans/2026-07-13-feishu-app-server-bridge/deployment-guide.md
+  s_4672ec237d452e::t_88c05703a2a41e 102-103
+plans/2026-07-13-feishu-app-server-bridge/test-report.md
+  s_4672ec237d452e::t_c5c89bdc3e6153 9,19-20
+  s_4672ec237d452e::t_88c05703a2a41e 11-13,32-33
+plans/2026-07-13-feishu-app-server-bridge/code-review-report.md
+  s_4672ec237d452e::t_88c05703a2a41e 40
+  s_4672ec237d452e::t_01c27f6ed63474 39
+src/app/conversation-binding-service.ts
+  s_4672ec237d452e::t_ba7d33a67a861c 53-54,155,180,314,321,329,332,341,353-354,362-369,392-397,407-408
+  s_4672ec237d452e::t_d46441f27de234 177,352,360-361,381-384,445-446
+plans/2026-07-13-feishu-app-server-bridge/implementation-plan.md
+  s_4672ec237d452e::t_88c05703a2a41e 99
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "2eb5512632e9b648ded420d34c0b474c5156318c",
+  "prompts": {},
+  "sessions": {
+    "s_4672ec237d452e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5be6-2b87-7190-8898-ae985cbeb51e",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    }
+  }
+}
