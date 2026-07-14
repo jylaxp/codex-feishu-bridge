@@ -1,5 +1,6 @@
 import { ChildProcessWithoutNullStreams, spawn } from 'child_process';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import {
   MAX_NODE_MAJOR_EXCLUSIVE,
@@ -157,7 +158,9 @@ function ensurePrivateDirectory(directoryPath: string): void {
   } else {
     fs.mkdirSync(directoryPath, { recursive: true, mode: 0o700 });
   }
-  fs.chmodSync(directoryPath, 0o700);
+  if (process.platform !== 'win32') {
+    fs.chmodSync(directoryPath, 0o700);
+  }
   if (typeof process.getuid === 'function') {
     const stat = fs.statSync(directoryPath);
     if (stat.uid !== process.getuid()) {
@@ -181,6 +184,13 @@ export function prepareDataDirectory(dataDir: string): DataDirectoryLayout {
     logDir,
     temporaryDir,
   });
+}
+
+/** Prepares only the minimal config home used by the current runtime. */
+export function prepareConfigHome(configHome: string): string {
+  assertAbsolutePath(configHome, 'BRIDGE_CONFIG_HOME');
+  ensurePrivateDirectory(configHome);
+  return fs.realpathSync.native(configHome);
 }
 
 /**
@@ -207,7 +217,15 @@ export function runPreflight(
     ? canonicalManagedSocket(config.appServerSocketPath)
     : null;
 
-  const dataDirectory = prepareDataDirectory(config.dataDir);
+  const configHome = prepareConfigHome(config.configHome ?? config.dataDir ?? '');
+  // Kept as a compatibility-shaped preflight value while consumers migrate;
+  // new runtime code must use configHome and never open databasePath.
+  const dataDirectory = Object.freeze({
+    rootDir: configHome,
+    databasePath: path.join(configHome, 'bridge.db'),
+    logDir: configHome,
+    temporaryDir: fs.realpathSync.native(os.tmpdir()),
+  });
 
   const canonicalConfig: BridgeConfig = Object.freeze({
     ...config,
@@ -215,11 +233,12 @@ export function runPreflight(
     codexCwd,
     allowedWorkspaceRoots: Object.freeze([...allowedWorkspaceRoots]),
     appServerSocketPath,
-    dataDir: dataDirectory.rootDir,
+    configHome,
   });
 
   return Object.freeze({
     config: canonicalConfig,
+    configHome,
     dataDirectory,
     nodeVersion,
   });

@@ -22,7 +22,7 @@ function validEnvironment(root: string): NodeJS.ProcessEnv {
     CODEX_BIN: path.join(root, 'codex'),
     CODEX_CWD: path.join(root, 'workspace'),
     ALLOWED_WORKSPACE_ROOTS: path.join(root, 'workspace'),
-    BRIDGE_DATA_DIR: path.join(root, 'data'),
+    BRIDGE_CONFIG_HOME: path.join(root, 'config-home'),
     MAX_TEXT_LENGTH: '10000',
     CARD_UPDATE_INTERVAL_MS: '1500',
   };
@@ -69,7 +69,6 @@ async function run(): Promise<void> {
       'CODEX_BIN',
       'CODEX_CWD',
       'ALLOWED_WORKSPACE_ROOTS',
-      'BRIDGE_DATA_DIR',
     ];
     for (const key of requiredKeys) {
       const missing = { ...env };
@@ -87,6 +86,10 @@ async function run(): Promise<void> {
     );
     expectThrows(
       () => parseEnvironment({ ...env, CODEX_BIN: 'codex' }),
+      ConfigurationError,
+    );
+    expectThrows(
+      () => parseEnvironment({ ...env, BRIDGE_CONFIG_HOME: 'relative-config-home' }),
       ConfigurationError,
     );
     expectThrows(
@@ -130,11 +133,9 @@ async function run(): Promise<void> {
     const result = runPreflight(config, { nodeVersion: '24.18.0' });
     assert.strictEqual(result.config.codexBin, fs.realpathSync.native(codexBin));
     assert.strictEqual(result.config.codexCwd, fs.realpathSync.native(workspace));
-    assert.strictEqual(result.dataDirectory.rootDir, fs.realpathSync.native(path.join(root, 'data')));
+    assert.strictEqual(result.configHome, fs.realpathSync.native(path.join(root, 'config-home')));
     if (process.platform !== 'win32') {
-      assert.strictEqual(fs.statSync(result.dataDirectory.rootDir).mode & 0o777, 0o700);
-      assert.strictEqual(fs.statSync(result.dataDirectory.logDir).mode & 0o777, 0o700);
-      assert.strictEqual(fs.statSync(result.dataDirectory.temporaryDir).mode & 0o777, 0o700);
+      assert.strictEqual(fs.statSync(result.configHome).mode & 0o777, 0o700);
     }
 
     const shellMarker = path.join(root, 'shell-marker');
@@ -153,7 +154,7 @@ async function run(): Promise<void> {
     );
 
     const symlinkData = path.join(root, 'symlink-data');
-    fs.symlinkSync(path.join(root, 'data'), symlinkData, 'dir');
+    fs.symlinkSync(path.join(root, 'config-home'), symlinkData, 'dir');
     expectThrows(() => prepareDataDirectory(symlinkData), PreflightError);
 
     const ordinaryPath = path.join(root, 'not-a-socket');

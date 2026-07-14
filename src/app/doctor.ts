@@ -1,67 +1,57 @@
-import { parseEnvironment } from './config';
+import { statSync } from 'node:fs';
+
+import { BindingStore } from './binding-store';
 import { verifyCodexRuntimeContract } from './codex/runtime-contract';
-import { BridgeDatabase } from './db/database';
-import { BridgeRepositories } from './db/repositories';
+import { parseEnvironment } from './config';
 import { BridgeConfig } from './domain';
 import { runPreflight } from './preflight';
 
 export interface DoctorReport {
   readonly ok: true;
   readonly nodeVersion: string;
-  readonly sqliteVersion: string;
   readonly codexVersion: string;
   readonly codexBinary: string;
   readonly appServerMode: BridgeConfig['appServerMode'];
   readonly schemaDigest: string;
-  readonly databaseSchemaVersion: number;
-  readonly workspace: string;
+  readonly bindingCount: number;
+  readonly bindingsFileBytes: number;
   readonly allowedWorkspaceRootCount: number;
   readonly allowedChatCount: number;
   readonly authorizedUserCount: number;
   readonly allowedApproverCount: number;
-  readonly failedOutboxCount: number;
 }
 
 export interface DoctorDependencies {
   readonly verifyRuntimeContract?: typeof verifyCodexRuntimeContract;
+  readonly nodeVersion?: string;
 }
 
-/** Verifies the exact runtime binary, generated protocol, SQLite, and security boundaries. */
+/** Reports runtime capabilities without opening a database or reading task history. */
 export async function runDoctor(
   env: NodeJS.ProcessEnv = process.env,
   dependencies: DoctorDependencies = {},
 ): Promise<DoctorReport> {
-  const preflight = runPreflight(parseEnvironment(env));
-  const config = preflight.config;
-  const database = new BridgeDatabase(preflight.dataDirectory.databasePath);
-  try {
-    database.open();
-    const contract = await (dependencies.verifyRuntimeContract ?? verifyCodexRuntimeContract)(
-      config,
-      env,
-      preflight.dataDirectory.temporaryDir,
-    );
-    const sqliteVersion = database.prepare('SELECT sqlite_version() AS version').get()?.version;
-    if (typeof sqliteVersion !== 'string') {
-      throw new Error('SQLite version could not be read');
-    }
-    return Object.freeze({
-      ok: true,
-      nodeVersion: preflight.nodeVersion,
-      sqliteVersion,
-      codexVersion: contract.codexVersion,
-      codexBinary: config.codexBin,
-      appServerMode: config.appServerMode,
-      schemaDigest: contract.schemaDigest,
-      databaseSchemaVersion: database.getSchemaVersion(),
-      workspace: config.codexCwd,
-      allowedWorkspaceRootCount: config.allowedWorkspaceRoots.length,
-      allowedChatCount: config.allowedChats.length,
-      authorizedUserCount: config.authorizedUsers.length,
-      allowedApproverCount: config.allowedApprovers.length,
-      failedOutboxCount: new BridgeRepositories(database).cardOutbox.countFailed(),
-    });
-  } finally {
-    database.close();
-  }
+  const preflight = runPreflight(parseEnvironment(env), { nodeVersion: dependencies.nodeVersion });
+  const store = new BindingStore(preflight.configHome);
+  store.load();
+  const contract = await (dependencies.verifyRuntimeContract ?? verifyCodexRuntimeContract)(
+    preflight.config,
+    env,
+    preflight.dataDirectory.temporaryDir,
+  );
+  const bindingsFileBytes = statSync(store.filePath, { throwIfNoEntry: false })?.size ?? 0;
+  return Object.freeze({
+    ok: true,
+    nodeVersion: preflight.nodeVersion,
+    codexVersion: contract.codexVersion,
+    codexBinary: preflight.config.codexBin,
+    appServerMode: preflight.config.appServerMode,
+    schemaDigest: contract.schemaDigest,
+    bindingCount: store.list().length,
+    bindingsFileBytes,
+    allowedWorkspaceRootCount: preflight.config.allowedWorkspaceRoots.length,
+    allowedChatCount: preflight.config.allowedChats.length,
+    authorizedUserCount: preflight.config.authorizedUsers.length,
+    allowedApproverCount: preflight.config.allowedApprovers.length,
+  });
 }

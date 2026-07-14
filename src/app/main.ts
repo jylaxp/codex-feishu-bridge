@@ -1,30 +1,22 @@
 import { randomUUID } from 'node:crypto';
 
-import { ApprovalService } from './approval-service';
-import { AsyncWorkTracker } from './async-work-tracker';
-import { ConversationBindingService } from './conversation-binding-service';
-import { hydrateTaskCardActions } from './cards/action-hydrator';
-import { CardKitClient, LarkReplyApi } from './cards/cardkit-client';
-import { CardOutboxWorker } from './cards/outbox-worker';
-import { DurableCardProjector } from './cards/projector';
-import { AppServerClient, AppServerTransportOptions } from './codex/app-server-client';
+import { BindingStore } from './binding-store';
+import { CardKitClient, type LarkReplyApi } from './cards/cardkit-client';
+import { AppServerClient, type AppServerTransportOptions } from './codex/app-server-client';
 import { SUPPORTED_APP_SERVER_VERSION } from './codex/contract';
 import { DesktopIpcClient } from './codex/desktop-ipc-client';
+import { DesktopIpcSupervisor } from './codex/desktop-ipc-supervisor';
 import { DesktopThreadStreamNormalizer } from './codex/desktop-thread-stream-normalizer';
-import { AppServerEventCoordinator } from './codex/event-coordinator';
-import { ServerNotification } from './codex/protocol';
 import { verifyCodexRuntimeContract } from './codex/runtime-contract';
 import { parseEnvironment } from './config';
-import { BridgeDatabase } from './db/database';
-import { BridgeRepositories } from './db/repositories';
+import { ConversationBindingServiceV3 } from './conversation-binding-service-v3';
 import { BridgeConfig } from './domain';
+import { InMemoryOrchestrator } from './in-memory-orchestrator';
 import { CachedTenantTokenProvider, createLarkRuntimeClients } from './lark/client';
-import { LarkEventServer } from './lark/event-server';
+import { LarkEventServer, toast } from './lark/event-server';
 import { BridgeLogger } from './logger';
 import { runPreflight } from './preflight';
 import { BridgeProcessLock } from './process-lock';
-import { AppServerSupervisor, RecoveryService } from './recovery-service';
-import { TaskOrchestrator } from './task-orchestrator';
 
 export interface BridgeRuntime {
   readonly config: BridgeConfig;
@@ -32,297 +24,121 @@ export interface BridgeRuntime {
   stop(): Promise<void>;
 }
 
-/** Builds and starts the clean-slate Feishu -> App Server -> CardKit runtime. */
+/**
+ * Starts the ephemeral Desktop-follower Bridge. The only business file loaded
+ * here is bindings.json; an interrupted process never recovers or replays a
+ * task, card update, approval, queue item, or user prompt.
+ */
 export async function startBridge(
   env: NodeJS.ProcessEnv = process.env,
   logger: BridgeLogger = new BridgeLogger(),
 ): Promise<BridgeRuntime> {
   const preflight = runPreflight(parseEnvironment(env));
   const config = preflight.config;
-  const processLock = new BridgeProcessLock(preflight.dataDirectory.rootDir);
+  const processLock = new BridgeProcessLock(preflight.configHome);
   processLock.acquire();
-  const database = new BridgeDatabase(preflight.dataDirectory.databasePath);
-  try {
-    await verifyCodexRuntimeContract(config, env, preflight.dataDirectory.temporaryDir);
-    database.open();
-    return await startOpenedBridge(config, env, logger, database, processLock);
-  } catch (error) {
-    const cleanupErrors: Error[] = [toError(error)];
-    captureCleanupError(cleanupErrors, () => database.close());
-    captureCleanupError(cleanupErrors, () => processLock.release());
-    if (cleanupErrors.length > 1) {
-      throw new AggregateError(cleanupErrors, 'Bridge startup and cleanup both failed');
-    }
-    throw error;
-  }
-}
 
-async function startOpenedBridge(
-  config: BridgeConfig,
-  env: NodeJS.ProcessEnv,
-  logger: BridgeLogger,
-  database: BridgeDatabase,
-  processLock: BridgeProcessLock,
-): Promise<BridgeRuntime> {
-  let resolveRuntimeFailure!: (error: Error) => void;
-  const runtimeFailure = new Promise<Error>((resolve) => {
-    resolveRuntimeFailure = resolve;
+  let resolveFailure!: (error: Error) => void;
+  const failure = new Promise<Error>((resolve) => {
+    resolveFailure = resolve;
   });
-  const lark = createLarkRuntimeClients(config, {
-    logSink: (level) => {
-      if (level === 'error') {
-        logger.error('lark_sdk_error', new Error('LarkSdkError'));
-        return;
-      }
-      logger.warn('lark_sdk_warning');
-    },
-    onTerminalWebsocketError: (error) => {
-      logger.error('lark_websocket_terminated', error);
-      resolveRuntimeFailure(error);
-    },
-  });
-  const tokenProvider = new CachedTenantTokenProvider(
-    config.larkAppId,
-    config.larkAppSecret,
-  );
-  const cardKit = new CardKitClient(
-    tokenProvider,
-    lark.api as unknown as LarkReplyApi,
-  );
+  const bindings = new BindingStore(preflight.configHome);
   const appServer = new AppServerClient({
     transport: appServerTransport(config, env),
     clientInfo: {
       name: 'lark_codex_gateway',
       title: 'Lark Codex Gateway',
-      version: '2.0.0',
+      version: '3.0.0',
     },
     expectedServerVersion: SUPPORTED_APP_SERVER_VERSION,
   });
-  const desktopIpc = new DesktopIpcClient();
-  const desktopStreamNormalizer = new DesktopThreadStreamNormalizer();
-  const conversationBindings = new ConversationBindingService(
-    database,
-    config,
-    appServer,
-    cardKit,
-  );
-  const repositories = new BridgeRepositories(database);
-  const runtimeInstanceId = randomUUID();
-  let coordinatorReference: AppServerEventCoordinator | undefined;
-  const projector = new DurableCardProjector(
-    database,
-    config,
-    config.cardUpdateIntervalMs,
-    Date.now,
-    (error) => logger.error('card_projection_failed', error),
-    (taskId) => coordinatorReference?.getTaskProjectionSnapshot(taskId),
-  );
-  const outboxWorker = new CardOutboxWorker({
-    outbox: repositories.cardOutbox,
-    tasks: repositories.tasks,
-    cardKit,
-    prepareCard: (task, card) => hydrateTaskCardActions(
-      card,
-      config.larkAppSecret,
-      task.id,
-    ),
-  }, {
-    workerId: `card-worker-${randomUUID()}`,
-    onError: (error) => logger.error('card_outbox_failed', error),
-    onDeliveryFailed: (failure) => logger.error(
-      'card_delivery_failed',
-      new Error('CardKit delivery reached a terminal failure'),
-      {
-        outboxId: failure.outboxId,
-        taskId: failure.taskId,
-        deliveryErrorCode: failure.errorCode,
-      },
-    ),
+  const desktop = new DesktopIpcClient();
+  const normalizer = new DesktopThreadStreamNormalizer();
+  const lark = createLarkRuntimeClients(config, {
+    logSink: (level) => logger.warn(`lark_sdk_${level}`),
+    onTerminalWebsocketError: resolveFailure,
   });
-  const coordinator = new AppServerEventCoordinator({
-    tasks: repositories.tasks,
-    bindings: repositories.threadBindings,
-    taskItems: repositories.taskItems,
-    scheduleProjection: (taskId, immediate) => projector.request(taskId, immediate),
+  const cards = new CardKitClient(
+    new CachedTenantTokenProvider(config.larkAppId, config.larkAppSecret),
+    lark.api as unknown as LarkReplyApi,
+  );
+  const orchestrator = new InMemoryOrchestrator(config, desktop, cards, {
+    onCardError: (error) => logger.error('card_update_failed', error),
   });
-  coordinatorReference = coordinator;
-  const orchestrator = new TaskOrchestrator(
-    database,
+  const conversationBindings = new ConversationBindingServiceV3(
     config,
+    bindings,
     appServer,
-    cardKit,
-    projector,
-    {
-      runtimeInstanceId,
-      turnEvents: coordinator,
-      executionClient: desktopIpc,
-      resumeThreadBeforeTurnStart: false,
+    cards,
+  );
+  const desktopSupervisor = new DesktopIpcSupervisor(desktop, {
+    onReady: (handshake) => {
+      normalizer.beginEpoch(handshake.epoch);
+      logger.info('desktop_ipc_ready', { epoch: handshake.epoch });
     },
-  );
-  const approvals = new ApprovalService(
-    database,
-    config,
-    appServer,
-    cardKit,
-    orchestrator,
-    projector,
-    { runtimeInstanceId },
-  );
-  const recovery = new RecoveryService(database, config, appServer, projector, {
-    onSlotAvailable: () => orchestrator.startNextQueued(),
-    onPendingCancellation: (taskId) => orchestrator.recoverPendingCancellation(taskId),
-    onRecoveryComplete: () => approvals.drainDeferredRequests(),
-    onRecoverUnsentDispatch: (taskId, method) => (
-      orchestrator.recoverUnsentDispatch(taskId, method)
-    ),
-    onRecoverUnsentSteer: (inboxId) => orchestrator.recoverUnsentSteer(inboxId),
-    runtimeInstanceId,
+    onDisconnected: async (epoch) => {
+      normalizer.reset();
+      orchestrator.abandonAll();
+      logger.warn('desktop_ipc_abandoned_runtime', { epoch });
+    },
+    onReconnectError: (error) => logger.error('desktop_ipc_reconnect_failed', error),
   });
-  const supervisor = new AppServerSupervisor(appServer, recovery, {
-    onError: (error) => logger.error('app_server_reconnect_failed', error),
-  });
-  const larkWork = new AsyncWorkTracker(16);
-  const appServerWork = new AsyncWorkTracker();
   const eventServer = new LarkEventServer(lark.websocket, config, {
-    onMessage: (message) => larkWork.track(async () => {
+    onMessage: async (message) => {
       if (await conversationBindings.handleCommand(message)) {
-        logger.info('conversation_binding_command_processed', {
-          chatId: message.chatId,
-          command: message.text,
-        });
         return;
       }
-      const outcome = await orchestrator.handleInbound(message);
-      if (outcome.type === 'unbound') {
+      const binding = conversationBindings.getBinding(message.tenantKey, message.chatId);
+      if (!binding) {
         await conversationBindings.ensureBoundOrPrompt(message);
-        logger.info('lark_message_waiting_for_conversation_binding', {
-          chatId: message.chatId,
-        });
+        return;
       }
-      logger.info('lark_message_processed', { outcome: outcome.type });
-    }),
-    onCardAction: (action) => larkWork.track(() => (
-      action.action === 'binding'
-        ? conversationBindings.handleCardAction({
-            tenantKey: action.tenantKey,
-            chatId: action.chatId,
-            messageId: action.messageId,
-            operatorOpenId: action.operatorOpenId,
-            action: 'binding',
-            token: action.token,
-          })
-        : approvals.handleCardAction(action)
-    )),
+      await orchestrator.handleInbound(message, binding);
+    },
+    onCardAction: async (action) => {
+      if (action.action === 'binding') {
+        return conversationBindings.handleCardAction(action);
+      }
+      if (action.action === 'cancel') {
+        const cancelled = await orchestrator.cancel(action);
+        return toast(cancelled ? '已请求取消任务' : '任务已结束或操作已失效', cancelled ? 'success' : 'warning');
+      }
+      return toast('当前 Desktop 审批适配不可用，操作未提交', 'warning');
+    },
     onRejectedEvent: (reason) => logger.warn('lark_event_rejected', { reason }),
     onHandlerError: (kind, error) => logger.error('lark_event_handler_failed', error, { kind }),
   });
-
-  const unsubscribeNotification = appServer.onNotification((notification) => {
-    handleNotification(
-      notification,
-      coordinator,
-      orchestrator,
-      appServerWork,
-      logger,
-    );
-  });
-  const unsubscribeDesktopStream = desktopIpc.onThreadStreamStateChanged((message) => {
-    try {
-      for (const notification of desktopStreamNormalizer.handle(message)) {
-        handleNotification(
-          notification,
-          coordinator,
-          orchestrator,
-          appServerWork,
-          logger,
-        );
-      }
-    } catch (error) {
-      logger.error('desktop_ipc_stream_reduction_failed', error, {
-        method: message.method,
-        version: message.version,
-      });
-    }
-  });
-  const unsubscribeRequest = appServer.onServerRequest((request, epoch) => {
-    void appServerWork.track(
-      () => approvals.handleServerRequest(request, epoch),
-    ).catch((error: unknown) => {
-      logger.error('approval_request_failed', error);
-    });
-  });
-  const unsubscribeDiagnostics = appServer.subscribe((event) => {
-    if (event.type === 'protocolError') {
-      logger.warn('app_server_protocol_error', { reason: event.diagnostic.reason });
-    } else if (event.type === 'stderr') {
-      logger.warn('app_server_stderr', { bytes: Buffer.byteLength(event.text, 'utf8') });
+  const unsubscribeDesktop = desktop.onThreadStreamStateChanged((message) => {
+    for (const notification of normalizer.handle(message)) {
+      orchestrator.handleNotification(notification);
     }
   });
 
-  let started = false;
+  let stopped = false;
   try {
-    const desktopHandshake = await desktopIpc.start();
-    logger.info('desktop_ipc_ready', {
-      epoch: desktopHandshake.epoch,
-    });
-    await supervisor.start();
-    outboxWorker.start();
+    bindings.load();
+    await verifyCodexRuntimeContract(config, env, preflight.dataDirectory.temporaryDir);
+    await desktopSupervisor.start();
+    await appServer.start();
     await eventServer.start();
-    started = true;
     logger.info('bridge_started', {
-      appServerMode: config.appServerMode,
       executionMode: 'desktop_follower',
-      schemaVersion: database.getSchemaVersion(),
+      runtimeInstance: randomUUID().slice(0, 8),
     });
   } catch (error) {
-    try {
-      await stopRuntime({
-        eventServer,
-        larkWork,
-        supervisor,
-        desktopIpc,
-        unsubscribeDesktopStream,
-        unsubscribeNotification,
-        unsubscribeRequest,
-        unsubscribeDiagnostics,
-        appServerWork,
-        projector,
-        outboxWorker,
-        database,
-        processLock,
-      });
-    } catch (cleanupError) {
-      throw new AggregateError(
-        [toError(error), toError(cleanupError)],
-        'Bridge startup and cleanup both failed',
-      );
-    }
+    await stopResources(eventServer, desktopSupervisor, appServer, unsubscribeDesktop, processLock);
     throw error;
   }
 
   return Object.freeze({
     config,
-    failure: runtimeFailure,
+    failure,
     stop: async () => {
-      if (!started) {
+      if (stopped) {
         return;
       }
-      started = false;
-      await stopRuntime({
-        eventServer,
-        larkWork,
-        supervisor,
-        desktopIpc,
-        unsubscribeDesktopStream,
-        unsubscribeNotification,
-        unsubscribeRequest,
-        unsubscribeDiagnostics,
-        appServerWork,
-        projector,
-        outboxWorker,
-        database,
-        processLock,
-      });
+      stopped = true;
+      await stopResources(eventServer, desktopSupervisor, appServer, unsubscribeDesktop, processLock);
       logger.info('bridge_stopped');
     },
   });
@@ -341,103 +157,43 @@ function appServerTransport(
       ...(config.appServerSocketPath ? { socketPath: config.appServerSocketPath } : {}),
     };
   }
-  return {
-    mode: 'owned_stdio',
-    codexBin: config.codexBin,
-    spawnCwd: config.codexCwd,
-    env,
-  };
+  return { mode: 'owned_stdio', codexBin: config.codexBin, spawnCwd: config.codexCwd, env };
 }
 
-function handleNotification(
-  notification: ServerNotification,
-  coordinator: AppServerEventCoordinator,
-  orchestrator: TaskOrchestrator,
-  appServerWork: AsyncWorkTracker,
-  logger: BridgeLogger,
-): void {
-  try {
-    const outcome = coordinator.handle(notification);
-    if (outcome === 'TERMINAL') {
-      void appServerWork.track(
-        () => orchestrator.startNextQueued(),
-      ).catch((error: unknown) => {
-        logger.error('queued_task_start_failed', error);
-      });
-    }
-  } catch (error) {
-    logger.error('app_server_event_reduction_failed', error, {
-      method: notification.method,
-    });
-  }
-}
-
-interface RuntimeResources {
-  readonly eventServer: LarkEventServer;
-  readonly larkWork: AsyncWorkTracker;
-  readonly supervisor: AppServerSupervisor;
-  readonly desktopIpc: DesktopIpcClient;
-  readonly unsubscribeDesktopStream: () => void;
-  readonly unsubscribeNotification: () => void;
-  readonly unsubscribeRequest: () => void;
-  readonly unsubscribeDiagnostics: () => void;
-  readonly appServerWork: AsyncWorkTracker;
-  readonly projector: DurableCardProjector;
-  readonly outboxWorker: CardOutboxWorker;
-  readonly database: BridgeDatabase;
-  readonly processLock: BridgeProcessLock;
-}
-
-async function stopRuntime(resources: RuntimeResources): Promise<void> {
+async function stopResources(
+  eventServer: LarkEventServer,
+  desktopSupervisor: DesktopIpcSupervisor,
+  appServer: AppServerClient,
+  unsubscribeDesktop: () => void,
+  processLock: BridgeProcessLock,
+): Promise<void> {
   const errors: Error[] = [];
-  captureCleanupError(errors, () => resources.eventServer.stop());
-  resources.larkWork.close();
-  await captureAsyncCleanupError(errors, () => resources.larkWork.drain());
-
-  captureCleanupError(errors, resources.unsubscribeDesktopStream);
-  await captureAsyncCleanupError(errors, () => resources.desktopIpc.stop());
-  await captureAsyncCleanupError(errors, () => resources.supervisor.stop());
-  captureCleanupError(errors, resources.unsubscribeNotification);
-  captureCleanupError(errors, resources.unsubscribeRequest);
-  captureCleanupError(errors, resources.unsubscribeDiagnostics);
-  resources.appServerWork.close();
-  await captureAsyncCleanupError(errors, () => resources.appServerWork.drain());
-
-  await captureAsyncCleanupError(errors, () => resources.outboxWorker.stop());
-  await captureAsyncCleanupError(errors, () => resources.projector.drain());
-  captureCleanupError(errors, () => resources.projector.stop());
-  await captureAsyncCleanupError(errors, async () => {
-    while (await resources.outboxWorker.drainOnce()) {
-      // Drain every delivery which is due now; delayed retries remain durable.
-    }
-  });
-  captureCleanupError(errors, () => resources.database.close());
-  captureCleanupError(errors, () => resources.processLock.release());
-
+  try {
+    eventServer.stop();
+  } catch (error) {
+    errors.push(toError(error));
+  }
+  unsubscribeDesktop();
+  try {
+    await desktopSupervisor.stop();
+  } catch (error) {
+    errors.push(toError(error));
+  }
+  try {
+    await appServer.stop();
+  } catch (error) {
+    errors.push(toError(error));
+  }
+  try {
+    processLock.release();
+  } catch (error) {
+    errors.push(toError(error));
+  }
   if (errors.length > 0) {
     throw new AggregateError(errors, 'Bridge shutdown did not complete cleanly');
   }
 }
 
-function captureCleanupError(errors: Error[], operation: () => void): void {
-  try {
-    operation();
-  } catch (error) {
-    errors.push(toError(error));
-  }
-}
-
-async function captureAsyncCleanupError(
-  errors: Error[],
-  operation: () => Promise<unknown>,
-): Promise<void> {
-  try {
-    await operation();
-  } catch (error) {
-    errors.push(toError(error));
-  }
-}
-
 function toError(error: unknown): Error {
-  return error instanceof Error ? error : new Error('Unknown Bridge shutdown error');
+  return error instanceof Error ? error : new Error('Bridge cleanup failed');
 }

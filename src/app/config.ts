@@ -1,4 +1,5 @@
 import * as path from 'path';
+import * as os from 'os';
 import { BridgeConfig } from './domain';
 
 export const MIN_NODE_VERSION = '24.18.0';
@@ -37,6 +38,17 @@ function requireAbsolutePath(env: NodeJS.ProcessEnv, key: string): string {
     throw new ConfigurationError(`${key} must be an absolute path`);
   }
   return path.normalize(value);
+}
+
+function configHome(env: NodeJS.ProcessEnv): string {
+  const configured = env.BRIDGE_CONFIG_HOME?.trim();
+  if (configured) {
+    if (!path.isAbsolute(configured)) {
+      throw new ConfigurationError('BRIDGE_CONFIG_HOME must be an absolute path');
+    }
+    return path.normalize(configured);
+  }
+  return path.join(os.homedir(), '.codex-feishu-bridge');
 }
 
 function requireLarkAppId(env: NodeJS.ProcessEnv): string {
@@ -130,7 +142,7 @@ export function parseEnvironment(env: NodeJS.ProcessEnv): BridgeConfig {
     codexBin: requireAbsolutePath(env, 'CODEX_BIN'),
     codexCwd: requireAbsolutePath(env, 'CODEX_CWD'),
     allowedWorkspaceRoots: parseRequiredAbsolutePathList(env, 'ALLOWED_WORKSPACE_ROOTS'),
-    dataDir: requireAbsolutePath(env, 'BRIDGE_DATA_DIR'),
+    configHome: configHome(env),
     maxTextLength: parseBoundedInteger(
       env,
       'MAX_TEXT_LENGTH',

@@ -56,7 +56,10 @@ export interface BridgeConfig {
   readonly codexBin: string;
   readonly codexCwd: string;
   readonly allowedWorkspaceRoots: readonly string[];
-  readonly dataDir: string;
+  /** Current runtime home; only .env and bindings.json are persistent state. */
+  readonly configHome?: string;
+  /** @deprecated Legacy SQLite data directory. New runtime never uses this path. */
+  readonly dataDir?: string;
   readonly maxTextLength: number;
   readonly cardUpdateIntervalMs: number;
   readonly maxQueuedTasks: number;
@@ -71,6 +74,7 @@ export interface DataDirectoryLayout {
 
 export interface PreflightResult {
   readonly config: BridgeConfig;
+  readonly configHome: string;
   readonly dataDirectory: DataDirectoryLayout;
   readonly nodeVersion: string;
 }
