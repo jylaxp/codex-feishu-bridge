@@ -1,0 +1,34 @@
+src/app/codex/desktop-thread-stream-normalizer.ts
+  s_4672ec237d452e::t_0dd1bec396dc78 114-128,150-151,159-164
+  s_4672ec237d452e::t_cd1783623823f8 152-158
+  s_4672ec237d452e::t_880d3e9231893f 165
+src/app/in-memory-orchestrator.ts
+  s_4672ec237d452e::t_be830dd257b2cc 395,441-442,452,454-455,461-521
+  s_4672ec237d452e::t_b82d081486ccd0 36,59-65,81,99,226-227,242-248,254,294-296,341-342,381-394
+  s_4672ec237d452e::t_d07b578fd329c8 396
+  s_4672ec237d452e::t_34955fe013ba11 522
+src/app/main.ts
+  s_4672ec237d452e::t_c42ba840f2b1f9 68
+src/app/cards/layouts.ts
+  s_4672ec237d452e::t_0dd1bec396dc78 56-57
+src/app/codex/protocol.ts
+  s_4672ec237d452e::t_0dd1bec396dc78 266-269
+test/app/desktop-thread-stream-normalizer.test.ts
+  s_4672ec237d452e::t_19e617a1a98813 209-237
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "11fd706c7ffe5038aebf335e96ae266c1d5bb6ba",
+  "prompts": {},
+  "sessions": {
+    "s_4672ec237d452e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5be6-2b87-7190-8898-ae985cbeb51e",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    }
+  }
+}
