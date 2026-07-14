@@ -1,0 +1,22 @@
+test/app/event-server.test.ts
+  s_4672ec237d452e::t_1267f7fe528399 99-113
+src/app/lark/event-server.ts
+  s_4672ec237d452e::t_1267f7fe528399 35-38,68-73,96
+  s_4672ec237d452e::t_b03b02be64289e 15-16,39,67
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "bf34a69673787083624594aeaa368451de9886ef",
+  "prompts": {},
+  "sessions": {
+    "s_4672ec237d452e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5be6-2b87-7190-8898-ae985cbeb51e",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    }
+  }
+}
