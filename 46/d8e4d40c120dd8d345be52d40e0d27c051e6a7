@@ -1,0 +1,43 @@
+src/app/codex/desktop-approval-adapter.ts
+  s_4672ec237d452e::t_007c04ec1d60c0 1-58,62-144
+  s_4672ec237d452e::t_fdc2349ed2c00d 59-61
+test/app/desktop-approval-service.test.ts
+  s_4672ec237d452e::t_d8054f67f24262 1-146
+src/app/desktop-approval-service.ts
+  s_4672ec237d452e::t_c2feea2f2d961e 1-91,97-103,105-167
+  s_4672ec237d452e::t_928cecff0333dd 92-96,104
+test/app/desktop-ipc-client.test.ts
+  s_4672ec237d452e::t_4fb3296360077d 223-258
+src/app/codex/desktop-thread-stream-normalizer.ts
+  s_4672ec237d452e::t_1e38d18344a08a 5-8,25-26,41,52,56-62,65,78,86-102
+test/app/desktop-thread-stream-normalizer.test.ts
+  s_4672ec237d452e::t_ab42c94f73d958 265-270,276-297
+  s_4672ec237d452e::t_5a56868242b48e 271-275
+test/app/desktop-approval-adapter.test.ts
+  s_4672ec237d452e::t_d8054f67f24262 1-53
+src/app/codex/desktop-ipc-client.ts
+  s_4672ec237d452e::t_a13df216741847 18-21,110-116,379-402
+  s_4672ec237d452e::t_b09651227a78fa 403-405
+  s_4672ec237d452e::t_12a030dd47014f 406-407
+src/app/main.ts
+  s_4672ec237d452e::t_fac44119428fef 13,69,83,109,119-123,137-145,157-165,192-193,203-204
+src/app/in-memory-orchestrator.ts
+  s_4672ec237d452e::t_f8c1fdc21425b1 40-45,162-195
+  s_4672ec237d452e::t_75c78d12519ee0 196
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "46d8e4d40c120dd8d345be52d40e0d27c051e6a7",
+  "prompts": {},
+  "sessions": {
+    "s_4672ec237d452e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5be6-2b87-7190-8898-ae985cbeb51e",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    }
+  }
+}
