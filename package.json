@@ -1,28 +1,41 @@
 {
   "name": "codex-feishu-bridge",
-  "version": "1.0.0",
-  "description": "Local bridge connecting Feishu Bot to Codex App Server",
-  "main": "dist/index.js",
+  "version": "2.0.0",
+  "description": "Feishu CardKit bridge for the official Codex App Server event stream",
+  "main": "dist/app/main.js",
   "bin": {
-    "codex-feishu-bridge": "./dist/cli.js"
+    "codex-feishu-bridge": "./dist/app/cli.js"
   },
+  "files": [
+    "dist/app",
+    "README.md",
+    ".env.example"
+  ],
   "scripts": {
     "prepare": "npm run build",
-    "build": "tsc",
-    "start": "ts-node src/index.ts",
-    "test": "ts-node test/test.ts"
+    "build": "npm run build:app",
+    "build:app": "npm run clean:app && tsc -p tsconfig.app.json",
+    "build:test": "node scripts/clean-app-build.mjs test && tsc -p tsconfig.test.json",
+    "clean:app": "node scripts/clean-app-build.mjs",
+    "start": "node dist/app/cli.js run",
+    "doctor": "node dist/app/cli.js doctor",
+    "validate:ui-sync": "node dist/app/cli.js validate-ui-sync",
+    "test": "npm run test:app",
+    "test:app": "npm run build:test && node --test dist-test/test/app/*.test.js",
+    "typecheck:app": "tsc -p tsconfig.app.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "check:app": "npm run typecheck:app && npm run test:app && npm run build:app",
+    "check:package": "node scripts/check-package.mjs",
+    "check": "npm run check:app && npm run check:package"
   },
+  "engines": {
+    "node": ">=24.18.0 <25"
+  },
+  "packageManager": "npm@11.16.0",
   "dependencies": {
-    "@larksuiteoapi/node-sdk": "^1.31.0",
-    "@types/ws": "^8.18.1",
-    "dotenv": "^16.4.5",
-    "qrcode-terminal": "^0.12.0",
-    "ws": "^8.21.0"
+    "@larksuiteoapi/node-sdk": "^1.31.0"
   },
   "devDependencies": {
-    "@types/node": "^20.11.0",
-    "@types/qrcode-terminal": "^0.12.2",
-    "ts-node": "^10.9.2",
+    "@types/node": "^24.13.3",
     "typescript": "^5.3.3"
   }
 }

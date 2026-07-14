@@ -1,189 +1,232 @@
-# 🔌 Codex-Feishu Bridge (Codex-飞书网桥)
+# Codex Feishu Bridge 2
 
-Codex-飞书网桥 (Codex-Feishu Bridge) 是一个本地桥接程序，用于将飞书机器人服务（Feishu Bot）桥接至本地的 Codex 桌面客户端或 App Server。
+这是一个基于官方 `codex app-server` 的飞书实时桥。飞书文本消息被转换为 Codex thread/turn，App Server 的
+`thread/*`、`turn/*`、`item/*` 事件驱动飞书 CardKit 卡片，命令和文件变更审批通过卡片按钮返回 App Server。
 
-通过对 Codex 桌面端及其服务底层的深入分析，网桥实现了飞书高级 CardKit 消息卡片的实时流式渲染与后台服务自动化绑定。若您对底层的通信协议、私有套接字接口与数据帧封装细节感兴趣，请参阅独立的 [技术实现与架构方案文档 (TECHNICAL.md)](./TECHNICAL.md)。
+版本 2 是全新主链，不读取旧 JSON 会话、不访问 ChatGPT/Codex 私有数据库、不注入 Electron，也不依赖
+Desktop IPC。飞书卡片是生产环境中确定可控的实时 UI；ChatGPT Desktop 页面同步必须通过独立验证命令实测。
 
----
+## 数据流
 
-## 📖 目录
-- [🔌 Codex-Feishu Bridge (Codex-飞书网桥)](#-codex-feishu-bridge-codex-飞书网桥)
-  - [📖 目录](#-目录)
-  - [📦 安装与使用指南](#-安装与使用指南)
-    - [1. 全局安装](#1-全局安装)
-    - [2. 初始化配置 (支持飞书扫码自动配置 🚀)](#2-初始化配置-支持飞书扫码自动配置-)
-    - [3. 运行网桥服务](#3-运行网桥服务)
-  - [⚙️ 配置文件与存储说明](#️-配置文件与存储说明)
-    - [工作目录结构](#工作目录结构)
-    - [配置文件 `.env` 详细参数说明](#配置文件-env-详细参数说明)
-  - [💬 飞书机器人交互指令说明](#-飞书机器人交互指令说明)
-  - [🔬 架构与底层协议原理](#-架构与底层协议原理)
+```text
+飞书 WebSocket 事件
+  -> tenant/chat/user 白名单与 inbox 幂等
+  -> /bind 从 thread/list 选择 ChatGPT 会话并持久绑定
+  -> 先创建 CardKit 任务卡
+  -> 只允许 thread/resume；未绑定时拒绝创建任务
+  -> turn/start；同一 root 的运行中补充消息走 turn/steer
+  -> App Server notification / approval request
+  -> 内存事件归约 + SQLite durable state/outbox
+  -> CardKit 完整卡片更新与 terminal finalize
+```
 
----
+核心保证：
 
-## 📦 安装与使用指南
+- 初始卡片发送失败时不会启动模型。
+- Bridge 从不替用户新建 ChatGPT 会话；每个飞书 chat 必须先显式选择已有会话。
+- durable intake 完成后的重复飞书事件不会重复建 thread 或启动 turn；初始建卡跨网络崩溃不具备严格
+  exactly-once，可能留下孤儿卡并需要人工对账。
+- 当前版本只支持单实例部署，并且全局只允许一个写 turn；不同 root 按 durable 插入顺序等待，即使后到任务的
+  CardKit 建卡先完成，也不能越过更早任务。
+- mutating RPC 在 transport write 前记录真实 JSON-RPC ID；结果不确定时不盲目重发。
+- commentary、reasoning summary、命令输出和 final answer 分区；raw reasoning 不落库、不进卡片。
+- CardKit sequence 只在成功响应后推进，冲突时停止，不猜测下一序号。
+- 审批令牌为随机一次性 token，绑定 tenant/chat/审批卡/epoch/decision/TTL。
+- 任务取消令牌绑定 task，并在消费时校验 tenant/chat/任务卡及活动状态；它不绑定 epoch 或固定 TTL。
 
-我们提供了全局命令行 CLI 工具，帮助您快速配置并以常驻守护进程的方式运行网桥。
+## 环境要求
 
-### 1. 全局安装
+- Node.js `24.18.0`，项目包含 `.nvmrc`。
+- 本机可执行的 Codex CLI；当前发布只支持精确版本 `codex-cli 0.144.3` 及其已锁定 schema。
+- 飞书自建应用已启用机器人、WebSocket 事件订阅和 CardKit/消息权限。
+- `CODEX_CWD` 必须位于 `ALLOWED_WORKSPACE_ROOTS` 内。
 
-如果该网桥没有发布到 NPM 官方公开源，您可以通过以下三种方式进行全局安装 and 共享：
+```bash
+nvm install
+nvm use
+npm ci
+npm run check
+```
 
-* **方式 A：通过 Git 仓库远程安装 (推荐，适合版本共享)**
-  如果您将源码提交到了 GitHub 或私有 Git 仓库，其他人可以直接通过 Git 地址进行全局安装：
-  ```bash
-  npm install -g git+https://github.com/jylaxp/codex-feishu-bridge.git
-  ```
+## 配置
 
-* **方式 B：本地源码安装 (适合开发调试)**
-  在源码根目录（`bridge` 文件夹）下运行以下命令进行全局挂载链接：
-  ```bash
-  # 进入项目目录并挂载命令
-  npm link
-  ```
-  *(或者也可以使用 `npm install -g .` 进行本地安装)*。
+通过 systemd、launchd、容器 Secret 或其他服务管理器把配置注入进程环境。生产 CLI 不读取 `.env`，也不
+支持 `--env`；项目根目录的 `.env.example` 仅是变量清单，不能存放真实凭证。所有白名单都必须显式配置，
+空值会导致启动失败。
 
-* **方式 C：离线包分发安装 (打包成 .tgz 压缩文件)**
-  如果您想离线发送一个安装包给他人：
-  1. 在源码根目录下运行：`npm pack`。这会生成一个类似 `codex-feishu-bridge-1.0.0.tgz` 的压缩包。
-  2. 将该 `.tgz` 文件发送给目标电脑，在终端运行如下命令即可全局安装：
-     ```bash
-     npm install -g ./codex-feishu-bridge-1.0.0.tgz
-     ```
+```dotenv
+LARK_APP_ID=cli_0123456789abcdef
+LARK_APP_SECRET=xxx
+LARK_TENANT_KEY=tenant_key
 
-### 2. 初始化配置 (支持飞书扫码自动配置 🚀)
+ALLOWED_CHATS=oc_xxx
+AUTHORIZED_USERS=ou_user_xxx
+ALLOWED_APPROVERS=ou_approver_xxx
 
-网桥提供了**免手动创建应用、免手动填秘钥**的极致体验，支持直接使用**飞书 App 扫码自动注册机器人**。
+CODEX_BIN=/absolute/path/to/codex
+CODEX_CWD=/absolute/path/to/project
+ALLOWED_WORKSPACE_ROOTS=/absolute/path/to/project
+BRIDGE_DATA_DIR=/absolute/path/to/private/bridge-data
 
-> [!TIP]
-> **全自动模式**：在全新的部署环境中，您可以**直接执行启动命令 `codex-feishu-bridge run`**。网桥会自动检测并同步在用户目录中生成所需的配置文件，并立即渲染出扫码注册二维码。您并不强制需要先运行 `init` 命令。
+# 默认 owned_stdio；如已验证 ChatGPT 与同一 app-server daemon，可切 managed_proxy。
+APP_SERVER_MODE=owned_stdio
+# managed_proxy 可选；不填时连接 Codex 默认控制 socket。
+# APP_SERVER_SOCKET_PATH=/absolute/path/to/app-server.sock
 
-* **扫码自动配置一站式启动（最方便）**：
-  1. 直接在前台启动网桥以触发自动初始化和渲染二维码：
-     ```bash
-     codex-feishu-bridge run
-     ```
-  2. 控制台检测到配置为空或为占位符时，会自动调用飞书 API 并在终端渲染出一个**授权二维码**：
-     - 打开您手机上的飞书 App，扫描终端里的二维码并确认授权。
-     - 授权通过后，系统会**自动在您的企业中创建对应的自建应用、开通机器人权限并订阅 WebSocket 长连接事件**。
-     - 生成的正式 `LARK_APP_ID` 与 `LARK_APP_SECRET` 会**自动写入并覆盖 `~/.codex-feishu-bridge/.env` 配置文件**。
-     - 终端显示 `Feishu WebSocket Client started` 即代表注册及连接成功。您可以按 `Ctrl + C` 终止前台进程，然后使用后台常驻模式。
+MAX_TEXT_LENGTH=10000
+CARD_UPDATE_INTERVAL_MS=1500
+MAX_QUEUED_TASKS=100
+```
 
-* **使用已有机器人（手动配置）**：
-  如果您想使用已有的自建应用，而不是注册新应用：
-  1. 运行初始化命令生成空白配置文件模板：
-     ```bash
-     codex-feishu-bridge init
-     ```
-  2. 编辑生成的 `~/.codex-feishu-bridge/.env` 配置文件，填入您已有的飞书凭证和白名单限制：
-     ```env
-     LARK_APP_ID=您的飞书应用AppID
-     LARK_APP_SECRET=您的飞书应用AppSecret
-     ALLOWED_APPROVERS=批准者OpenID列表（以逗号分隔）
-     ```
-  3. 配置完成后，直接运行后台启动命令即可：
-     ```bash
-     codex-feishu-bridge start
-     ```
+`BRIDGE_DATA_DIR`、`logs`、`tmp` 会被设为 `0700`，主 SQLite 文件设为 `0600`。WAL/SHM 由私有目录
+保护；服务管理器的 Secret、进程环境和重定向 stdout 日志权限由部署侧负责。应用只创建新的 `bridge.db`，
+不迁移旧 JSON 状态。
 
-### 3. 运行网桥服务
+当前没有多实例 lease。进程会在 `BRIDGE_DATA_DIR` 获取带所有者和存活 PID 校验的独占锁；每个飞书应用及
+数据目录同时只能运行一个 Bridge 进程。禁止 PM2 cluster、systemd 多副本或 Kubernetes `replicas > 1`。
 
-* **后台常驻启动 (守护进程模式)**：
-  ```bash
-  codex-feishu-bridge start
-  ```
-  网桥会在后台静默运行，并自动生成 `~/.codex-feishu-bridge/bridge.pid`。所有的控制台日志将重定向至：
-  - 标准日志：`tail -f ~/.codex-feishu-bridge/logs/bridge_stdout.log`
-  - 错误日志：`tail -f ~/.codex-feishu-bridge/logs/bridge_stderr.log`
+`managed_proxy` 只启动 `codex app-server proxy`，不会创建 daemon。使用前必须在同一系统用户下执行：
 
-* **查看运行状态**：
-  ```bash
-  codex-feishu-bridge status
-  ```
+```bash
+codex app-server daemon start
+codex app-server daemon version
+```
 
-* **停止后台运行**：
-  ```bash
-  codex-feishu-bridge stop
-  ```
+## 启动与检查
 
-* **前台调试启动 (Foreground)**：
-  ```bash
-  codex-feishu-bridge run
-  ```
+```bash
+npm run build
+node dist/app/cli.js doctor
+node dist/app/cli.js run
+```
 
-* **重新绑定飞书应用凭证 (Rebind Credentials)**：
-  ```bash
-  codex-feishu-bridge rebind
-  ```
-  该命令会安全重置 `~/.codex-feishu-bridge/.env` 中的 `LARK_APP_ID` 和 `LARK_APP_SECRET` 凭证为初始状态，并保留您在配置文件中自定义的其他任何环境变量。重置后，下次启动网桥时会再次展示自动注册机器人的授权二维码。
+也可以全局安装后运行：
 
----
+```bash
+codex-feishu-bridge doctor
+codex-feishu-bridge run
+```
 
-## ⚙️ 配置文件与存储说明
+`doctor` 会验证：
 
-### 工作目录结构
+- Node 和内置 SQLite 版本；
+- `CODEX_BIN` 的真实路径、版本和可执行权限；
+- 当前 CLI 生成的 App Server JSON schema digest；
+- cwd/allowed roots、白名单数量和数据库 migration；
+- 当前选择的 `owned_stdio` 或 `managed_proxy` 模式。
 
-网桥的所有配置、运行数据库与日志均存储于用户主目录下的专属目录 `~/.codex-feishu-bridge/` 中：
+输出中的 `failedOutboxCount` 必须为 `0`；非零代表至少一张卡已进入需人工对账的 fail-stop 状态。
 
-* **配置文件**：`~/.codex-feishu-bridge/.env`
-* **运行数据库**：包括以下文件，全部安全隔绝在此目录中，避免污染项目代码目录：
-  - `sessions.json`：会话绑定关系数据库。
-  - `approvals.json`：本地命令执行审批单。
-  - `pushed_turns.json`：防重历史卡片推送列表。
-* **日志输出**：`~/.codex-feishu-bridge/logs/`
+飞书 WebSocket 的 `start()` 只有收到 SDK `onReady` 后才算成功。SDK 在 ready 后报告终止错误时，CLI 会先
+完成受控停机再以失败退出，交给 systemd/launchd 等服务管理器重启，避免“进程存活但已不收消息”。
 
-### 配置文件 `.env` 详细参数说明
+## ChatGPT 页面同步验证
 
-| 配置键名 | 说明 | 示例值 / 默认值 |
-| :--- | :--- | :--- |
-| `LARK_APP_ID` | 飞书开放平台自建应用的 App ID | `cli_aaa39297b9b95cc5` |
-| `LARK_APP_SECRET` | 飞书开放平台自建应用的 App Secret | `UGSfPt0IZcwXAKp...` |
-| `ALLOWED_APPROVERS` | 允许审批终端命令执行的飞书用户 Open ID 列表，用英文逗号分隔 | `ou_f490a33f34ee...` |
-| `RATE_LIMIT_QUERY_INTERVAL_MS` | 5h/7d 剩余窗口用量的轮询刷新间隔时间（单位：毫秒） | `300000` (默认 5 分钟) |
-| `CODEX_BIN` | 本地 Codex 命令行工具的绝对路径（用于辅助调起后台服务） | `/Applications/Codex.app/Contents/Resources/codex` |
-| `LOG_TO_FILE` | 是否写 info 日志 | `false` (默认不开启) |
-| `LOG_FILE_PATH` | 日志文件名或绝对路径。 | `bridge.log` |
-| `ENABLE_AUTO_FILE_UPLOAD` | 自动上传本地文件（如 `/tmp/data.csv`）至飞书 | `false` (默认关闭以保护隐私) |
+App Server 可以确定驱动本 Bridge 和飞书 UI，但官方合同没有保证外部客户端追加 turn 后，已经打开的
+ChatGPT Desktop 页面一定实时刷新。因此页面同步不作为未验证的生产承诺。
 
-### 自动图片与文件上传支持
-网桥内置了强大的**资源过滤与静默上传引擎**：
-- **图片自动上传**：当 Codex 返回了本地生成的图片（如 `![](/private/tmp/ui.png)`），网桥会自动静默将其作为合法 `image_key` 上传至飞书并完美内嵌在 CardKit 卡片中。
-- **普通文件自动提取**：对于常规数据文件（如 `.csv`, `.pdf`），网桥同样可以在配置 `ENABLE_AUTO_FILE_UPLOAD=true` 授权后，于后台任务完成时自动提取路径并上传发送至飞书聊天框，方便一键下载。
+先列出当前 workspace 最近的 task：
 
----
+```bash
+codex-feishu-bridge validate-ui-sync
+```
 
-## 💬 飞书机器人交互指令说明
+再对明确选择的测试 task 追加 nonce turn：
 
-在飞书聊天群或单聊中绑定会话后，直接发送日常对话即可与本地 Codex 交互推理。同时，网桥提供了丰富的快捷斜杠指令（Slash Commands）来辅助管理会话与状态：
+```bash
+codex-feishu-bridge validate-ui-sync \
+  --thread THREAD_ID
+```
 
-| 快捷指令 | 功能说明 | 示例 / 参数 |
-| :--- | :--- | :--- |
-| `/help` 或 `/h` | 获取所有支持的快捷指令 and 使用帮助卡片 | `/help` |
-| `/list` | 拉取并展示所有活跃的 Codex 会话列表，支持中英字典序排序，全局会话置顶 | `/list` |
-| `/ll` | 以表格（Table）视图展示活跃会话列表，可折行展示会话全名以防截断，提供序号选择绑定 | `/ll` |
-| `/new [名称]` 或 `/create [名称]` | 快速在本地启动一个新会话并自动与当前聊天绑定 | `/new 我的新项目` |
-| `/cwd [路径]` 或 `/workspace [路径]` | 查询或动态修改当前已绑定会话的工作目录 (CWD) | `/cwd /Users/workspace/project` |
-| `/cmd [命令]` 或 `/run [命令]` | 在本地 macOS 的当前工作目录下执行经过安全过滤允许的命令 | `/cmd git status` |
-| `/goal [目标内容]` | 为当前会话设定一个长期自主任务并自动开始执行 | `/goal 编写完整的单元测试` |
-| `/goal` | 查询当前会话的任务目标内容、执行进度与消耗 | `/goal` |
-| `/goal clear` 或 `/goal -c` | 清除当前会话的目标任务 | `/goal clear` |
-| `/usage` 或 `/quota` | 获取当前账户的短期 (5h) / 长期 (168h) 窗口用量统计及 24 小时制重置刷新时间 | `/usage` |
-| `/mcp` | 展示本地所有 MCP 服务及认证连接状态 | `/mcp` |
-| `/model` 或 `/model [名称]` | 交互式选择或直接设定当前会话使用的大模型（如 o3-mini 等） | `/model o3-mini` |
-| `/personality [friendly\|pragmatic\|none]` | 设置或查询回复风格（friendly: 亲和, pragmatic: 务实, none: 默认） | `/personality pragmatic` |
-| `/compact` 或 `/compress` | 压缩当前会话的上下文窗口（主动释放历史 Token） | `/compact` |
-| `/fork [新名称]` | 派生复制当前会话，并将当前飞书群聊自动绑定至新派生的会话 | `/fork 分支测试` |
-| `/plan [on\|off]` | 开启或关闭“计划模式”。开启后日常指令执行前必须由您审批计划 | `/plan on` |
-| `/status` | 综合展示面板（包含会话名称、ID、当前 CWD、个性设定、计划模式及目标详情） | `/status` |
-| `/skills` | 列出当前工作区下可用的所有技能（Skills） | `/skills` |
-| `@技能名称 [输入内容]` | 在日常对话中通过提及调用特定的技能服务 | `@excel-parser 读取数据.xlsx` |
-| `/delete` 或 `/archive` | 将当前聊天与 Codex 会话解绑，并在本地归档该会话 | `/delete` |
+无 `--thread` 时，验证器只输出 `threadId`、`status`、`updatedAt`，不会输出会话名称、内容预览或本地路径。
+验证器只使用 managed proxy，不读取生产 Bridge 数据库。输出会证明 Bridge 是否收到该 turn 的事件流，并把
+Desktop 页面结论标记为 `manual_verification_required`。只有在页面中也看到同一 nonce 后，才能将部署配置切换
+为 `APP_SERVER_MODE=managed_proxy` 并声明同 runtime 页面同步。
 
----
+## 飞书产品行为
 
-## 🔬 架构与底层协议原理
+首次使用先在飞书中发送：
 
-为了方便二次开发、复刻与学习网桥底层与本地 Codex 桌面客户端、App Server 通信的实现细节，我们准备了独立的详细架构与技术设计文档。
+```text
+/bind      列出最近 8 个 ChatGPT 会话并选择绑定
+/binding   查看当前绑定
+/unbind    解除绑定
+```
 
-请参阅：
-* **[技术实现与架构方案文档 (TECHNICAL.md)](./TECHNICAL.md)**：包含 UDS 套接字通信机制、定长帧处理（Length-Prefixed Buffer）的 Node.js 源码片段、飞书 CardKit 2.0 异步局部 PUT 渲染流实现方案、中断机制以及技能映射流程。
+`/bind` 只列出 `CODEX_CWD` 下最近 8 个会话；卡片不展示内容预览、完整 thread ID 或绝对路径。选择按钮使用
+绑定 tenant/chat/operator、10 分钟过期的 HMAC token；绑定与解绑都会推进持久化 revision，旧选择卡不能在
+解绑后重新生效。未绑定时普通消息会先持久化为拒绝再收到选择卡，不会调用 `thread/start`，也不会因事件重投
+在稍后意外执行。重新绑定只影响
+之后的新 root；已有 root 下的补充消息继续原任务，避免把运行中上下文切到另一个会话。
+
+`ALLOWED_CHAT_IDS` 同时是卡片可见性的信任边界：群成员可以看到该群内的绑定标题、任务过程和最终结果。若群成员
+不应看到这些信息，应使用与机器人的单聊或单独的受控群，不要把该群加入 allowlist。
+
+一条新 root 消息会创建任务卡，包含：
+
+- 用户输入；
+- 当前任务状态；
+- commentary 与可展示 reasoning summary；
+- 命令/工具输出尾部；
+- final answer；
+- 取消按钮。
+
+运行中同 root 的新消息通过 `turn/steer(expectedTurnId)` 追加。不同 root 在已有写 turn 时进入队列。
+
+App Server 发出 command/file approval request 时，Bridge 发送独立审批卡：
+
+- 批准一次：`accept`
+- 本会话批准：`acceptForSession`
+- 拒绝：`decline`
+- 取消：`cancel`
+
+`acceptForSession` 只在 App Server 的 `availableDecisions` 包含它时展示，并要求点击者同时属于
+`ALLOWED_APPROVERS`。Bridge 不缓存或扩大 App Server 的会话授权范围。除会话绑定命令外，首期不处理附件、
+模型/cwd 动态选择或自动本地文件上传。
+
+CardKit 更新从 sequence `1` 开始且严格递增；每次 replace/finalize 都带 1–64 字节的幂等 UUID。任务卡
+JSON 在本地限制为 29 KiB，为官方 30 KB 上限保留传输余量。终态先关闭 streaming mode，再替换最终卡；
+两个成功检查点都写入 SQLite，重启后不会猜测 sequence。
+
+CardKit sequence 冲突会 fail-stop：对应 outbox 记录标记为 `FAILED/CARD_SEQUENCE_CONFLICT`，不会猜测
+下一个序号，也不会自动创建替代卡；原卡可能保持旧内容，需要人工对账。
+
+## 持久化与恢复
+
+SQLite 表：
+
+- `inbox_event`
+- `chat_thread_binding`
+- `thread_binding`
+- `task`
+- `task_item`
+- `rpc_intent`
+- `approval`
+- `card_outbox`
+- `meta`
+
+数据库启用 foreign keys、WAL、FULL synchronous、busy timeout、defensive mode，并禁止加载 extension。
+当前 schema 为 v5；`chat_thread_binding` 保存飞书 chat 当前选中的 ChatGPT thread，root binding 保存任务
+首次使用时捕获的选择；`inbox_event.payload_text` 仅为尚未确认送达的 `turn/steer` 提供崩溃恢复。数据库会保存
+任务 prompt、脱敏后的展示摘要和工具输出尾部，因此整个 `BRIDGE_DATA_DIR` 必须按敏感业务数据管理；凭证、
+action token 明文、原始飞书 callback 和 raw CoT 不入库。
+
+App Server 断开后旧 epoch 审批会失效，活动任务进入 `RECOVERING`；重连使用 `thread/resume` 的 snapshot
+收敛状态。无法证明身份或结果的任务进入 `NEEDS_REVIEW`，不会自动重发 turn。
+
+对于运行中补充消息，Bridge 在同一事务中写入 inbox、明文 payload 和 PREPARED steer intent。只有能证明
+从未写入 transport 的 PREPARED intent 才会在本进程内恢复发送；已标记 SENT 但无结果的 intent 进入
+UNKNOWN，禁止盲目重放。排队任务可直接取消，重启恢复也会把对应 inbox 收敛到终态。
+
+## 开发与验收
+
+```bash
+npm run typecheck:app
+npm run test:app
+npm run build:app
+npm pack --dry-run
+```
+
+新生产代码仅位于 `src/app/`。架构测试禁止其 import 旧 `src/index.ts`、adapter、Desktop IPC、injector、旧
+session/history/storage/media 模块。实施计划、部署说明、测试报告和代码审查报告位于
+`plans/2026-07-13-feishu-app-server-bridge/`。

@@ -1,5 +1,6 @@
 node_modules/
 dist/
+dist-test/
 .env
 sessions.json
 approvals.json
@@ -11,5 +12,4 @@ yarn-debug.log*
 yarn-error.log*
 .DS_Store
 *.tgz
-
 
