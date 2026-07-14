@@ -53,7 +53,8 @@ function approvalButton(
 export function createTaskCard(options: TaskCardOptions): CardKitJson {
   const { payload, status } = options;
   const running = !payload.terminal;
-  const reasoning = payload.commentary || '等待开始...';
+  const reasoning = payload.commentary
+    || (running ? '等待开始...' : '该轮未提供可展示的推理摘要。');
   const answer = payload.finalAnswer || (running ? '等待中...' : '无最终文本输出');
   const title = running ? '🌌 Codex Remote Control' : terminalTitle(status);
 

@@ -111,6 +111,21 @@ function diffThreadState(
   const notifications: ServerNotification[] = [];
   const previousTurns = turnsById(previousState);
   const currentTurns = turnsById(currentState);
+  const usageTurn = latestTurn(currentTurns);
+  if (usageTurn && usageChanged(previousState, currentState)) {
+    const tokenUsage = asRecord(currentState.latestTokenUsageInfo);
+    if (tokenUsage) {
+      notifications.push({
+        method: 'thread/tokenUsage/updated',
+        params: {
+          threadId,
+          turnId: usageTurn.id,
+          tokenUsage,
+          model: stringValue(currentState.latestModel),
+        },
+      });
+    }
+  }
   const currentEntries = [...currentTurns.entries()];
   const entriesToDiff = previousState ? currentEntries : currentEntries.slice(-1);
   for (const [turnId, currentTurn] of entriesToDiff) {
@@ -130,6 +145,22 @@ function diffThreadState(
     }
   }
   return notifications;
+}
+
+function latestTurn(turns: ReadonlyMap<string, Turn>): Turn | undefined {
+  const values = [...turns.values()];
+  for (let index = values.length - 1; index >= 0; index -= 1) {
+    const turn = values[index];
+    if (turn?.status === 'inProgress') {
+      return turn;
+    }
+  }
+  return values[values.length - 1];
+}
+
+function usageChanged(previous: UnknownRecord | undefined, current: UnknownRecord): boolean {
+  return JSON.stringify(previous?.latestTokenUsageInfo ?? null)
+    !== JSON.stringify(current.latestTokenUsageInfo ?? null);
 }
 
 function diffItems(

@@ -263,6 +263,10 @@ export type CoreServerNotification =
       method: 'thread/status/changed';
       params: { threadId: string; status: Thread['status'] };
     }
+  | {
+      method: 'thread/tokenUsage/updated';
+      params: { threadId: string; turnId: string; tokenUsage: unknown; model: string | null };
+    }
   | { method: 'turn/started'; params: { threadId: string; turn: Turn } }
   | { method: 'turn/completed'; params: { threadId: string; turn: Turn } }
   | {

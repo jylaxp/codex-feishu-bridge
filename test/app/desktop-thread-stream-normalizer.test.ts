@@ -206,6 +206,35 @@ test('normalizes a Desktop snapshot and patches into canonical reducer events', 
   );
 });
 
+test('projects the current Desktop token usage state for the active turn', () => {
+  const normalizer = new DesktopThreadStreamNormalizer();
+  const broadcast = snapshotBroadcast();
+  const change = broadcast.params.change;
+  if (change.type !== 'snapshot') {
+    throw new Error('snapshot fixture must provide state');
+  }
+  const state = change.conversationState as Record<string, unknown>;
+  state.latestModel = 'gpt-5.6-sol';
+  state.latestTokenUsageInfo = {
+    last: { inputTokens: 12, outputTokens: 34, totalTokens: 56 },
+    total: { inputTokens: 120, outputTokens: 340, totalTokens: 560 },
+    modelContextWindow: 200_000,
+  };
+
+  const usage = normalizer.handle(broadcast).find((notification) => (
+    notification.method === 'thread/tokenUsage/updated'
+  ));
+  assert.deepEqual(usage, {
+    method: 'thread/tokenUsage/updated',
+    params: {
+      threadId: 'thread-bound',
+      turnId: 'turn-desktop',
+      tokenUsage: state.latestTokenUsageInfo,
+      model: 'gpt-5.6-sol',
+    },
+  });
+});
+
 test('normalizes the current Desktop canonical turnHistory snapshot and patches', () => {
   const normalizer = new DesktopThreadStreamNormalizer(() => 11_000);
   const notifications = [

@@ -65,6 +65,7 @@ export async function startBridge(
   );
   const orchestrator = new InMemoryOrchestrator(config, desktop, cards, {
     onCardError: (error) => logger.error('card_update_failed', error),
+    readRateLimits: () => appServer.request('account/rateLimits/read', {}),
   });
   const approvals = new DesktopApprovalService(config, desktop, cards, orchestrator);
   const conversationBindings = new ConversationBindingServiceV3(

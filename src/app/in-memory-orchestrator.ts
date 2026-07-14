@@ -33,6 +33,7 @@ export interface InMemoryCardClient {
 export interface InMemoryOrchestratorOptions {
   readonly now?: () => number;
   readonly onCardError?: (error: Error) => void;
+  readonly readRateLimits?: () => Promise<unknown>;
 }
 
 export type InMemoryInboundOutcome = 'started' | 'queued' | 'steered' | 'duplicate';
@@ -55,6 +56,13 @@ interface RuntimeTask {
   commentary: string;
   tools: string;
   finalAnswer: string;
+  readonly startedAtMs: number;
+  model: string | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  contextTokens: number | null;
+  contextWindow: number | null;
+  rateLimitText: string | null;
   cardSequence: number;
   updateTimer: NodeJS.Timeout | undefined;
 }
@@ -70,6 +78,7 @@ const TEXT_LIMIT = 128 * 1024;
 export class InMemoryOrchestrator {
   private readonly now: () => number;
   private readonly onCardError: (error: Error) => void;
+  private readonly readRateLimits: (() => Promise<unknown>) | undefined;
   private readonly tasksById = new Map<string, RuntimeTask>();
   private readonly activeByThreadId = new Map<string, RuntimeTask>();
   private readonly queuesByThreadId = new Map<string, Array<{
@@ -87,6 +96,7 @@ export class InMemoryOrchestrator {
   ) {
     this.now = options.now ?? Date.now;
     this.onCardError = options.onCardError ?? (() => undefined);
+    this.readRateLimits = options.readRateLimits;
   }
 
   public async handleInbound(
@@ -213,7 +223,8 @@ export class InMemoryOrchestrator {
     binding: ChatThreadBinding,
   ): Promise<InMemoryInboundOutcome> {
     const id = randomUUID();
-    const initialCard = taskCard(message.text, 'CARD_CREATING', '', '', '', id);
+    const startedAtMs = this.now();
+    const initialCard = taskCard(message.text, 'CARD_CREATING', '', '', '', startedAtMs);
     const cardId = await this.cards.createCard(initialCard);
     const cardMessageId = await this.cards.replyCard(message.rootMessageId, cardId, `task:${id}`);
     const task: RuntimeTask = {
@@ -228,11 +239,19 @@ export class InMemoryOrchestrator {
       commentary: '',
       tools: '',
       finalAnswer: '',
+      startedAtMs,
+      model: null,
+      inputTokens: null,
+      outputTokens: null,
+      contextTokens: null,
+      contextWindow: null,
+      rateLimitText: null,
       cardSequence: 0,
       updateTimer: undefined,
     };
     this.tasksById.set(id, task);
     this.activeByThreadId.set(binding.threadId, task);
+    void this.refreshRateLimits(task);
     try {
       const turn = await this.desktop.startTurnTracked(buildStart(task, this.config), () => undefined);
       task.turnId = turn.id;
@@ -272,7 +291,9 @@ export class InMemoryOrchestrator {
 
   private applyNotification(task: RuntimeTask, notification: ServerNotification): void {
     const params = notification.params as Record<string, unknown>;
-    if (notification.method === 'item/agentMessage/delta') {
+    if (notification.method === 'thread/tokenUsage/updated') {
+      applyUsage(task, params);
+    } else if (notification.method === 'item/agentMessage/delta') {
       appendToTask(task, 'finalAnswer', stringField(params.delta));
     } else if (notification.method === 'item/reasoning/summaryTextDelta') {
       appendToTask(task, 'commentary', stringField(params.delta));
@@ -317,7 +338,8 @@ export class InMemoryOrchestrator {
         task.commentary,
         task.tools,
         task.finalAnswer,
-        task.id,
+        task.startedAtMs,
+        task,
         terminal ? undefined : task.cancelToken,
       );
       task.cardSequence = await this.cards.replaceCard(
@@ -354,6 +376,22 @@ export class InMemoryOrchestrator {
       return;
     }
     void this.start(next.message, next.binding);
+  }
+
+  private async refreshRateLimits(task: RuntimeTask): Promise<void> {
+    if (!this.readRateLimits) {
+      return;
+    }
+    try {
+      const text = formatRateLimits(await this.readRateLimits());
+      if (!text || !this.tasksById.has(task.id)) {
+        return;
+      }
+      task.rateLimitText = text;
+      this.requestCardUpdate(task, true);
+    } catch {
+      // Usage display is optional; never affect the task execution path.
+    }
   }
 
   private pruneDedupe(): void {
@@ -400,7 +438,8 @@ function taskCard(
   commentary: string,
   tools: string,
   finalAnswer: string,
-  taskId: string,
+  startedAtMs: number,
+  usage?: RuntimeTask,
   cancelToken?: string,
 ): CardKitJson {
   const terminal = TERMINAL.has(status);
@@ -410,13 +449,75 @@ function taskCard(
     payload: Object.freeze({
       title: sanitizeCardText('Codex 任务', { maxLength: 200 }),
       prompt: sanitizeCardText(prompt, { maxLength: 10_000 }),
-      commentary: sanitizeCardText(commentary || '等待事件...', { maxLength: 10_000 }),
+      commentary: sanitizeCardText(commentary, { maxLength: 10_000 }),
       toolSummary: sanitizeCardText(tools || '暂无', { maxLength: 10_000 }),
-      finalAnswer: sanitizeCardText(finalAnswer || '等待中...', { maxLength: 10_000 }),
-      footer: sanitizeCardText(`任务 ${shortId(taskId)} · 状态 ${status}`, { maxLength: 500 }),
+      finalAnswer: sanitizeCardText(finalAnswer, { maxLength: 10_000 }),
+      footer: sanitizeCardText(formatFooter(status, startedAtMs, usage), { maxLength: 500 }),
       terminal,
     }),
   });
+}
+
+function applyUsage(task: RuntimeTask, params: Record<string, unknown>): void {
+  const usage = recordField(params.tokenUsage);
+  const last = usage ? recordField(usage.last) : null;
+  if (!usage || !last) {
+    return;
+  }
+  task.model = stringField(params.model) ?? task.model;
+  task.inputTokens = numberField(last.inputTokens) ?? task.inputTokens;
+  task.outputTokens = numberField(last.outputTokens) ?? task.outputTokens;
+  task.contextTokens = numberField(last.totalTokens) ?? task.contextTokens;
+  task.contextWindow = numberField(usage.modelContextWindow) ?? task.contextWindow;
+}
+
+function formatFooter(status: TaskStatus, startedAtMs: number, usage?: RuntimeTask): string {
+  const state = status === 'SUCCEEDED' ? '✅ 已完成'
+    : status === 'FAILED' ? '❌ 失败'
+      : status === 'INTERRUPTED' ? '🛑 已取消' : '⏳ 运行中';
+  const parts = [state, `耗时 ${formatDuration(Date.now() - startedAtMs)}`];
+  if (usage?.model) parts.push(usage.model);
+  if (usage?.inputTokens !== null || usage?.outputTokens !== null) {
+    parts.push(`↑ ${formatCount(usage?.inputTokens)} ↓ ${formatCount(usage?.outputTokens)}`);
+  }
+  if (usage?.contextTokens !== null && usage?.contextWindow) {
+    const percent = Math.round((usage.contextTokens / usage.contextWindow) * 100);
+    parts.push(`上下文 ${formatCount(usage.contextTokens)}/${formatCount(usage.contextWindow)} (${percent}%)`);
+  }
+  return usage?.rateLimitText ? `${parts.join(' · ')}\n窗口用量: ${usage.rateLimitText}` : parts.join(' · ');
+}
+
+function formatRateLimits(response: unknown): string | null {
+  const root = recordField(response);
+  const limits = root ? recordField(root.rateLimits) : null;
+  const primary = limits ? recordField(limits.primary) : null;
+  if (!primary) return null;
+  const duration = numberField(primary.windowDurationMins);
+  const percent = numberField(primary.usedPercent);
+  const resetsAt = numberField(primary.resetsAt);
+  if (duration === null || percent === null || resetsAt === null) return null;
+  const label = duration % 10_080 === 0 ? `${duration / 10_080}周` : `${duration}分钟`;
+  return `${label}: ${percent}% (${new Date(resetsAt * 1000).toLocaleString('zh-CN', { hour: '2-digit', minute: '2-digit', month: 'numeric', day: 'numeric' })})`;
+}
+
+function formatDuration(durationMs: number): string {
+  return durationMs < 60_000 ? `${(durationMs / 1000).toFixed(1)}s`
+    : `${Math.floor(durationMs / 60_000)}m${Math.floor((durationMs % 60_000) / 1000).toString().padStart(2, '0')}s`;
+}
+
+function formatCount(value: number | null | undefined): string {
+  if (value === null || value === undefined) return '-';
+  return value >= 1_000_000 ? `${(value / 1_000_000).toFixed(1)}M`
+    : value >= 1_000 ? `${(value / 1_000).toFixed(1)}K` : String(value);
+}
+
+function recordField(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown> : null;
+}
+
+function numberField(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
 function eventIdentity(notification: ServerNotification): { threadId: string; turnId: string } | null {
@@ -458,10 +559,6 @@ function secureTokenEquals(expected: string, actual: string): boolean {
 
 function stringField(value: unknown): string | null {
   return typeof value === 'string' && value ? value : null;
-}
-
-function shortId(value: string): string {
-  return value.length <= 14 ? value : `${value.slice(0, 7)}…${value.slice(-6)}`;
 }
 
 function toError(error: unknown): Error {
