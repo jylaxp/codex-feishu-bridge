@@ -1,0 +1,54 @@
+src/app/ui-sync-validator.ts
+  s_4672ec237d452e::t_dc5a91f11faf38 17,56-57,59,65
+.env.example
+  s_4672ec237d452e::t_dc5a91f11faf38 1-2
+src/app/doctor.ts
+  s_4672ec237d452e::t_dc5a91f11faf38 6,35-36,41
+src/app/lark/event-server.ts
+  s_4672ec237d452e::t_8fe34ae1eebd3b 13,100,103,107
+test/app/cli.test.ts
+  s_4672ec237d452e::t_bc67a31c872721 13,26-27
+test/app/conversation-binding-service-v3.test.ts
+  s_4672ec237d452e::t_bc67a31c872721 102-107,117-160
+  s_4672ec237d452e::t_f2069196ce1b57 161-163
+  s_4672ec237d452e::t_599c641851113f 164-165
+test/app/event-server.test.ts
+  s_4672ec237d452e::t_bc67a31c872721 72-83
+src/app/main.ts
+  s_4672ec237d452e::t_dc5a91f11faf38 13,39-40,51,137
+  s_4672ec237d452e::t_8fe34ae1eebd3b 10,79-80,111-112
+  s_4672ec237d452e::t_0cb23cefd90f8c 113
+src/app/codex/app-navigation-adapter.ts
+  s_4672ec237d452e::t_8fe34ae1eebd3b 1-6,9-63
+  s_4672ec237d452e::t_28f902c5b9add2 7-8
+src/app/config-file.ts
+  s_4672ec237d452e::t_7971e3f793f77c 1-110
+src/app/cli.ts
+  s_4672ec237d452e::t_dc5a91f11faf38 5,44,57,66,198-199
+src/app/config.ts
+  s_4672ec237d452e::t_7971e3f793f77c 43-44,52,146
+test/app/config-file.test.ts
+  s_4672ec237d452e::t_bc67a31c872721 1-58
+test/app/app-navigation-adapter.test.ts
+  s_4672ec237d452e::t_bc67a31c872721 1-26
+src/app/conversation-binding-service-v3.ts
+  s_4672ec237d452e::t_8fe34ae1eebd3b 6,46,63-66,106-118,138-171,216,223,226-243
+README.md
+  s_4672ec237d452e::t_dc5a91f11faf38 6-7,13,15,19,27,52-54,68,80-81,83,110,113,152
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "acba5d841b87a1dd5059d79dec10921b9e60d93f",
+  "prompts": {},
+  "sessions": {
+    "s_4672ec237d452e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5be6-2b87-7190-8898-ae985cbeb51e",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    }
+  }
+}
