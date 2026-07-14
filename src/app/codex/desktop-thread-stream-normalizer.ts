@@ -210,11 +210,17 @@ function itemDeltas(
   currentItem: ThreadItem,
 ): readonly ServerNotification[] {
   if (currentItem.type === 'agentMessage') {
-    const delta = suffixDelta(previousItem?.text ?? currentItem.text ?? '', currentItem.text ?? '');
-    return previousItem && delta
+    const delta = suffixDelta(previousItem?.text ?? '', currentItem.text ?? '');
+    return delta
       ? [{
           method: 'item/agentMessage/delta',
-          params: { threadId, turnId, itemId: currentItem.id, delta },
+          params: {
+            threadId,
+            turnId,
+            itemId: currentItem.id,
+            delta,
+            ...(currentItem.phase ? { phase: currentItem.phase } : {}),
+          },
         }]
       : [];
   }

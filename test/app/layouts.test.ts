@@ -25,7 +25,26 @@ test('task card preserves the original Remote Control streaming layout', () => {
   assert.match(serialized, /codex_output/);
   assert.match(serialized, /📊 task ref/);
   assert.match(serialized, /codex_footer/);
-  assert.doesNotMatch(serialized, /当前状态|执行过程|工具与命令|目标会话|opaque-cancel-token/);
+  assert.match(serialized, /工具与命令/);
+  assert.match(serialized, /rg\\\\: completed/);
+  assert.doesNotMatch(serialized, /当前状态|执行过程|目标会话|opaque-cancel-token/);
+});
+
+test('terminal card omits an empty inference section like the original card renderer', () => {
+  const card = createTaskCard({
+    status: 'SUCCEEDED',
+    payload: {
+      title: sanitizeCardText('done'),
+      prompt: sanitizeCardText('prompt'),
+      commentary: sanitizeCardText(''),
+      toolSummary: sanitizeCardText('暂无'),
+      finalAnswer: sanitizeCardText('result'),
+      footer: sanitizeCardText('finished'),
+      terminal: true,
+    },
+  });
+
+  assert.doesNotMatch(JSON.stringify(card), /模型推理过程/);
 });
 
 test('terminal task card has no action token and closes streaming mode', () => {

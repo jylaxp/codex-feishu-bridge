@@ -204,6 +204,10 @@ test('normalizes a Desktop snapshot and patches into canonical reducer events', 
     notifications.filter((notification) => notification.method === 'turn/completed').length,
     1,
   );
+  const firstAgentDelta = notifications.find((notification) => (
+    notification.method === 'item/agentMessage/delta'
+  ));
+  assert.equal((firstAgentDelta?.params as { readonly phase?: string }).phase, 'final_answer');
 });
 
 test('projects the current Desktop token usage state for the active turn', () => {

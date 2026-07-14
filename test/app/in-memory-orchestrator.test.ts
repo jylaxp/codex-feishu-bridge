@@ -149,3 +149,60 @@ test('steers the active turn and abandons all local state after Desktop loss', a
   await orchestrator.handleInbound(message('3', 'new after reconnect'), binding);
   assert.equal(desktop.starts.length, 2);
 });
+
+test('keeps a terminal card briefly so late usage and rate limits update its original footer', async () => {
+  const desktop = new FakeDesktop();
+  const cards = new FakeCards();
+  const orchestrator = new InMemoryOrchestrator(
+    config,
+    desktop as unknown as DesktopIpcClient,
+    cards,
+    {
+      readRateLimits: async () => ({
+        rateLimitsByLimitId: {
+          codex: {
+            primary: { usedPercent: 12, resetsAt: 1_784_016_000 },
+            secondary: { usedPercent: 34, resetsAt: 1_784_102_400 },
+            credits: { hasCredits: true, balance: '7' },
+          },
+        },
+      }),
+    },
+  );
+  await orchestrator.handleInbound(message('1', 'hello'), binding);
+  orchestrator.handleNotification({
+    method: 'turn/completed',
+    params: {
+      threadId: 'thread-1',
+      turn: {
+        id: 'turn-1', status: 'completed', itemsView: 'full', startedAt: null, completedAt: null,
+        durationMs: null, error: null,
+        items: [{ id: 'answer', type: 'agentMessage', phase: 'final_answer', text: 'done' }],
+      },
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  orchestrator.handleNotification({
+    method: 'thread/tokenUsage/updated',
+    params: {
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      model: 'gpt-5.6-sol',
+      apiCalls: 3,
+      tokenUsage: {
+        last: { inputTokens: 1_200, outputTokens: 345, totalTokens: 12_345 },
+        modelContextWindow: 128_000,
+      },
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  const serialized = JSON.stringify(cards.replacements.at(-1));
+  assert.ok(serialized.includes('gpt\\\\-5\\\\.6\\\\-sol'));
+  assert.match(serialized, /API 3/);
+  assert.ok(serialized.includes('上下文 12\\\\.3K\\\\/128\\\\.0K'));
+  assert.ok(serialized.includes('5h\\\\: 12\\\\%'));
+  assert.ok(serialized.includes('7d\\\\: 34\\\\%'));
+  assert.ok(serialized.includes('点数\\\\: 7'));
+  assert.equal(cards.closed, 1);
+});

@@ -53,10 +53,25 @@ function approvalButton(
 export function createTaskCard(options: TaskCardOptions): CardKitJson {
   const { payload, status } = options;
   const running = !payload.terminal;
-  const reasoning = payload.commentary
-    || (running ? '等待开始...' : '该轮未提供可展示的推理摘要。');
+  const reasoning = activityText(payload.commentary, payload.toolSummary, running);
   const answer = payload.finalAnswer || (running ? '等待中...' : '无最终文本输出');
   const title = running ? '🌌 Codex Remote Control' : terminalTitle(status);
+  const elements: Record<string, unknown>[] = [
+    markdown(`**📥 输入 Prompt**\n> ${payload.prompt}`, 'codex_prompt'),
+  ];
+
+  if (running || reasoning) {
+    elements.push(
+      { tag: 'hr' },
+      markdown(`🧠 **模型推理过程**\n${reasoning || '等待开始...'}`, 'codex_reasoning'),
+    );
+  }
+  elements.push(
+    { tag: 'hr', element_id: 'codex_output_hr' },
+    markdown(`✨ **最终结果输出**\n${answer}`, 'codex_output'),
+    { tag: 'hr' },
+    markdown(`📊 ${payload.footer}`, 'codex_footer'),
+  );
 
   return {
     schema: '2.0',
@@ -77,17 +92,24 @@ export function createTaskCard(options: TaskCardOptions): CardKitJson {
       title: { tag: 'plain_text', content: title },
     },
     body: {
-      elements: [
-        markdown(`**📥 输入 Prompt**\n> ${payload.prompt}`, 'codex_prompt'),
-        { tag: 'hr' },
-        markdown(`🧠 **模型推理过程**\n${reasoning}`, 'codex_reasoning'),
-        { tag: 'hr', element_id: 'codex_output_hr' },
-        markdown(`✨ **最终结果输出**\n${answer}`, 'codex_output'),
-        { tag: 'hr' },
-        markdown(`📊 ${payload.footer}`, 'codex_footer'),
-      ],
+      elements,
     },
   };
+}
+
+function activityText(
+  commentary: SanitizedCardText,
+  toolSummary: SanitizedCardText,
+  running: boolean,
+): string {
+  const sections: string[] = [commentary];
+  if (toolSummary && toolSummary !== '暂无') {
+    sections.push(`🛠️ **工具与命令**\n${toolSummary}`);
+  }
+  if (sections.length === 0 && running) {
+    return '等待开始...';
+  }
+  return sections.filter(Boolean).join('\n\n---\n\n');
 }
 
 function headerTemplate(status: TaskStatus): string {
