@@ -1,0 +1,28 @@
+src/app/conversation-binding-service-v3.ts
+  s_4672ec237d452e::t_fa0e2d0bea8ca7 10,33,52-53,130-162,212-213,218-231
+src/app/lark/event-server.ts
+  s_4672ec237d452e::t_956ad00da13a9d 31-34,83-88
+  s_4672ec237d452e::t_87eadf7dac85ce 10-11,92-94,98
+test/app/event-server.test.ts
+  s_4672ec237d452e::t_f51007a531c3e5 72-83
+  s_4672ec237d452e::t_447271db7f8d25 84-98
+test/app/conversation-binding-service-v3.test.ts
+  s_4672ec237d452e::t_25cdea68ba9f94 59-63
+  s_4672ec237d452e::t_a39113714aa6a7 156-191
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "a0a46c7a7abfbb14287545d2944a4583be713caf",
+  "prompts": {},
+  "sessions": {
+    "s_4672ec237d452e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5be6-2b87-7190-8898-ae985cbeb51e",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    }
+  }
+}
