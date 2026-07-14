@@ -1,12 +1,15 @@
 ---
 title: "feat: 基于 App Server 重构飞书与 ChatGPT 实时桥接"
 type: feat
-status: active
+status: superseded
 date: 2026-07-13
 deepened: 2026-07-13
+superseded_by: docs/plans/2026-07-14-001-feat-feishu-chatgpt-desktop-ipc-bridge-plan.md
 ---
 
 # feat: 基于 App Server 重构飞书与 ChatGPT 实时桥接
+
+> 本方案已由 2026-07-14 的 Desktop owner runtime 双平面方案取代，保留本文作为纯 App Server 路线的历史设计与对照基线。
 
 ## Summary
 
