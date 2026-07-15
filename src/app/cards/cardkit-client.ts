@@ -46,6 +46,19 @@ export interface LarkReplyApi {
         readonly msg?: string;
         readonly data?: { readonly message_id?: string };
       }>;
+      create(payload: {
+        readonly params: { readonly receive_id_type: 'chat_id' };
+        readonly data: {
+          readonly receive_id: string;
+          readonly content: string;
+          readonly msg_type: string;
+          readonly uuid: string;
+        };
+      }): Promise<{
+        readonly code?: number;
+        readonly msg?: string;
+        readonly data?: { readonly message_id?: string };
+      }>;
     };
   };
 }
@@ -110,6 +123,42 @@ export class CardKitClient {
         throw error;
       }
       throw new CardKitError('NETWORK_RETRYABLE', 'Lark card reply request failed');
+    }
+  }
+
+  /** Posts an independent card into a bound Feishu chat for a Desktop-originated turn. */
+  public async sendCard(
+    chatId: string,
+    cardId: string,
+    idempotencyKey: string = randomUUID(),
+  ): Promise<string> {
+    try {
+      const response = await this.larkApi.im.message.create({
+        params: { receive_id_type: 'chat_id' },
+        data: {
+          receive_id: chatId,
+          msg_type: 'interactive',
+          uuid: idempotencyKey,
+          content: JSON.stringify({ type: 'card', data: { card_id: cardId } }),
+        },
+      });
+      if (response.code !== undefined && response.code !== 0) {
+        throw new CardKitError(
+          'API_FATAL',
+          `Lark card send rejected: ${response.msg ?? 'unknown error'}`,
+          response.code,
+        );
+      }
+      const messageId = response.data?.message_id;
+      if (!messageId) {
+        throw new CardKitError('INVALID_RESPONSE', 'Lark card send has no message id');
+      }
+      return messageId;
+    } catch (error) {
+      if (error instanceof CardKitError) {
+        throw error;
+      }
+      throw new CardKitError('NETWORK_RETRYABLE', 'Lark card send request failed');
     }
   }
 

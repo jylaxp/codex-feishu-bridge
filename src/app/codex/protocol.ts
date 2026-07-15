@@ -184,6 +184,8 @@ export interface ThreadItem {
 
 export interface Turn {
   id: string;
+  /** Original user input when the runtime exposes it in a Desktop turn snapshot. */
+  input?: readonly UserInput[];
   items: ThreadItem[];
   itemsView: 'notLoaded' | 'summary' | 'full';
   status: TurnStatus;

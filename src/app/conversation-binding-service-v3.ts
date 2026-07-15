@@ -1,10 +1,11 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
 import { type BindingStore, type ChatThreadBinding } from './binding-store';
-import type { CardKitJson } from './cards/layouts';
-import { sanitizeCardText } from './cards/sanitizer';
+import { createTaskCard, type CardKitJson } from './cards/layouts';
+import { sanitizeCardMarkdown, sanitizeCardPlainText, sanitizeCardText } from './cards/sanitizer';
 import { type ThreadNavigation } from './codex/app-navigation-adapter';
-import type { BridgeConfig } from './domain';
+import type { Thread, ThreadItem, ThreadResumeResponse, Turn } from './codex/protocol';
+import type { BridgeConfig, CardProjectionPayload, SanitizedCardText, TaskStatus } from './domain';
 import type { InboundTextMessage } from './lark/intake';
 import { toast } from './lark/event-server';
 
@@ -18,6 +19,13 @@ export interface BindingCatalogV3 {
 export interface BindingCardsV3 {
   createCard(card: CardKitJson): Promise<string>;
   replyCard(rootMessageId: string, cardId: string, idempotencyKey: string): Promise<string>;
+  sendCard(chatId: string, cardId: string, idempotencyKey: string): Promise<string>;
+}
+
+export interface BindingLoggerV3 {
+  info(event: string, fields?: Readonly<Record<string, string | number | boolean | null>>): void;
+  warn(event: string, fields?: Readonly<Record<string, string | number | boolean | null>>): void;
+  error(event: string, error: unknown, fields?: Readonly<Record<string, string | number | boolean | null>>): void;
 }
 
 export interface BindingActionV3 {
@@ -37,6 +45,8 @@ interface ThreadChoice {
 
 /** Stateless command surface backed only by BindingStore. */
 export class ConversationBindingServiceV3 {
+  private readonly consumedOpenTokens = new Map<string, number>();
+
   public constructor(
     private readonly config: BridgeConfig,
     private readonly store: BindingStore,
@@ -44,6 +54,7 @@ export class ConversationBindingServiceV3 {
     private readonly cards: BindingCardsV3,
     private readonly now: () => number = Date.now,
     private readonly navigation: ThreadNavigation | undefined = undefined,
+    private readonly logger: BindingLoggerV3 | undefined = undefined,
   ) {}
 
   public getBinding(tenantKey: string, chatId: string): ChatThreadBinding | undefined {
@@ -51,12 +62,16 @@ export class ConversationBindingServiceV3 {
   }
 
   public async handleCommand(message: InboundTextMessage): Promise<boolean> {
-    const command = message.text.trim();
+    const command = firstCommand(message.text);
     if (command === '/bind' || command === '/l' || command === '/list' || command === '/ll') {
-      await this.sendPicker(message, command === '/ll');
-      return true;
+    await this.sendPicker(message, command === '/ll');
+    const binding = this.getBinding(message.tenantKey, message.chatId);
+    if (binding) {
+      await this.pushLatestHistoryCard(binding, `history:${message.messageId}:${binding.threadId}`, 'picker');
     }
-    if (message.text === '/binding') {
+    return true;
+    }
+    if (command === '/binding') {
       await this.sendStatus(message);
       return true;
     }
@@ -64,7 +79,7 @@ export class ConversationBindingServiceV3 {
       await this.openBoundThread(message);
       return true;
     }
-    if (message.text === '/unbind') {
+    if (command === '/unbind') {
       const removed = this.store.unbind(message.tenantKey, message.chatId);
       await this.reply(message, unboundCard(removed), 'unbind');
       return true;
@@ -97,12 +112,18 @@ export class ConversationBindingServiceV3 {
     } catch {
       return toast('所选会话不存在或暂时不可用，请重新 /bind', 'warning');
     }
-    this.store.bind({
+    const binding = this.store.bind({
       tenantKey: action.tenantKey,
       chatId: action.chatId,
       threadId: payload.threadId,
       workspaceId: this.config.codexCwd,
     });
+    this.logger?.info('binding_action_accepted', {
+      chatId: action.chatId,
+      threadId: payload.threadId,
+      revision: binding.revision,
+    });
+    await this.pushLatestHistoryCard(binding, `history:${action.messageId}:${binding.threadId}`, 'card_action');
     return this.openAfterBinding(payload.threadId);
   }
 
@@ -115,6 +136,11 @@ export class ConversationBindingServiceV3 {
     if (!payload || !binding || payload.threadId !== binding.threadId || payload.revision !== binding.revision) {
       return toast('会话打开操作已过期，请重新发送 /binding', 'warning');
     }
+    this.pruneConsumedOpenTokens();
+    if (this.consumedOpenTokens.has(action.token)) {
+      return toast('会话打开操作已使用，请重新发送 /binding', 'warning');
+    }
+    this.consumedOpenTokens.set(action.token, this.now() + TOKEN_TTL_MS);
     return this.openThread(binding.threadId);
   }
 
@@ -171,10 +197,195 @@ export class ConversationBindingServiceV3 {
     }
   }
 
+  private async pushLatestHistoryCard(
+    binding: ChatThreadBinding,
+    idempotencyPrefix: string,
+    source: 'picker' | 'card_action',
+  ): Promise<void> {
+    try {
+      this.logger?.info('history_push_started', {
+        source,
+        chatId: binding.chatId,
+        threadId: binding.threadId,
+      });
+      const response = await this.catalog.request<ThreadResumeResponse>('thread/resume', {
+        threadId: binding.threadId,
+        excludeTurns: false,
+      });
+      const turn = latestTerminalTurn(response.thread);
+      if (!turn) {
+        this.logger?.warn('history_push_no_terminal_turn', {
+          source,
+          chatId: binding.chatId,
+          threadId: binding.threadId,
+          turnCount: Array.isArray(response.thread.turns) ? response.thread.turns.length : 0,
+        });
+        return;
+      }
+      const card = createHistoryTaskCard(turn, response.model);
+      const cardId = await this.cards.createCard(card);
+      await this.cards.sendCard(binding.chatId, cardId, `${idempotencyPrefix}:${turn.id}`);
+      this.logger?.info('history_push_sent', {
+        source,
+        chatId: binding.chatId,
+        threadId: binding.threadId,
+        turnId: turn.id,
+      });
+    } catch (error) {
+      this.logger?.error('history_push_failed', error, {
+        source,
+        chatId: binding.chatId,
+        threadId: binding.threadId,
+      });
+    }
+  }
+
   private async reply(message: InboundTextMessage, card: CardKitJson, operation: string): Promise<void> {
     const cardId = await this.cards.createCard(card);
     await this.cards.replyCard(message.rootMessageId, cardId, `binding:${message.eventId}:${operation}`);
   }
+
+  private pruneConsumedOpenTokens(): void {
+    const now = this.now();
+    for (const [token, expiresAtMs] of this.consumedOpenTokens) {
+      if (expiresAtMs < now) {
+        this.consumedOpenTokens.delete(token);
+      }
+    }
+  }
+}
+
+function latestTerminalTurn(thread: Thread): Turn | null {
+  for (let index = thread.turns.length - 1; index >= 0; index -= 1) {
+    const turn = thread.turns[index];
+    if (turn && turn.status !== 'inProgress') {
+      return turn;
+    }
+  }
+  return null;
+}
+
+function createHistoryTaskCard(turn: Turn, model: string | null | undefined): CardKitJson {
+  const status = taskStatusFromTurn(turn);
+  const payload: CardProjectionPayload = {
+    title: sanitizeCardText('Codex 历史任务', { maxLength: 200 }),
+    prompt: sanitizeCardMarkdown(promptFromTurn(turn) ?? '无输入文本', { maxLength: 10_000 }),
+    metadata: model ? sanitizeCardMarkdown(`🤖 **模型**: \`${model}\``, { maxLength: 1_000 }) : null,
+    commentary: sanitizeCardMarkdown(commentaryFromTurn(turn), { maxLength: 10_000 }),
+    toolSummary: sanitizeCardPlainText(toolSummaryFromTurn(turn), { maxLength: 10_000 }),
+    toolCount: toolCountFromTurn(turn),
+    finalAnswer: sanitizeCardMarkdown(finalAnswerFromTurn(turn) || failureTextFromTurn(turn), { maxLength: 10_000 }),
+    footer: sanitizeCardPlainText('绑定时同步的最近历史记录', { maxLength: 500 }),
+    terminal: true,
+  };
+  return createTaskCard({ status, payload, historical: true });
+}
+
+function taskStatusFromTurn(turn: Turn): TaskStatus {
+  if (turn.status === 'completed') {
+    return 'SUCCEEDED';
+  }
+  if (turn.status === 'interrupted') {
+    return 'INTERRUPTED';
+  }
+  return 'FAILED';
+}
+
+function promptFromTurn(turn: Turn): string | null {
+  const inputPrompt = (turn.input ?? [])
+    .filter((input) => input.type === 'text')
+    .map((input) => input.text)
+    .join('\n')
+    .trim();
+  if (inputPrompt) {
+    return inputPrompt;
+  }
+  for (const item of turn.items) {
+    if (item.type !== 'userMessage' && item.type !== 'user_message') {
+      continue;
+    }
+    const text = textFromItem(item);
+    if (text) {
+      return text;
+    }
+  }
+  return null;
+}
+
+function commentaryFromTurn(turn: Turn): string {
+  return turn.items
+    .filter((item) => isAgentMessage(item) && item.phase === 'commentary')
+    .map(textFromItem)
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+function finalAnswerFromTurn(turn: Turn): string {
+  return turn.items
+    .filter((item) => isAgentMessage(item) && item.phase === 'final_answer')
+    .map(textFromItem)
+    .filter(Boolean)
+    .join('\n');
+}
+
+function failureTextFromTurn(turn: Turn): string {
+  if (turn.error?.message) {
+    return turn.error.message;
+  }
+  if (turn.status === 'interrupted') {
+    return '任务已取消';
+  }
+  return '';
+}
+
+function toolSummaryFromTurn(turn: Turn): SanitizedCardText {
+  const lines = turn.items.flatMap((item, index) => {
+    if (!isToolItem(item)) {
+      return [];
+    }
+    const command = typeof item.command === 'string' && item.command.trim()
+      ? item.command.trim().replace(/\s+/g, ' ')
+      : item.type;
+    const marker = item.exitCode === 0 || item.status === 'completed' ? '✅' : '🛠️';
+    return [`${marker} ${index + 1}. ${truncateOneLine(command, 240)}`];
+  });
+  return sanitizeCardPlainText(lines.join('\n') || '暂无', { maxLength: 10_000 });
+}
+
+function toolCountFromTurn(turn: Turn): number {
+  return turn.items.filter(isToolItem).length;
+}
+
+function isAgentMessage(item: ThreadItem): boolean {
+  return item.type === 'agentMessage' || item.type === 'agent_message';
+}
+
+function isToolItem(item: ThreadItem): boolean {
+  return item.type === 'commandExecution' || item.type === 'command_execution';
+}
+
+function textFromItem(item: ThreadItem): string {
+  if (typeof item.text === 'string' && item.text.trim()) {
+    return item.text.trim();
+  }
+  if (!Array.isArray(item.content)) {
+    return '';
+  }
+  return item.content.map((content) => {
+    if (typeof content === 'string') {
+      return content;
+    }
+    return content.type === 'text' ? content.text : '';
+  }).join('\n').trim();
+}
+
+function truncateOneLine(value: string, maxLength: number): string {
+  const compact = value.replace(/\s+/g, ' ').trim();
+  return compact.length <= maxLength ? compact : `${compact.slice(0, maxLength - 1)}…`;
+}
+
+function firstCommand(text: string): string {
+  return text.trim().split(/\s+/, 1)[0] ?? '';
 }
 
 function pickerCard(
@@ -303,7 +514,7 @@ function parseChoices(value: unknown): readonly ThreadChoice[] {
 }
 
 function pickerOptionLabel(choice: ThreadChoice): string {
-  const name = sanitizeCardText(choice.title, { maxLength: 80 });
+  const name = sanitizeCardPlainText(choice.title, { maxLength: 80 });
   const workspace = choice.cwd?.split(/[\\/]/).filter(Boolean).at(-1);
   const label = workspace ? `💬 ${name} (📁 ${workspace})` : `💬 ${name}`;
   return label.length > 100 ? `${label.slice(0, 97)}...` : label;

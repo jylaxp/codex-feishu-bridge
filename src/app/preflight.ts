@@ -8,8 +8,8 @@ import {
 } from './config';
 import {
   BridgeConfig,
-  DataDirectoryLayout,
   PreflightResult,
+  RuntimeDirectoryLayout,
 } from './domain';
 import { buildCodexEnvironment } from './codex/environment';
 
@@ -169,23 +169,6 @@ function ensurePrivateDirectory(directoryPath: string): void {
   }
 }
 
-/** Creates the clean-slate runtime directories with private permissions. */
-export function prepareDataDirectory(dataDir: string): DataDirectoryLayout {
-  assertAbsolutePath(dataDir, 'BRIDGE_DATA_DIR');
-  ensurePrivateDirectory(dataDir);
-  const rootDir = fs.realpathSync.native(dataDir);
-  const logDir = path.join(rootDir, 'logs');
-  const temporaryDir = path.join(rootDir, 'tmp');
-  ensurePrivateDirectory(logDir);
-  ensurePrivateDirectory(temporaryDir);
-  return Object.freeze({
-    rootDir,
-    databasePath: path.join(rootDir, 'bridge.db'),
-    logDir,
-    temporaryDir,
-  });
-}
-
 /** Prepares only the minimal config home used by the current runtime. */
 export function prepareConfigHome(configHome: string): string {
   assertAbsolutePath(configHome, 'BRIDGE_CONFIG_HOME');
@@ -217,13 +200,9 @@ export function runPreflight(
     ? canonicalManagedSocket(config.appServerSocketPath)
     : null;
 
-  const configHome = prepareConfigHome(config.configHome ?? config.dataDir ?? '');
-  // Kept as a compatibility-shaped preflight value while consumers migrate;
-  // new runtime code must use configHome and never open databasePath.
-  const dataDirectory = Object.freeze({
+  const configHome = prepareConfigHome(config.configHome ?? '');
+  const runtimeDirectory: RuntimeDirectoryLayout = Object.freeze({
     rootDir: configHome,
-    databasePath: path.join(configHome, 'bridge.db'),
-    logDir: configHome,
     temporaryDir: fs.realpathSync.native(os.tmpdir()),
   });
 
@@ -239,7 +218,7 @@ export function runPreflight(
   return Object.freeze({
     config: canonicalConfig,
     configHome,
-    dataDirectory,
+    runtimeDirectory,
     nodeVersion,
   });
 }

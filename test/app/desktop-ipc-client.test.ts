@@ -122,6 +122,41 @@ test('uses the uid-scoped codex-ipc socket and never an Electron SingletonSocket
   );
 });
 
+test('fails the Desktop connection instead of silently dropping an incompatible stream version', () => {
+  const client = new DesktopIpcClient({ socketPath: '/tmp/codex-ipc-test.sock' });
+  const internal = client as unknown as { handleMessage(message: unknown, epoch: number): void };
+  internal.handleMessage({
+    type: 'broadcast',
+    method: 'thread-stream-state-changed',
+    version: 12,
+    params: { conversationId: 'thread-bound', change: { type: 'snapshot', conversationState: {} } },
+  }, 0);
+  assert.equal(client.state, 'FAILED');
+});
+
+test('fails the Desktop connection when a stream broadcast omits its version', () => {
+  const client = new DesktopIpcClient({ socketPath: '/tmp/codex-ipc-test.sock' });
+  const internal = client as unknown as { handleMessage(message: unknown, epoch: number): void };
+  internal.handleMessage({
+    type: 'broadcast',
+    method: 'thread-stream-state-changed',
+    params: { conversationId: 'thread-bound', change: { type: 'snapshot', conversationState: {} } },
+  }, 0);
+  assert.equal(client.state, 'FAILED');
+});
+
+test('fails the Desktop connection when a stream broadcast is malformed', () => {
+  const client = new DesktopIpcClient({ socketPath: '/tmp/codex-ipc-test.sock' });
+  const internal = client as unknown as { handleMessage(message: unknown, epoch: number): void };
+  internal.handleMessage({
+    type: 'broadcast',
+    method: 'thread-stream-state-changed',
+    version: 11,
+    params: { conversationId: 'thread-bound', change: { type: 'unexpected' } },
+  }, 0);
+  assert.equal(client.state, 'FAILED');
+});
+
 test('initializes, starts a follower turn, and preserves an interleaved stream broadcast', async () => {
   const broadcast: DesktopThreadStreamBroadcast = {
     type: 'broadcast',
@@ -329,6 +364,7 @@ test('classifies router no-client-found as provably unsent without requiring a m
         assert.ok(error instanceof DesktopIpcRequestError);
         assert.equal(error.code, 'DESKTOP_IPC_REMOTE_REJECTED');
         assert.equal(error.disposition, 'PROVABLY_UNSENT');
+        assert.equal(error.remoteError, 'no-client-found');
         return true;
       },
     );

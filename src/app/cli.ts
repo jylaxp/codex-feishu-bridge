@@ -11,6 +11,7 @@ interface CliArguments {
   readonly threadId: string | undefined;
   readonly configHome: string | undefined;
   readonly confirm: boolean;
+  readonly destructive: boolean;
 }
 
 export interface CliRuntime {
@@ -47,7 +48,7 @@ export async function runCli(
   if (parsed.command === 'config-reset') {
     const configHome = parsed.configHome ?? defaultConfigHome();
     const report = parsed.confirm
-      ? resetConfigHome(configHome, { confirm: true })
+      ? resetConfigHome(configHome, { confirm: true, destructive: parsed.destructive })
       : inspectConfigReset(configHome);
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
     return;
@@ -96,6 +97,7 @@ function parseArguments(args: readonly string[]): CliArguments {
   let threadId: string | undefined;
   let configHome: string | undefined;
   let confirm = false;
+  let destructive = false;
   let commandSeen = false;
 
   for (let index = 0; index < args.length; index += 1) {
@@ -112,6 +114,10 @@ function parseArguments(args: readonly string[]): CliArguments {
     }
     if (argument === '--confirm') {
       confirm = true;
+      continue;
+    }
+    if (argument === '--destructive') {
+      destructive = true;
       continue;
     }
     if (argument === '--help' || argument === '-h') {
@@ -142,7 +148,10 @@ function parseArguments(args: readonly string[]): CliArguments {
   if (confirm && command !== 'config-reset') {
     throw new Error('--confirm is only valid with config reset');
   }
-  return { command, threadId, configHome, confirm };
+  if (destructive && command !== 'config-reset') {
+    throw new Error('--destructive is only valid with config reset');
+  }
+  return { command, threadId, configHome, confirm, destructive };
 }
 
 function requireOptionValue(
@@ -193,12 +202,12 @@ function helpText(): string {
     '  codex-feishu-bridge run',
     '  codex-feishu-bridge doctor',
     '  codex-feishu-bridge validate-ui-sync [--thread THREAD_ID]',
-    '  codex-feishu-bridge config reset [--config-home PATH] [--confirm]',
+    '  codex-feishu-bridge config reset [--config-home PATH] [--confirm] [--destructive]',
     '',
     'Configuration is loaded from ~/.codex-feishu-bridge/.env by default.',
     'Process/service-manager environment values override the .env file.',
     'validate-ui-sync without --thread lists recent workspace tasks.',
-    'config reset is a dry run until --confirm; it retains only .env and starts empty bindings.',
+    'config reset is a dry run until --confirm; --destructive is required to clear an already-current binding.',
     '',
   ].join('\n');
 }

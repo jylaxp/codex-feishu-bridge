@@ -17,10 +17,18 @@ import { DesktopApprovalService } from './desktop-approval-service';
 import { BridgeConfig } from './domain';
 import { InMemoryOrchestrator } from './in-memory-orchestrator';
 import { CachedTenantTokenProvider, createLarkRuntimeClients } from './lark/client';
+import {
+  LarkMessageAcknowledgement,
+  type LarkMessageAcknowledgementApi,
+} from './lark/message-acknowledgement';
+import { OutputFileUploader, type FileUploadApi } from './lark/output-file-uploader';
 import { LarkEventServer, toast } from './lark/event-server';
+import type { InboundTextMessage } from './lark/intake';
 import { BridgeLogger } from './logger';
 import { runPreflight } from './preflight';
 import { BridgeProcessLock } from './process-lock';
+import { RateLimitCache } from './rate-limit-cache';
+import { acquireConfigResetExclusion } from './config-reset';
 
 export interface BridgeRuntime {
   readonly config: BridgeConfig;
@@ -38,10 +46,23 @@ export async function startBridge(
   logger: BridgeLogger = new BridgeLogger(),
 ): Promise<BridgeRuntime> {
   const effectiveEnv = loadBridgeEnvironment(env);
-  const preflight = runPreflight(parseEnvironment(effectiveEnv));
+  const parsedConfig = parseEnvironment(effectiveEnv);
+  const resetExclusion = acquireConfigResetExclusion(parsedConfig.configHome ?? '');
+  let preflight: ReturnType<typeof runPreflight>;
+  let processLock: BridgeProcessLock;
+  try {
+    preflight = runPreflight(parsedConfig);
+    logger.configure({
+      configHome: preflight.configHome,
+      logToFile: preflight.config.logToFile,
+      logFilePath: preflight.config.logFilePath,
+    });
+    processLock = new BridgeProcessLock(preflight.configHome);
+    processLock.acquire();
+  } finally {
+    resetExclusion.release();
+  }
   const config = preflight.config;
-  const processLock = new BridgeProcessLock(preflight.configHome);
-  processLock.acquire();
 
   let resolveFailure!: (error: Error) => void;
   const failure = new Promise<Error>((resolve) => {
@@ -67,9 +88,24 @@ export async function startBridge(
     new CachedTenantTokenProvider(config.larkAppId, config.larkAppSecret),
     lark.api as unknown as LarkReplyApi,
   );
+  const acknowledgements = new LarkMessageAcknowledgement(
+    lark.api as unknown as LarkMessageAcknowledgementApi,
+    logger,
+  );
+  const rateLimits = new RateLimitCache(
+    () => appServer.request('account/rateLimits/read', {}),
+    config.rateLimitQueryIntervalMs,
+  );
+  const outputFileUploader = new OutputFileUploader(config, lark.api as unknown as FileUploadApi);
+  const navigation = new CodexAppNavigationAdapter();
   const orchestrator = new InMemoryOrchestrator(config, desktop, cards, {
     onCardError: (error) => logger.error('card_update_failed', error),
-    readRateLimits: () => appServer.request('account/rateLimits/read', {}),
+    readRateLimits: () => rateLimits.get(),
+    uploadOutputFiles: (answer, rootMessageId, taskId) => (
+      outputFileUploader.uploadMarkdownFiles(answer, rootMessageId, taskId)
+    ),
+    navigation,
+    resolveBindingByThreadId: (threadId) => bindings.getUniqueByThreadId(threadId),
   });
   const approvals = new DesktopApprovalService(config, desktop, cards, orchestrator);
   const conversationBindings = new ConversationBindingServiceV3(
@@ -78,7 +114,8 @@ export async function startBridge(
     appServer,
     cards,
     undefined,
-    new CodexAppNavigationAdapter(),
+    navigation,
+    logger,
   );
   const commands = new BridgeCommandService(
     config,
@@ -86,7 +123,9 @@ export async function startBridge(
     appServer,
     cards,
     orchestrator,
-    new CodexAppNavigationAdapter(),
+    navigation,
+    undefined,
+    rateLimits,
   );
   const desktopSupervisor = new DesktopIpcSupervisor(desktop, {
     onReady: (handshake) => {
@@ -101,20 +140,29 @@ export async function startBridge(
     },
     onReconnectError: (error) => logger.error('desktop_ipc_reconnect_failed', error),
   });
+  const processInboundMessage = async (message: InboundTextMessage): Promise<void> => {
+    if (await commands.handle(message)) {
+      return;
+    }
+    if (await conversationBindings.handleCommand(message)) {
+      return;
+    }
+    const binding = conversationBindings.getBinding(message.tenantKey, message.chatId);
+    if (!binding) {
+      await conversationBindings.ensureBoundOrPrompt(message);
+      return;
+    }
+    await orchestrator.handleInbound(message, binding);
+  };
   const eventServer = new LarkEventServer(lark.websocket, config, {
     onMessage: async (message) => {
-      if (await commands.handle(message)) {
-        return;
-      }
-      if (await conversationBindings.handleCommand(message)) {
-        return;
-      }
-      const binding = conversationBindings.getBinding(message.tenantKey, message.chatId);
-      if (!binding) {
-        await conversationBindings.ensureBoundOrPrompt(message);
-        return;
-      }
-      await orchestrator.handleInbound(message, binding);
+      void acknowledgements.ack(message);
+      void processInboundMessage(message).catch((error: unknown) => {
+        logger.error('lark_async_message_failed', toError(error), {
+          chatId: message.chatId,
+          messageId: message.messageId,
+        });
+      });
     },
     onCardAction: async (action) => {
       if (action.action === 'binding') {
@@ -149,7 +197,7 @@ export async function startBridge(
   let stopped = false;
   try {
     bindings.load();
-    await verifyCodexRuntimeContract(config, effectiveEnv, preflight.dataDirectory.temporaryDir);
+    await verifyCodexRuntimeContract(config, effectiveEnv, preflight.runtimeDirectory.temporaryDir);
     await desktopSupervisor.start();
     await appServer.start();
     await eventServer.start();

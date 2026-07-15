@@ -12,10 +12,12 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import {
+  acquireConfigResetExclusion,
   ConfigResetError,
   inspectConfigReset,
   resetConfigHome,
 } from '../../src/app/config-reset';
+import { BridgeProcessLock } from '../../src/app/process-lock';
 
 function withLegacyHome(callback: (home: string) => void): void {
   const root = mkdtempSync(join(tmpdir(), 'config-reset-'));
@@ -58,6 +60,65 @@ test('confirmed reset preserves only .env and creates an empty bindings file', (
     assert.equal(existsSync(join(home, 'sessions.json')), false);
     assert.equal(existsSync(join(home, 'bridge.db')), false);
     assert.equal(existsSync(join(home, 'app-server-v2')), false);
+  });
+});
+
+test('upgrades an existing config version line without rewriting other .env content', () => {
+  withLegacyHome((home) => {
+    writeFileSync(join(home, '.env'), '# preserved\nBRIDGE_CONFIG_VERSION=1\nUNKNOWN_KEY=value\n');
+    resetConfigHome(home, { confirm: true });
+    const env = readFileSync(join(home, '.env'), 'utf8');
+    assert.match(env, /^BRIDGE_CONFIG_VERSION=2$/m);
+    assert.doesNotMatch(env, /BRIDGE_CONFIG_VERSION=1/);
+    assert.match(env, /UNKNOWN_KEY=value/);
+  });
+});
+
+test('requires reset when an otherwise minimal home has an outdated config version', () => {
+  const root = mkdtempSync(join(tmpdir(), 'config-reset-version-'));
+  const home = join(root, '.codex-feishu-bridge');
+  try {
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(home, '.env'), 'BRIDGE_CONFIG_VERSION=1\nLARK_APP_ID=cli_example\n');
+    writeFileSync(join(home, 'bindings.json'), '{\n  "schemaVersion": 1,\n  "bindings": []\n}\n');
+
+    assert.equal(inspectConfigReset(home).action, 'reset_required');
+    const report = resetConfigHome(home, { confirm: true });
+    assert.equal(report.action, 'already_current');
+    assert.match(readFileSync(join(home, '.env'), 'utf8'), /^BRIDGE_CONFIG_VERSION=2$/m);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('refuses reset while the parent reset lock is held', () => {
+  withLegacyHome((home) => {
+    const lock = new BridgeProcessLock(join(home, '..'), {
+      lockFileName: '.codex-feishu-bridge.reset.lock',
+    });
+    lock.acquire();
+    try {
+      assert.throws(
+        () => resetConfigHome(home, { confirm: true }),
+        /config reset is in progress/,
+      );
+    } finally {
+      lock.release();
+    }
+  });
+});
+
+test('startup exclusion prevents reset before Bridge acquires its process lock', () => {
+  withLegacyHome((home) => {
+    const lock = acquireConfigResetExclusion(home);
+    try {
+      assert.throws(
+        () => resetConfigHome(home, { confirm: true }),
+        /Bridge start or another config reset is in progress/,
+      );
+    } finally {
+      lock.release();
+    }
   });
 });
 

@@ -1,44 +1,23 @@
 # Codex Feishu Bridge 2
 
-这是一个基于官方 `codex app-server` 的飞书实时桥。飞书文本消息被转换为 Codex thread/turn，App Server 的
-`thread/*`、`turn/*`、`item/*` 事件驱动飞书 CardKit 卡片，命令和文件变更审批通过卡片按钮返回 App Server。
+一个本机、单用户的飞书控制桥：飞书的消息被投递到已绑定的 ChatGPT Desktop 会话；Desktop owner runtime 负责在 ChatGPT 页面执行和渲染，Bridge 将同一 turn 的状态实时投影为飞书 CardKit 卡片。
 
-版本 2 是全新主链，不读取旧 JSON 会话、不访问 ChatGPT/Codex 私有数据库，也不注入 Electron。飞书卡片和
-Desktop-follower IPC 共同驱动实时 UI；精确打开已绑定会话使用 Codex 官方 `codex://threads/<threadId>` deep link。
+Bridge 不读取或修改 ChatGPT/Codex 数据库、不注入 Electron，也不保存 prompt、回复、推理、审批、队列或卡片状态。唯一跨重启文件是 `bindings.json`：它记录“当前飞书 chat 绑定到哪个 ChatGPT thread”及静态执行设置。
 
-## 数据流
+## 运行链路
 
 ```text
-飞书 WebSocket 事件
-  -> tenant/chat/user 白名单
-  -> /bind 从 thread/list 选择 ChatGPT 会话并持久绑定
-  -> 绑定后精确打开对应 ChatGPT task（失败不影响执行）
-  -> 只允许 thread/resume；未绑定时拒绝创建任务
-  -> turn/start；同一 root 的运行中补充消息走 turn/steer
-  -> App Server notification / approval request
-  -> 内存事件归约 + CardKit 实时投影
-  -> CardKit 完整卡片更新与 terminal finalize
+飞书消息/卡片操作
+  -> tenant/chat/user allowlist
+  -> bindings.json 取得精确 threadId
+  -> ChatGPT Desktop follower IPC: start / steer / interrupt / approval
+  -> Desktop thread-stream snapshot/patch (version 11)
+  -> 内存任务状态 -> 原消息所在会话/话题中的 CardKit 卡片
 ```
 
-核心保证：
+App Server 只承担控制面：会话列表、创建/派生/归档、目标/压缩、技能/MCP 查询和账户窗口用量。它不执行飞书的模型 turn。
 
-- 初始卡片发送失败时不会启动模型。
-- Bridge 从不替用户新建 ChatGPT 会话；每个飞书 chat 必须先显式选择已有会话。
-- Bridge 不持久化任务、队列、审批、卡片或 prompt；重启后这些运行中状态会结束，重新发送即可。
-- 当前版本只支持单实例部署，并且全局只允许一个写 turn；不同 root 按 durable 插入顺序等待，即使后到任务的
-  CardKit 建卡先完成，也不能越过更早任务。
-- mutating RPC 在 transport write 前记录真实 JSON-RPC ID；结果不确定时不盲目重发。
-- commentary、reasoning summary、命令输出和 final answer 分区；raw reasoning 不落库、不进卡片。
-- CardKit sequence 只在成功响应后推进，冲突时停止，不猜测下一序号。
-- 审批令牌为随机一次性 token，绑定 tenant/chat/审批卡/epoch/decision/TTL。
-- 任务取消令牌绑定 task，并在消费时校验 tenant/chat/任务卡及活动状态；它不绑定 epoch 或固定 TTL。
-
-## 环境要求
-
-- Node.js `24.18.0`，项目包含 `.nvmrc`。
-- 本机可执行的 Codex CLI；当前发布只支持精确版本 `codex-cli 0.144.3` 及其已锁定 schema。
-- 飞书自建应用已启用机器人、WebSocket 事件订阅和 CardKit/消息权限。
-- `CODEX_CWD` 必须位于 `ALLOWED_WORKSPACE_ROOTS` 内。
+## 安装
 
 ```bash
 nvm install
@@ -47,51 +26,35 @@ npm ci
 npm run check
 ```
 
+要求 Node.js `>=24.18.0 <25`、当前用户可连接的 ChatGPT Desktop，以及已经配置机器人/WebSocket/CardKit 权限的飞书自建应用。当前发布只接入经 fixture 验证的 macOS Desktop IPC；Windows 适配将在独立协议探测完成后接入。
+
 ## 配置
 
-默认将配置放在 `~/.codex-feishu-bridge/.env`（可通过 `BRIDGE_CONFIG_HOME` 更换）。process/service manager
-注入的同名环境变量优先于 `.env`，适合部署侧覆盖单个值。CLI 不支持任意 `--env` 路径，避免误读工作目录中的
-凭证文件；所有白名单都必须显式配置，空值会导致启动失败。
+默认配置为 `~/.codex-feishu-bridge/.env`。`BRIDGE_CONFIG_HOME` 可改为当前机器的绝对路径；显式进程环境优先于 `.env`。请从 `.env.example` 复制并按机器实际路径填写，不要复制其他开发者的路径。
 
 ```dotenv
 LARK_APP_ID=cli_0123456789abcdef
-LARK_APP_SECRET=xxx
+LARK_APP_SECRET=replace_me
 LARK_TENANT_KEY=tenant_key
-
 ALLOWED_CHATS=oc_xxx
 AUTHORIZED_USERS=ou_user_xxx
-ALLOWED_APPROVERS=ou_approver_xxx
-# 可选；/cmd、/run、/shell 的本地可执行文件白名单。
-# 默认 ls,pwd,git,find,cd，仍会校验参数、工作区与输出上限。
-# ALLOWED_SHELL_COMMANDS=ls,pwd,git,find,cd
+ALLOWED_APPROVERS=ou_user_xxx
 
 CODEX_BIN=/absolute/path/to/codex
 CODEX_CWD=/absolute/path/to/project
 ALLOWED_WORKSPACE_ROOTS=/absolute/path/to/project
-BRIDGE_CONFIG_HOME=/absolute/path/to/private/codex-feishu-bridge
 
-# 默认 owned_stdio；如已验证 ChatGPT 与同一 app-server daemon，可切 managed_proxy。
-APP_SERVER_MODE=owned_stdio
-# managed_proxy 可选；不填时连接 Codex 默认控制 socket。
-# APP_SERVER_SOCKET_PATH=/absolute/path/to/app-server.sock
-
-MAX_TEXT_LENGTH=10000
-CARD_UPDATE_INTERVAL_MS=1500
-MAX_QUEUED_TASKS=100
+# 旧配置语义继续保留
+RATE_LIMIT_QUERY_INTERVAL_MS=300000
+LOG_TO_FILE=false
+LOG_FILE_PATH=bridge.log
+ENABLE_AUTO_FILE_UPLOAD=false
+ALLOWED_SHELL_COMMANDS=ls,pwd,git,find,cd
 ```
 
-`BRIDGE_CONFIG_HOME` 仅保留 `.env` 与 `bindings.json`，运行时不会创建 SQLite、任务日志或 prompt 历史。
-服务管理器的 Secret、进程环境和重定向 stdout 日志权限由部署侧负责。
+`LOG_TO_FILE=true` 时，Bridge 写脱敏、轮转的运行日志；相对 `LOG_FILE_PATH` 位于 config-home 的 `logs/`，绝对路径按用户显式配置处理。日志不会记录 prompt、回复或 CardKit payload。`ENABLE_AUTO_FILE_UPLOAD=true` 时，最终回复中指向授权 workspace 内的非图片本地 Markdown 文件会作为同一飞书话题的文件回复上传；该信息不会保存到 Bridge 文件。
 
-当前没有多实例 lease。进程会在 `BRIDGE_CONFIG_HOME` 获取带所有者和存活 PID 校验的独占锁；每个飞书应用及
-数据目录同时只能运行一个 Bridge 进程。禁止 PM2 cluster、systemd 多副本或 Kubernetes `replicas > 1`。
-
-`managed_proxy` 只启动 `codex app-server proxy`，不会创建 daemon。使用前必须在同一系统用户下执行：
-
-```bash
-codex app-server daemon start
-codex app-server daemon version
-```
+配置目录只允许 `.env` 和 `bindings.json`。它不创建 SQLite、WAL、任务历史或恢复队列。Bridge 崩溃/重启、Desktop 断开或网络结果未知时，当前进程内任务直接停止跟踪且绝不自动重放，用户可在 ChatGPT Desktop 继续处理或重新从飞书发送。
 
 ## 启动与检查
 
@@ -101,132 +64,56 @@ node dist/app/cli.js doctor
 node dist/app/cli.js run
 ```
 
-也可以全局安装后运行：
+一个 config home 同时只允许一个 Bridge 进程。运行期获得带 PID/所有者校验的私有锁；配置重置也有独立锁，二者互斥。
+
+旧版本升级使用显式重置，不迁移旧会话、任务或审批状态：
 
 ```bash
-codex-feishu-bridge doctor
-codex-feishu-bridge run
+# 只查看将保留/删除什么，不写文件
+codex-feishu-bridge config reset
+
+# 仅在旧目录时执行：保留 .env 的注释、顺序、未知键，清空 bindings
+codex-feishu-bridge config reset --confirm
+
+# 当前已经是新结构时，只有明确 destructive 才会清空已有 bindings
+codex-feishu-bridge config reset --confirm --destructive
 ```
 
-`doctor` 会验证：
+重置会将 `.env` 中的 `BRIDGE_CONFIG_VERSION` 升级为 `2`，删除所有旧运行文件，并要求用户重新 `/bind`。
 
-- Node 版本；
-- `CODEX_BIN` 的真实路径、版本和可执行权限；
-- 当前 CLI 生成的 App Server JSON schema digest；
-- cwd/allowed roots、白名单数量和 bindings 文件；
-- 当前选择的 `owned_stdio` 或 `managed_proxy` 模式。
+## 飞书命令
 
-飞书 WebSocket 的 `start()` 只有收到 SDK `onReady` 后才算成功。SDK 在 ready 后报告终止错误时，CLI 会先
-完成受控停机再以失败退出，交给 systemd/launchd 等服务管理器重启，避免“进程存活但已不收消息”。
+`/bind`、`/l`、`/list`、`/ll`（含旧版尾随参数）均显示会话选择卡；`/ll` 是表格视图。`/binding` 显示当前绑定，`/open` 打开精确的已绑定会话，`/unbind` 解除绑定。绑定卡和打开卡都限制 tenant/chat、授权用户、revision、10 分钟 TTL；打开卡只能使用一次。
 
-## ChatGPT 页面同步验证
+还支持：
 
-App Server 可以确定驱动本 Bridge 和飞书 UI，但官方合同没有保证外部客户端追加 turn 后，已经打开的
-ChatGPT Desktop 页面一定实时刷新。因此页面同步不作为未验证的生产承诺。
+- `/help`、`/h`、`help`、`h`
+- `/status`、`/usage`、`/quota`
+- `/model`、`/personality`、`/style`、`/plan`、`/cwd`、`/workspace`
+- `/new`、`/create`、`/fork`、`/branch`、`/delete`、`/archive`
+- `/goal`、`/compact`、`/compress`、`/mcp`、`/skills`
+- `/cancel`、`/stop`，以及任务卡的“停止任务”按钮
+- `/cmd`、`/run`、`/shell` 与旧 router 的未知 slash fallback（首命令必须在 `ALLOWED_SHELL_COMMANDS` 白名单中）
 
-先列出当前 workspace 最近的 task：
+飞书消息必须先显式绑定既有会话。普通任务通过 Desktop follower IPC 进入这个精确 thread：新 root 走 start，同 root 运行期间的补充消息走 steer，不同 root 排队。`@技能名称` 文本会原样保留并进入 Desktop runtime；当前 Desktop follower 协议没有独立的结构化 skill 字段，Bridge 不会猜测或重写技能内容。
 
-```bash
-codex-feishu-bridge validate-ui-sync
-```
+会话可见性由 `ALLOWED_CHATS` 决定。卡片会作为发起消息的 reply，始终留在原会话/原话题，而不是临时会话。
 
-再对明确选择的测试 task 追加 nonce turn：
+## 卡片和审批
 
-```bash
-codex-feishu-bridge validate-ui-sync \
-  --thread THREAD_ID
-```
+任务卡保留原有 `🌌 Codex Remote Control` 流式布局、Prompt/metadata/推理过程/工具折叠面板/最终结果/统计页脚和固定 element ID。运行中显示 `▍` 光标；终态先关闭 streaming mode，再替换完整成功、失败或取消卡。页脚随 Desktop stream 和共享 TTL 的 account/rate-limit 查询更新模型、输入/输出 token、上下文、API 次数、7d reset 与 credits。
 
-无 `--thread` 时，验证器只输出 `threadId`、`status`、`updatedAt`，不会输出会话名称、内容预览或本地路径。
-验证器只使用 managed proxy，不读取生产 Bridge 数据库。输出会证明 Bridge 是否收到该 turn 的事件流，并把
-Desktop 页面结论标记为 `manual_verification_required`。只有在页面中也看到同一 nonce 后，才能将部署配置切换
-为 `APP_SERVER_MODE=managed_proxy` 并声明同 runtime 页面同步。
+Desktop 请求 command/file approval 时，Bridge 在相同飞书 root 下发送独立审批卡。`accept`、`acceptForSession`、`decline`、`cancel` 只在 Desktop 允许时显示；操作后会将原审批卡替换为不可再点击的最终状态卡。审批或任务的 IPC 结果会区分“未发送、明确拒绝、结果未知”，未知结果绝不自动重试。
 
-## 飞书产品行为
+打开指定会话使用当前 Codex 文档保留的 `codex://threads/<threadId>` 兼容 deep link。导航只使用已持久绑定的精确 thread ID，失败不会改变 binding 或任务投递目标。若 Desktop follower router 返回 `no-client-found`（明确表示该 thread 尚未有页面 owner，未执行 turn），Bridge 会自动打开该绑定会话，并在短暂等待后限次重试；超时、连接丢失或其他拒绝结果绝不自动重试。
 
-首次使用先在飞书中发送：
-
-```text
-/bind      列出最近 8 个 ChatGPT 会话并选择绑定
-/binding   查看当前绑定
-/unbind    解除绑定
-```
-
-`/bind` 全局列出最近 99 个非归档交互会话（CLI/ChatGPT Desktop）；卡片不展示内容预览、完整 thread ID 或
-绝对路径。会话原工作区只显示目录名用于识别，实际执行工作区始终是经过预检的 `CODEX_CWD`，选择其它来源
-会话不会扩大 Bridge 的文件访问范围。选择按钮使用绑定 tenant/chat/operator、10 分钟过期的 HMAC token；
-绑定与解绑都会推进持久化 revision，旧选择卡不能在解绑后重新生效。未绑定时普通消息会先持久化为拒绝再收到
-选择卡，不会调用 `thread/start`，也不会因事件重投在稍后意外执行。重新绑定只影响之后的新 root；已有 root
-下的补充消息继续原任务，避免把运行中上下文切到另一个会话。
-
-`ALLOWED_CHAT_IDS` 同时是卡片可见性的信任边界：群成员可以看到该群内的绑定标题、任务过程和最终结果。若群成员
-不应看到这些信息，应使用与机器人的单聊或单独的受控群，不要把该群加入 allowlist。
-
-一条新 root 消息会创建任务卡，包含：
-
-- 用户输入；
-- 当前任务状态；
-- commentary 与可展示 reasoning summary；
-- 命令/工具输出尾部；
-- final answer；
-- 取消按钮。
-
-运行中同 root 的新消息通过 `turn/steer(expectedTurnId)` 追加。不同 root 在已有写 turn 时进入队列。
-
-App Server 发出 command/file approval request 时，Bridge 发送独立审批卡：
-
-- 批准一次：`accept`
-- 本会话批准：`acceptForSession`
-- 拒绝：`decline`
-- 取消：`cancel`
-
-`acceptForSession` 只在 App Server 的 `availableDecisions` 包含它时展示，并要求点击者同时属于
-`ALLOWED_APPROVERS`。Bridge 不缓存或扩大 App Server 的会话授权范围。除会话绑定命令外，首期不处理附件、
-模型/cwd 动态选择或自动本地文件上传。
-
-CardKit 更新从 sequence `1` 开始且严格递增；每次 replace/finalize 都带 1–64 字节的幂等 UUID。任务卡
-JSON 在本地限制为 29 KiB，为官方 30 KB 上限保留传输余量。终态先关闭 streaming mode，再替换最终卡；
-两个成功检查点都写入 SQLite，重启后不会猜测 sequence。
-
-CardKit sequence 冲突会 fail-stop：对应 outbox 记录标记为 `FAILED/CARD_SEQUENCE_CONFLICT`，不会猜测
-下一个序号，也不会自动创建替代卡；原卡可能保持旧内容，需要人工对账。
-
-## 持久化与恢复
-
-SQLite 表：
-
-- `inbox_event`
-- `chat_thread_binding`
-- `thread_binding`
-- `task`
-- `task_item`
-- `rpc_intent`
-- `approval`
-- `card_outbox`
-- `meta`
-
-数据库启用 foreign keys、WAL、FULL synchronous、busy timeout、defensive mode，并禁止加载 extension。
-当前 schema 为 v5；`chat_thread_binding` 保存飞书 chat 当前选中的 ChatGPT thread，root binding 保存任务
-首次使用时捕获的选择；`inbox_event.payload_text` 仅为尚未确认送达的 `turn/steer` 提供崩溃恢复。数据库会保存
-任务 prompt、脱敏后的展示摘要和工具输出尾部，因此整个 `BRIDGE_DATA_DIR` 必须按敏感业务数据管理；凭证、
-action token 明文、原始飞书 callback 和 raw CoT 不入库。
-
-App Server 断开后旧 epoch 审批会失效，活动任务进入 `RECOVERING`；重连使用 `thread/resume` 的 snapshot
-收敛状态。无法证明身份或结果的任务进入 `NEEDS_REVIEW`，不会自动重发 turn。
-
-对于运行中补充消息，Bridge 在同一事务中写入 inbox、明文 payload 和 PREPARED steer intent。只有能证明
-从未写入 transport 的 PREPARED intent 才会在本进程内恢复发送；已标记 SENT 但无结果的 intent 进入
-UNKNOWN，禁止盲目重放。排队任务可直接取消，重启恢复也会把对应 inbox 收敛到终态。
-
-## 开发与验收
+## 验收
 
 ```bash
 npm run typecheck:app
 npm run test:app
 npm run build:app
-npm pack --dry-run
+npm run check:package
 ```
 
-新生产代码仅位于 `src/app/`。架构测试禁止其 import 旧 `src/index.ts`、adapter、Desktop IPC、injector、旧
-session/history/storage/media 模块。实施计划、部署说明、测试报告和代码审查报告位于
-`plans/2026-07-13-feishu-app-server-bridge/`。
+发布前还要以真实飞书机器人和 ChatGPT Desktop 手工验证：选择/重绑/解绑、`/open`、新 root + steer + interrupt、Desktop 页面实时显示、推理/工具/终态卡流式更新、审批最终卡、7d 用量、Bridge/网络/ChatGPT 重启后的“不重放”边界，以及配置 reset 的 dry-run/confirm/destructive 三种路径。

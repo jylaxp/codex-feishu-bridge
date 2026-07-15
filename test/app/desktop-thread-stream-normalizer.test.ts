@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import type { DesktopThreadStreamBroadcast } from '../../src/app/codex/desktop-ipc-client';
-import { DesktopThreadStreamNormalizer } from '../../src/app/codex/desktop-thread-stream-normalizer';
+import {
+  DesktopThreadStreamNormalizer,
+  DesktopThreadStreamProtocolError,
+} from '../../src/app/codex/desktop-thread-stream-normalizer';
 import {
   createEventReducerState,
   createProjectionSnapshot,
@@ -96,6 +99,7 @@ function canonicalSnapshotBroadcast(): DesktopThreadStreamBroadcast {
                   params: {
                     threadId: 'thread-canonical',
                     clientUserMessageId: 'feishu-message-id',
+                    input: [{ type: 'text', text: 'canonical input', text_elements: [] }],
                   },
                   turnId: 'turn-canonical',
                   status: 'inProgress',
@@ -204,10 +208,24 @@ test('normalizes a Desktop snapshot and patches into canonical reducer events', 
     notifications.filter((notification) => notification.method === 'turn/completed').length,
     1,
   );
+  const started = notifications.find((notification) => notification.method === 'turn/started');
+  assert.equal(
+    (started?.params as { readonly turn?: { readonly input?: readonly { readonly text?: string }[] } })
+      .turn?.input?.[0]?.text,
+    'hello',
+  );
   const firstAgentDelta = notifications.find((notification) => (
     notification.method === 'item/agentMessage/delta'
   ));
   assert.equal((firstAgentDelta?.params as { readonly phase?: string }).phase, 'final_answer');
+});
+
+test('fails closed when the Desktop stream version no longer matches the pinned contract', () => {
+  const incompatible = { ...snapshotBroadcast(), version: 12 };
+  assert.throws(
+    () => new DesktopThreadStreamNormalizer().handle(incompatible),
+    DesktopThreadStreamProtocolError,
+  );
 });
 
 test('projects the current Desktop token usage state for the active turn', () => {
@@ -268,6 +286,12 @@ test('normalizes the current Desktop canonical turnHistory snapshot and patches'
     notifications.filter((notification) => notification.method === 'turn/completed').length,
     1,
   );
+  const started = notifications.find((notification) => notification.method === 'turn/started');
+  assert.equal(
+    (started?.params as { readonly turn?: { readonly input?: readonly { readonly text?: string }[] } })
+      .turn?.input?.[0]?.text,
+    'canonical input',
+  );
   assert.equal(
     notifications.some((notification) => (
       notification.method === 'item/completed'
@@ -282,6 +306,93 @@ test('ignores patches until an authoritative snapshot exists', () => {
   const normalizer = new DesktopThreadStreamNormalizer();
 
   assert.deepEqual(normalizer.handle(completionBroadcast()), []);
+});
+
+test('bootstraps a Desktop-origin turn when the first post-restart event is a full turns patch', () => {
+  const normalizer = new DesktopThreadStreamNormalizer(() => 12_000);
+  const notifications = normalizer.handle({
+    type: 'broadcast',
+    method: 'thread-stream-state-changed',
+    sourceClientId: 'desktop-owner',
+    version: 11,
+    params: {
+      conversationId: 'thread-bound',
+      change: {
+        type: 'patches',
+        patches: [{
+          op: 'add',
+          path: ['turns', 0],
+          value: {
+            id: 'turn-after-restart',
+            status: 'inProgress',
+            input: [{ type: 'text', text: 'desktop after restart', text_elements: [] }],
+            items: [{
+              id: 'agent-after-restart',
+              type: 'agentMessage',
+              phase: 'final_answer',
+              text: 'partial',
+            }],
+          },
+        }],
+      },
+    },
+  });
+
+  const started = notifications.find((notification) => notification.method === 'turn/started');
+  assert.equal(
+    (started?.params as { readonly turn?: { readonly input?: readonly { readonly text?: string }[] } })
+      .turn?.input?.[0]?.text,
+    'desktop after restart',
+  );
+  assert.equal(
+    notifications.some((notification) => notification.method === 'item/agentMessage/delta'),
+    true,
+  );
+});
+
+test('bootstraps a Desktop-origin turn when the first post-restart event is a canonical entity patch', () => {
+  const normalizer = new DesktopThreadStreamNormalizer(() => 13_000);
+  const notifications = normalizer.handle({
+    type: 'broadcast',
+    method: 'thread-stream-state-changed',
+    sourceClientId: 'desktop-owner',
+    version: 11,
+    params: {
+      conversationId: 'thread-canonical',
+      change: {
+        type: 'patches',
+        patches: [{
+          op: 'add',
+          path: ['turnHistory', 'history', 'entitiesByKey', 'tail:2:local:turn-after-restart'],
+          value: {
+            params: {
+              threadId: 'thread-canonical',
+              input: [{ type: 'text', text: 'canonical after restart', text_elements: [] }],
+            },
+            turnId: 'turn-canonical-after-restart',
+            status: 'inProgress',
+            items: [{
+              id: 'canonical-agent-after-restart',
+              type: 'agentMessage',
+              phase: 'final_answer',
+              text: 'partial canonical',
+            }],
+          },
+        }],
+      },
+    },
+  });
+
+  const started = notifications.find((notification) => notification.method === 'turn/started');
+  assert.equal(
+    (started?.params as { readonly turn?: { readonly input?: readonly { readonly text?: string }[] } })
+      .turn?.input?.[0]?.text,
+    'canonical after restart',
+  );
+  assert.equal(
+    notifications.some((notification) => notification.method === 'item/agentMessage/delta'),
+    true,
+  );
 });
 
 test('clears authoritative state when the Desktop connection epoch changes', () => {

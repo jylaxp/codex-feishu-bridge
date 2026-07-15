@@ -19,6 +19,7 @@ import {
   approvalResponseMethod,
   type DesktopApprovalKind,
 } from './desktop-approval-adapter';
+import { DESKTOP_THREAD_STREAM_PROTOCOL_VERSION } from './desktop-thread-stream-normalizer';
 
 export type DesktopIpcConnectionState =
   | 'DISCONNECTED'
@@ -58,6 +59,8 @@ export class DesktopIpcRequestError extends Error {
     public readonly method: string | null = null,
     public readonly requestId: string | null = null,
     options?: ErrorOptions,
+    /** A recognized remote rejection that is safe for a caller to handle explicitly. */
+    public readonly remoteError: 'no-client-found' | null = null,
   ) {
     super(code, options);
     this.name = 'DesktopIpcRequestError';
@@ -551,9 +554,20 @@ export class DesktopIpcClient {
     if (!record) {
       return;
     }
-    if (isThreadStreamBroadcast(record)) {
-      for (const listener of this.threadStreamListeners) {
-        listener(record);
+    if (isThreadStreamBroadcastEnvelope(record)) {
+      if (
+        record.version !== DESKTOP_THREAD_STREAM_PROTOCOL_VERSION
+        || !isThreadStreamBroadcast(record)
+      ) {
+        this.failProtocol(epoch);
+        return;
+      }
+      try {
+        for (const listener of this.threadStreamListeners) {
+          listener(record);
+        }
+      } catch {
+        this.failProtocol(epoch);
       }
       return;
     }
@@ -567,12 +581,15 @@ export class DesktopIpcClient {
     this.pendingRequests.delete(record.requestId);
     clearTimeout(pending.timeout);
     if (record.resultType !== 'success') {
+      const remoteError = recognizedRemoteError(record.error);
       pending.reject(new DesktopIpcRequestError(
         'DESKTOP_IPC_REMOTE_REJECTED',
         remoteErrorDisposition(record.error),
         epoch,
         pending.method,
         pending.requestId,
+        undefined,
+        remoteError,
       ));
       return;
     }
@@ -876,6 +893,17 @@ function isThreadStreamBroadcast(record: WireRecord): record is DesktopThreadStr
     && change
     && (change.type === 'snapshot' || change.type === 'patches'),
   );
+}
+
+function isThreadStreamBroadcastEnvelope(record: WireRecord): record is WireRecord & {
+  readonly version?: unknown;
+} {
+  return record.type === 'broadcast'
+    && record.method === 'thread-stream-state-changed';
+}
+
+function recognizedRemoteError(error: unknown): 'no-client-found' | null {
+  return error === 'no-client-found' ? error : null;
 }
 
 function remoteErrorDisposition(error: unknown): DesktopIpcDeliveryDisposition {

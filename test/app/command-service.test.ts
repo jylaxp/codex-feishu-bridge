@@ -17,6 +17,10 @@ const config: BridgeConfig = {
   appServerMode: 'owned_stdio', appServerSocketPath: null, codexBin: '/codex', codexCwd: '/workspace',
   allowedWorkspaceRoots: ['/workspace'], maxTextLength: 10_000, cardUpdateIntervalMs: 1_000,
   maxQueuedTasks: 10,
+  rateLimitQueryIntervalMs: 300_000,
+  logToFile: false,
+  logFilePath: null,
+  enableAutoFileUpload: false,
 };
 
 let nextEvent = 1;
@@ -42,7 +46,11 @@ test('handles slash control commands without forwarding them to a model turn', a
       store,
       { request: async <TResult>(method: string): Promise<TResult> => {
         calls.push(method);
-        return { rateLimits: { primary: { usedPercent: 1 } } } as TResult;
+        return {
+          rateLimits: {
+            primary: { usedPercent: 1, windowDurationMins: 10_080 },
+          },
+        } as TResult;
       } },
       { createCard: async (card) => { cards.push(card); return `card-${cards.length}`; }, replyCard: async () => 'message' },
       { cancelCurrent: async (chatId: string, threadId: string) => {
@@ -62,6 +70,11 @@ test('handles slash control commands without forwarding them to a model turn', a
     assert.deepEqual(cancelled, ['chat:thread-1']);
     assert.equal(await service.handle(message('/usage')), true);
     assert.deepEqual(calls, ['account/rateLimits/read']);
+    const usageCard = cards.find((card) => JSON.stringify(card).includes('账户用量统计'));
+    const usageSerialized = JSON.stringify(usageCard);
+    assert.doesNotMatch(usageSerialized, /5h/);
+    assert.match(usageSerialized, /7d/);
+    assert.match(usageSerialized, /已用 1/);
     assert.equal(await service.handle(message('/plan')), true);
     assert.equal(store.get('tenant', 'chat')?.plan, 'plan');
     assert.equal(await service.handle(message('/plan')), true);

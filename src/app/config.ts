@@ -13,6 +13,9 @@ export const MAX_CARD_UPDATE_INTERVAL_MS = 2_000;
 export const DEFAULT_MAX_QUEUED_TASKS = 100;
 export const MIN_QUEUED_TASKS = 1;
 export const MAX_QUEUED_TASKS = 1_000;
+export const DEFAULT_RATE_LIMIT_QUERY_INTERVAL_MS = 300_000;
+export const MIN_RATE_LIMIT_QUERY_INTERVAL_MS = 1_000;
+export const MAX_RATE_LIMIT_QUERY_INTERVAL_MS = 3_600_000;
 const DEFAULT_SHELL_COMMANDS = Object.freeze(['ls', 'pwd', 'git', 'find', 'cd']);
 
 export class ConfigurationError extends Error {
@@ -138,6 +141,31 @@ function parseBoundedInteger(
   return value;
 }
 
+function parseBoolean(env: NodeJS.ProcessEnv, key: string, defaultValue = false): boolean {
+  const raw = env[key]?.trim();
+  if (!raw) {
+    return defaultValue;
+  }
+  if (raw === 'true') {
+    return true;
+  }
+  if (raw === 'false') {
+    return false;
+  }
+  throw new ConfigurationError(`${key} must be true or false`);
+}
+
+function parseLogFilePath(env: NodeJS.ProcessEnv): string | null {
+  const value = env.LOG_FILE_PATH?.trim();
+  if (!value) {
+    return null;
+  }
+  if (value.includes('\0')) {
+    throw new ConfigurationError('LOG_FILE_PATH contains an invalid null byte');
+  }
+  return value;
+}
+
 /**
  * Parses environment values without touching the filesystem or mutating the
  * supplied environment object. Filesystem and runtime checks belong to
@@ -179,6 +207,16 @@ export function parseEnvironment(env: NodeJS.ProcessEnv): BridgeConfig {
       MIN_QUEUED_TASKS,
       MAX_QUEUED_TASKS,
     ),
+    rateLimitQueryIntervalMs: parseBoundedInteger(
+      env,
+      'RATE_LIMIT_QUERY_INTERVAL_MS',
+      DEFAULT_RATE_LIMIT_QUERY_INTERVAL_MS,
+      MIN_RATE_LIMIT_QUERY_INTERVAL_MS,
+      MAX_RATE_LIMIT_QUERY_INTERVAL_MS,
+    ),
+    logToFile: parseBoolean(env, 'LOG_TO_FILE'),
+    logFilePath: parseLogFilePath(env),
+    enableAutoFileUpload: parseBoolean(env, 'ENABLE_AUTO_FILE_UPLOAD'),
   };
 
   return Object.freeze(config);

@@ -21,10 +21,13 @@ const config: BridgeConfig = {
   codexBin: '/usr/local/bin/codex',
   codexCwd: '/workspace/project',
   allowedWorkspaceRoots: ['/workspace'],
-  dataDir: '/var/lib/bridge',
   maxTextLength: 10_000,
   cardUpdateIntervalMs: 1_500,
   maxQueuedTasks: 100,
+  rateLimitQueryIntervalMs: 300_000,
+  logToFile: false,
+  logFilePath: null,
+  enableAutoFileUpload: false,
 };
 
 test('normalizes a scoped card action without exposing arbitrary callback fields', () => {

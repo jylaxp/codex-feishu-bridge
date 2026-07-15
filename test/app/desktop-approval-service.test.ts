@@ -21,6 +21,10 @@ const config: BridgeConfig = {
   maxTextLength: 10_000,
   cardUpdateIntervalMs: 1_000,
   maxQueuedTasks: 10,
+  rateLimitQueryIntervalMs: 300_000,
+  logToFile: false,
+  logFilePath: null,
+  enableAutoFileUpload: false,
 };
 
 class FakeDesktop {
@@ -34,6 +38,7 @@ class FakeDesktop {
 
 class FakeCards {
   public card: CardKitJson | undefined;
+  public replacements: CardKitJson[] = [];
 
   public async createCard(card: CardKitJson): Promise<string> {
     this.card = card;
@@ -42,6 +47,11 @@ class FakeCards {
 
   public async replyCard(): Promise<string> {
     return 'approval-message';
+  }
+
+  public async replaceCard(_cardId: string, card: CardKitJson, sequence: number): Promise<number> {
+    this.replacements.push(card);
+    return sequence + 1;
   }
 }
 
@@ -106,6 +116,7 @@ test('projects a Desktop approval to the source Feishu root and submits it once'
     threadId: 'thread-1', requestId: 'request-1', kind: 'command', decision: 'accept',
   }]);
   assert.equal(tasks.waiting, false);
+  assert.match(JSON.stringify(cards.replacements.at(-1)), /审批已批准/);
   assert.deepEqual(result, {
     toast: {
       type: 'success', content: '审批结果已提交',

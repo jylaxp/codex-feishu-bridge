@@ -5,7 +5,7 @@ import * as path from 'path';
 import { parseEnvironment, ConfigurationError } from '../../src/app/config';
 import {
   assertSupportedNodeVersion,
-  prepareDataDirectory,
+  prepareConfigHome,
   PreflightError,
   runPreflight,
   spawnCodexProcess,
@@ -54,6 +54,10 @@ async function run(): Promise<void> {
     assert.strictEqual(config.maxTextLength, 10_000);
     assert.strictEqual(config.cardUpdateIntervalMs, 1_500);
     assert.strictEqual(config.maxQueuedTasks, 100);
+    assert.strictEqual(config.rateLimitQueryIntervalMs, 300_000);
+    assert.strictEqual(config.logToFile, false);
+    assert.strictEqual(config.logFilePath, null);
+    assert.strictEqual(config.enableAutoFileUpload, false);
     assert.strictEqual(config.appServerMode, 'owned_stdio');
     assert.strictEqual(config.appServerSocketPath, null);
     assert.deepStrictEqual(config.allowedShellCommands, ['ls', 'pwd', 'git', 'find', 'cd']);
@@ -104,6 +108,24 @@ async function run(): Promise<void> {
     expectThrows(
       () => parseEnvironment({ ...env, MAX_QUEUED_TASKS: '0' }),
       ConfigurationError,
+    );
+    expectThrows(
+      () => parseEnvironment({ ...env, RATE_LIMIT_QUERY_INTERVAL_MS: '999' }),
+      ConfigurationError,
+    );
+    expectThrows(
+      () => parseEnvironment({ ...env, LOG_TO_FILE: 'yes' }),
+      ConfigurationError,
+    );
+    assert.strictEqual(
+      parseEnvironment({
+        ...env,
+        RATE_LIMIT_QUERY_INTERVAL_MS: '1000',
+        LOG_TO_FILE: 'true',
+        LOG_FILE_PATH: 'bridge.log',
+        ENABLE_AUTO_FILE_UPLOAD: 'true',
+      }).enableAutoFileUpload,
+      true,
     );
     expectThrows(
       () => parseEnvironment({ ...env, APP_SERVER_MODE: 'legacy_ipc' }),
@@ -162,9 +184,9 @@ async function run(): Promise<void> {
       PreflightError,
     );
 
-    const symlinkData = path.join(root, 'symlink-data');
-    fs.symlinkSync(path.join(root, 'config-home'), symlinkData, 'dir');
-    expectThrows(() => prepareDataDirectory(symlinkData), PreflightError);
+    const symlinkConfig = path.join(root, 'symlink-config');
+    fs.symlinkSync(path.join(root, 'config-home'), symlinkConfig, 'dir');
+    expectThrows(() => prepareConfigHome(symlinkConfig), PreflightError);
 
     const ordinaryPath = path.join(root, 'not-a-socket');
     fs.writeFileSync(ordinaryPath, 'not a socket');

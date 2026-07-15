@@ -31,6 +31,10 @@ export interface ShellCommandRunner {
   run(command: string, arguments_: readonly string[], cwd: string, timeoutMs: number): Promise<ShellCommandResult>;
 }
 
+export interface RateLimitReader {
+  get(): Promise<unknown>;
+}
+
 const COMMAND_DEDUPE_TTL_MS = 10 * 60_000;
 const MAX_SHELL_OUTPUT_BYTES = 32 * 1024;
 const DEFAULT_SHELL_COMMANDS = Object.freeze(['ls', 'pwd', 'git', 'find', 'cd']);
@@ -48,6 +52,7 @@ export class BridgeCommandService {
     private readonly tasks: InMemoryOrchestrator,
     private readonly navigation: ThreadNavigation,
     private readonly shell: ShellCommandRunner = { run: runAllowedShellCommand },
+    private readonly rateLimits: RateLimitReader | undefined = undefined,
   ) {}
 
   public async handle(message: InboundTextMessage): Promise<boolean> {
@@ -95,7 +100,15 @@ export class BridgeCommandService {
     if (command === '/skills') return this.inspect(message, 'skills/list', '✨ 可用技能');
     if (command === '/compact' || command === '/compress') return this.compact(message);
     if (command === '/cmd' || command === '/run' || command === '/shell') return this.shellCommand(message, argument);
-    if (command === '/bind' || command === '/l' || command === '/list' || command === '/ll' || command === '/open') return false;
+    if (
+      command === '/bind'
+      || command === '/l'
+      || command === '/list'
+      || command === '/ll'
+      || command === '/binding'
+      || command === '/unbind'
+      || command === '/open'
+    ) return false;
     if (command.startsWith('/')) return this.shellCommand(message, `${command.slice(1)} ${argument}`.trim());
     return false;
   }
@@ -113,7 +126,9 @@ export class BridgeCommandService {
 
   private async usage(message: InboundTextMessage): Promise<boolean> {
     try {
-      const response = await this.catalog.request<Record<string, unknown>>('account/rateLimits/read', {});
+      const response = this.rateLimits
+        ? await this.rateLimits.get() as Record<string, unknown>
+        : await this.catalog.request<Record<string, unknown>>('account/rateLimits/read', {});
       const content = usageCardText(response);
       await this.reply(message, '📊 账户用量统计', content ?? '当前无法读取账户窗口用量，请稍后重试。', 'usage', content ? 'blue' : 'orange');
     } catch {
@@ -407,15 +422,26 @@ function usageCardText(value: Record<string, unknown>): string | null {
   const lines: string[] = [];
   const planType = textField(limits.planType);
   if (planType) lines.push(`账户类型：${planType.toUpperCase()}`);
-  const primary = usageLimitText('短期窗口', asRecord(limits.primary));
-  const secondary = usageLimitText('长期窗口', asRecord(limits.secondary));
-  if (primary) lines.push(primary);
-  if (secondary) lines.push(secondary);
+  const weekly = usageLimitText('7d 窗口', weeklyRateLimit(limits));
+  if (weekly) lines.push(weekly);
   const credits = asRecord(limits.credits);
   if (credits?.hasCredits === true && (typeof credits.balance === 'string' || typeof credits.balance === 'number')) {
     lines.push(`点数余额：${String(credits.balance)}`);
   }
   return lines.length > 0 ? lines.join('\n\n') : null;
+}
+
+/** Resolves the weekly quota across the pre- and post-5h Desktop payloads. */
+function weeklyRateLimit(limits: Record<string, unknown>): Record<string, unknown> | null {
+  const primary = asRecord(limits.primary);
+  const secondary = asRecord(limits.secondary);
+  const candidates = [primary, secondary].filter((limit): limit is Record<string, unknown> => limit !== null);
+  const weekly = candidates.find((limit) => (
+    typeof limit.windowDurationMins === 'number'
+      && Number.isFinite(limit.windowDurationMins)
+      && limit.windowDurationMins >= 6 * 24 * 60
+  ));
+  return weekly ?? secondary ?? primary;
 }
 
 function usageLimitText(label: string, limit: Record<string, unknown> | null): string | null {

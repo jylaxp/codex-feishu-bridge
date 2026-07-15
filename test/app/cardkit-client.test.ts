@@ -10,13 +10,17 @@ const tokenProvider: TenantTokenProvider = {
   getToken: async () => 'tenant-token',
 };
 
-function larkApi(replyCalls: unknown[]): LarkReplyApi {
+function larkApi(replyCalls: unknown[], sentCalls: unknown[] = []): LarkReplyApi {
   return {
     im: {
       message: {
         reply: async (payload) => {
           replyCalls.push(payload);
           return { code: 0, data: { message_id: 'om-card-message' } };
+        },
+        create: async (payload) => {
+          sentCalls.push(payload);
+          return { code: 0, data: { message_id: 'om-sent-card-message' } };
         },
       },
     },
@@ -60,6 +64,19 @@ test('creates and replies inline with a root-scoped idempotent CardKit reference
     readonly data?: { readonly reply_in_thread?: boolean };
   };
   assert.equal(replyPayload.data?.reply_in_thread, false);
+});
+
+test('sends an independent CardKit reference to one bound chat', async () => {
+  const sent: unknown[] = [];
+  const client = new CardKitClient(tokenProvider, larkApi([], sent));
+
+  const messageId = await client.sendCard('oc-bound-chat', 'card-1', 'desktop-card-uuid');
+
+  assert.equal(messageId, 'om-sent-card-message');
+  assert.equal(sent.length, 1);
+  assert.match(JSON.stringify(sent[0]), /oc-bound-chat/);
+  assert.match(JSON.stringify(sent[0]), /desktop-card-uuid/);
+  assert.match(JSON.stringify(sent[0]), /receive_id_type/);
 });
 
 test('advances sequence only after a successful replace', async () => {

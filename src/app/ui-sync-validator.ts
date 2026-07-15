@@ -56,7 +56,7 @@ export async function runUiSyncValidator(
   const effectiveEnv = loadBridgeEnvironment(env);
   const preflight = runPreflight(parseEnvironment(effectiveEnv));
   const config = preflight.config;
-  await verifyCodexRuntimeContract(config, effectiveEnv, preflight.dataDirectory.temporaryDir);
+  await verifyCodexRuntimeContract(config, effectiveEnv, preflight.runtimeDirectory.temporaryDir);
   const client = new AppServerClient({
     transport: {
       mode: 'managed_proxy',

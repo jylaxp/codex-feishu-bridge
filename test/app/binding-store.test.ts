@@ -57,6 +57,21 @@ test('increments binding revision and removes only the requested binding', () =>
   });
 });
 
+test('resolves a Desktop thread only when exactly one Feishu chat binds it', () => {
+  withStore((store) => {
+    store.load();
+    const first = store.bind({
+      tenantKey: 'tenant-1', chatId: 'chat-1', threadId: 'thread-1', workspaceId: 'one',
+    });
+    assert.deepEqual(store.getUniqueByThreadId('thread-1'), first);
+    store.bind({
+      tenantKey: 'tenant-1', chatId: 'chat-2', threadId: 'thread-1', workspaceId: 'two',
+    });
+    assert.equal(store.getUniqueByThreadId('thread-1'), undefined);
+    assert.equal(store.getUniqueByThreadId('missing-thread'), undefined);
+  });
+});
+
 test('fails closed on an unknown field or malformed binding document', () => {
   withStore((store, root) => {
     writeFileSync(join(root, 'bindings.json'), JSON.stringify({

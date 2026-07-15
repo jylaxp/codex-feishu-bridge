@@ -13,11 +13,20 @@ import type {
   Turn,
   TurnError,
   TurnStatus,
+  UserInput,
 } from './protocol';
 
 type UnknownRecord = Record<string, unknown>;
 
-const THREAD_STREAM_PROTOCOL_VERSION = 11;
+/** The Desktop follower state broadcast contract pinned by the runtime probe. */
+export const DESKTOP_THREAD_STREAM_PROTOCOL_VERSION = 11;
+
+export class DesktopThreadStreamProtocolError extends Error {
+  public constructor(message: string) {
+    super(message);
+    this.name = 'DesktopThreadStreamProtocolError';
+  }
+}
 
 /** Converts Desktop state snapshots/patches into canonical App Server events. */
 export class DesktopThreadStreamNormalizer {
@@ -29,8 +38,10 @@ export class DesktopThreadStreamNormalizer {
   public constructor(private readonly nowMs: () => number = Date.now) {}
 
   public handle(message: DesktopThreadStreamBroadcast): readonly ServerNotification[] {
-    if (message.version !== THREAD_STREAM_PROTOCOL_VERSION) {
-      return [];
+    if (message.version !== DESKTOP_THREAD_STREAM_PROTOCOL_VERSION) {
+      throw new DesktopThreadStreamProtocolError(
+        `Unsupported Desktop thread-stream protocol version: ${message.version}`,
+      );
     }
     const threadId = message.params.conversationId;
     const previous = this.statesByThreadId.get(threadId);
@@ -42,6 +53,12 @@ export class DesktopThreadStreamNormalizer {
       return diffThreadState(threadId, previous, current, this.nowMs());
     }
     if (!previous) {
+      const bootstrapped = bootstrapStateFromPatches(change.patches);
+      if (bootstrapped) {
+        this.statesByThreadId.set(threadId, bootstrapped);
+        this.emitApprovals(threadId, bootstrapped);
+        return diffThreadState(threadId, undefined, bootstrapped, this.nowMs());
+      }
       return [];
     }
     const current = cloneRecord(previous);
@@ -100,6 +117,88 @@ export class DesktopThreadStreamNormalizer {
       }
     }
   }
+}
+
+function bootstrapStateFromPatches(patches: readonly DesktopJsonPatch[]): UnknownRecord | null {
+  const current: UnknownRecord = {};
+  let recovered = false;
+  for (const patch of patches) {
+    if (patch.op === 'remove') {
+      continue;
+    }
+    if (bootstrapTurnsPatch(current, patch) || bootstrapCanonicalTurnPatch(current, patch)) {
+      recovered = true;
+    }
+  }
+  return recovered ? current : null;
+}
+
+function bootstrapTurnsPatch(current: UnknownRecord, patch: DesktopJsonPatch): boolean {
+  const [first, second] = patch.path;
+  if (first !== 'turns') {
+    return false;
+  }
+  if (patch.path.length === 1) {
+    if (!Array.isArray(patch.value)) {
+      return false;
+    }
+    current.turns = structuredClone(patch.value);
+    return true;
+  }
+  if (
+    patch.path.length !== 2
+    || (second !== '-' && typeof second !== 'number' && typeof second !== 'string')
+    || !looksLikeTurn(patch.value)
+  ) {
+    return false;
+  }
+  const turns = Array.isArray(current.turns) ? current.turns : [];
+  turns.push(structuredClone(patch.value));
+  current.turns = turns;
+  return true;
+}
+
+function bootstrapCanonicalTurnPatch(current: UnknownRecord, patch: DesktopJsonPatch): boolean {
+  if (patch.path.length < 4 || !looksLikeTurn(patch.value)) {
+    return false;
+  }
+  const [turnHistoryKey, historyKey, entitiesKey, entityKey] = patch.path;
+  if (
+    turnHistoryKey !== 'turnHistory'
+    || historyKey !== 'history'
+    || entitiesKey !== 'entitiesByKey'
+    || (typeof entityKey !== 'string' && typeof entityKey !== 'number')
+  ) {
+    return false;
+  }
+  const turnHistory = ensureRecord(current, 'turnHistory');
+  turnHistory.kind = 'canonical';
+  const history = ensureRecord(turnHistory, 'history');
+  const entitiesByKey = ensureRecord(history, 'entitiesByKey');
+  entitiesByKey[String(entityKey)] = structuredClone(patch.value);
+  if (!Array.isArray(history.islands)) {
+    history.islands = [];
+  }
+  return true;
+}
+
+function ensureRecord(parent: UnknownRecord, key: string): UnknownRecord {
+  const existing = parent[key];
+  if (existing && typeof existing === 'object' && !Array.isArray(existing)) {
+    return existing as UnknownRecord;
+  }
+  const next: UnknownRecord = {};
+  parent[key] = next;
+  return next;
+}
+
+function looksLikeTurn(value: unknown): boolean {
+  const record = asRecord(value);
+  return Boolean(
+    record
+    && (typeof record.id === 'string' || typeof record.turnId === 'string')
+    && typeof record.status === 'string',
+  );
 }
 
 function diffThreadState(
@@ -336,8 +435,13 @@ function normalizeTurn(value: unknown): Turn | null {
     ?? (status !== 'inProgress' && startedAt !== null && durationMs !== null
       ? startedAt + durationMs
       : null);
+  const params = asRecord(record.params);
+  const rawInput = Array.isArray(record.input)
+    ? record.input
+    : Array.isArray(params?.input) ? params.input : undefined;
   return {
     id,
+    ...(rawInput ? { input: normalizeUserInputs(rawInput) } : {}),
     items,
     itemsView: items.length > 0 ? 'full' : 'notLoaded',
     status,
@@ -346,6 +450,22 @@ function normalizeTurn(value: unknown): Turn | null {
     completedAt,
     durationMs,
   };
+}
+
+function normalizeUserInputs(value: readonly unknown[]): readonly UserInput[] {
+  const inputs: UserInput[] = [];
+  for (const input of value) {
+    const record = asRecord(input);
+    if (record?.type !== 'text' || typeof record.text !== 'string') {
+      continue;
+    }
+    inputs.push({
+      type: 'text',
+      text: record.text,
+      text_elements: [],
+    });
+  }
+  return inputs;
 }
 
 function normalizeItem(value: unknown, fallbackId: string): ThreadItem | null {

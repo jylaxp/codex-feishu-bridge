@@ -13,6 +13,7 @@ import { basename, dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 import { BindingStore } from './binding-store';
+import { BridgeProcessLock } from './process-lock';
 
 const CONFIG_VERSION_LINE = 'BRIDGE_CONFIG_VERSION=2';
 const CONFIG_HOME_NAME = '.codex-feishu-bridge';
@@ -82,12 +83,21 @@ export function resetConfigHome(
   if (!options.confirm) {
     throw new ConfigResetError('config reset requires explicit confirmation');
   }
-  if (existsSync(join(configHome, 'bridge.lock'))) {
-    throw new ConfigResetError('Bridge must be stopped before config reset');
-  }
-
   const parent = dirname(configHome);
   const name = basename(configHome);
+  const resetLock = new BridgeProcessLock(parent, { lockFileName: resetLockName(configHome) });
+  try {
+    resetLock.acquire();
+  } catch (error) {
+    throw new ConfigResetError('Bridge start or another config reset is in progress', { cause: error });
+  }
+  const bridgeLock = existsSync(configHome) ? new BridgeProcessLock(configHome) : undefined;
+  try {
+    bridgeLock?.acquire();
+  } catch (error) {
+    resetLock.release();
+    throw new ConfigResetError('Bridge must be stopped before config reset', { cause: error });
+  }
   const staging = join(parent, `.${name}.staging-${randomUUID()}`);
   const rollback = join(parent, `.${name}.rollback-${randomUUID()}`);
   let movedOldDirectory = false;
@@ -124,6 +134,23 @@ export function resetConfigHome(
       : new ConfigResetError('config reset could not replace the configuration directory', {
           cause: error,
         });
+  } finally {
+    bridgeLock?.release();
+    resetLock.release();
+  }
+}
+
+/**
+ * Excludes reset before startup preflight creates or validates the config home.
+ * The caller must release the returned lock after it has acquired bridge.lock.
+ */
+export function acquireConfigResetExclusion(configHome: string): BridgeProcessLock {
+  const lock = new BridgeProcessLock(dirname(configHome), { lockFileName: resetLockName(configHome) });
+  try {
+    lock.acquire();
+    return lock;
+  } catch (error) {
+    throw new ConfigResetError('Bridge configuration reset is in progress', { cause: error });
   }
 }
 
@@ -141,6 +168,9 @@ function isCurrentStructure(configHome: string, entries: readonly string[]): boo
   if (entries.some((entry) => !allowed.has(entry))) {
     return false;
   }
+  if (!hasCurrentConfigVersion(configHome, entries)) {
+    return false;
+  }
   const bindingsPath = join(configHome, 'bindings.json');
   if (!existsSync(bindingsPath)) {
     return false;
@@ -149,6 +179,19 @@ function isCurrentStructure(configHome: string, entries: readonly string[]): boo
     const store = new BindingStore(configHome);
     store.load();
     return true;
+  } catch {
+    return false;
+  }
+}
+
+function hasCurrentConfigVersion(configHome: string, entries: readonly string[]): boolean {
+  if (!entries.includes('.env')) {
+    return true;
+  }
+  try {
+    return /^(?:export\s+)?BRIDGE_CONFIG_VERSION\s*=\s*2\s*$/m.test(
+      readFileSync(join(configHome, '.env'), 'utf8'),
+    );
   } catch {
     return false;
   }
@@ -164,8 +207,14 @@ function copyEnvironmentIfPresent(oldHome: string, staging: string): void {
     return;
   }
   const source = readFileSync(oldEnv, 'utf8');
-  const upgraded = source.includes('BRIDGE_CONFIG_VERSION=')
-    ? source
-    : `${source.endsWith('\n') ? source : `${source}\n`}${CONFIG_VERSION_LINE}\n`;
+  const withTrailingNewline = source.endsWith('\n') ? source : `${source}\n`;
+  const upgraded = /^(?:export\s+)?BRIDGE_CONFIG_VERSION\s*=.*$/m.test(withTrailingNewline)
+    ? withTrailingNewline.replace(/^(?:export\s+)?BRIDGE_CONFIG_VERSION\s*=.*$/m, CONFIG_VERSION_LINE)
+    : `${withTrailingNewline}${CONFIG_VERSION_LINE}\n`;
   writeFileSync(join(staging, '.env'), upgraded, { encoding: 'utf8', mode: 0o600 });
+}
+
+function resetLockName(configHome: string): string {
+  const name = basename(configHome);
+  return `${name.startsWith('.') ? name : `.${name}`}.reset.lock`;
 }

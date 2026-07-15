@@ -4,7 +4,7 @@ import test from 'node:test';
 import type { ChatThreadBinding } from '../../src/app/binding-store';
 import { CardKitError } from '../../src/app/cards/cardkit-client';
 import type { CardKitJson } from '../../src/app/cards/layouts';
-import type { DesktopIpcClient } from '../../src/app/codex/desktop-ipc-client';
+import { DesktopIpcRequestError, type DesktopIpcClient } from '../../src/app/codex/desktop-ipc-client';
 import type { TurnStartParams, TurnSteerParams } from '../../src/app/codex/protocol';
 import type { BridgeConfig } from '../../src/app/domain';
 import { InMemoryOrchestrator, type InMemoryCardClient } from '../../src/app/in-memory-orchestrator';
@@ -25,6 +25,10 @@ const config: BridgeConfig = {
   maxTextLength: 10_000,
   cardUpdateIntervalMs: 1,
   maxQueuedTasks: 10,
+  rateLimitQueryIntervalMs: 300_000,
+  logToFile: false,
+  logFilePath: null,
+  enableAutoFileUpload: false,
 };
 
 const binding: ChatThreadBinding = {
@@ -56,9 +60,14 @@ class FakeDesktop {
   public starts: TurnStartParams[] = [];
   public steers: TurnSteerParams[] = [];
   public interrupts: unknown[] = [];
+  public readonly startFailures: Error[] = [];
 
   public async startTurnTracked(params: TurnStartParams): Promise<{ id: string; items: []; itemsView: 'notLoaded'; status: 'inProgress'; error: null; startedAt: null; completedAt: null; durationMs: null }> {
     this.starts.push(params);
+    const failure = this.startFailures.shift();
+    if (failure) {
+      throw failure;
+    }
     return {
       id: `turn-${this.starts.length}`,
       items: [],
@@ -84,18 +93,26 @@ class FakeDesktop {
 class FakeCards implements InMemoryCardClient {
   public readonly created: CardKitJson[] = [];
   public readonly replacements: CardKitJson[] = [];
+  public readonly sent: Array<{ readonly chatId: string; readonly cardId: string; readonly key: string }> = [];
   public closed = 0;
+  public readonly operations: string[] = [];
 
   public async createCard(card: CardKitJson): Promise<string> {
     this.created.push(card);
     return 'card-1';
   }
   public async replyCard(): Promise<string> { return 'card-message-1'; }
+  public async sendCard(chatId: string, cardId: string, key: string): Promise<string> {
+    this.sent.push({ chatId, cardId, key });
+    return 'card-message-desktop-1';
+  }
   public async replaceCard(_id: string, card: CardKitJson, sequence: number): Promise<number> {
+    this.operations.push('replace');
     this.replacements.push(card);
     return sequence + 1;
   }
   public async closeStreaming(_id: string, sequence: number): Promise<number> {
+    this.operations.push('close');
     this.closed += 1;
     return sequence + 1;
   }
@@ -137,6 +154,170 @@ test('sends a bound prompt only once through Desktop IPC and projects its termin
 
   assert.equal(cards.closed, 1);
   assert.match(JSON.stringify(cards.replacements.at(-1)), /Hello from Desktop/);
+  assert.deepEqual(cards.operations.slice(-2), ['close', 'replace']);
+});
+
+test('mirrors a direct Desktop prompt into its uniquely bound Feishu chat and streams the same card', async () => {
+  const desktop = new FakeDesktop();
+  const cards = new FakeCards();
+  const orchestrator = new InMemoryOrchestrator(
+    config,
+    desktop as unknown as DesktopIpcClient,
+    cards,
+    { resolveBindingByThreadId: (threadId) => threadId === binding.threadId ? binding : undefined },
+  );
+  const directTurn = {
+    id: 'desktop-turn-1', status: 'inProgress' as const, itemsView: 'full' as const,
+    startedAt: null, completedAt: null, durationMs: null, error: null,
+    input: [{ type: 'text' as const, text: 'Desktop 直接发送的提示词', text_elements: [] }],
+    items: [],
+  };
+
+  orchestrator.handleNotification({
+    method: 'turn/started',
+    params: { threadId: binding.threadId, turn: directTurn },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(desktop.starts.length, 0);
+  assert.deepEqual(cards.sent, [{
+    chatId: binding.chatId,
+    cardId: 'card-1',
+    key: cards.sent[0]!.key,
+  }]);
+  assert.match(JSON.stringify(cards.created[0]), /Desktop 直接发送的提示词/);
+
+  orchestrator.handleNotification({
+    method: 'item/reasoning/summaryTextDelta',
+    params: { threadId: binding.threadId, turnId: directTurn.id, itemId: 'reasoning', delta: '正在推理' },
+  });
+  orchestrator.handleNotification({
+    method: 'item/agentMessage/delta',
+    params: { threadId: binding.threadId, turnId: directTurn.id, itemId: 'answer', delta: '流式回答' },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.match(JSON.stringify(cards.replacements.at(-1)), /正在推理/);
+  assert.match(JSON.stringify(cards.replacements.at(-1)), /流式回答/);
+
+  orchestrator.handleNotification({
+    method: 'turn/completed',
+    params: {
+      threadId: binding.threadId,
+      turn: {
+        ...directTurn,
+        status: 'completed',
+        items: [{ id: 'answer', type: 'agentMessage', phase: 'final_answer', text: 'Desktop 最终回答' }],
+      },
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(cards.closed, 1);
+  assert.match(JSON.stringify(cards.replacements.at(-1)), /Desktop 最终回答/);
+});
+
+test('projects tool calls as collapsed steps and never projects command stdout', async () => {
+  const desktop = new FakeDesktop();
+  const cards = new FakeCards();
+  const orchestrator = new InMemoryOrchestrator(
+    config,
+    desktop as unknown as DesktopIpcClient,
+    cards,
+  );
+
+  await orchestrator.handleInbound(message('tool-call', 'inspect the project'), binding);
+  orchestrator.handleNotification({
+    method: 'item/started',
+    params: {
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      item: { id: 'command-1', type: 'commandExecution', command: 'rg --files src' },
+    },
+  });
+  orchestrator.handleNotification({
+    method: 'item/commandExecution/outputDelta',
+    params: {
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      itemId: 'command-1',
+      delta: 'very-long-command-output-that-must-not-reach-the-card'.repeat(1_000),
+    },
+  });
+  orchestrator.handleNotification({
+    method: 'item/completed',
+    params: {
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      item: { id: 'command-1', type: 'commandExecution', command: 'rg --files src', exitCode: 0 },
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  const serialized = JSON.stringify(cards.replacements.at(-1));
+  assert.match(serialized, /工具执行 · 1 步/);
+  assert.match(serialized, /rg --files src/);
+  assert.doesNotMatch(serialized, /very-long-command-output-that-must-not-reach-the-card/);
+  assert.match(serialized, /"expanded":false/);
+});
+
+test('opens the bound Desktop thread and retries only a provably unsent follower start', async () => {
+  const desktop = new FakeDesktop();
+  desktop.startFailures.push(new DesktopIpcRequestError(
+    'DESKTOP_IPC_REMOTE_REJECTED',
+    'PROVABLY_UNSENT',
+    1,
+    'thread-follower-start-turn',
+    'request-1',
+    undefined,
+    'no-client-found',
+  ));
+  const openedThreadIds: string[] = [];
+  const orchestrator = new InMemoryOrchestrator(
+    config,
+    desktop as unknown as DesktopIpcClient,
+    new FakeCards(),
+    {
+      navigation: {
+        openThread: async (threadId: string) => {
+          openedThreadIds.push(threadId);
+        },
+      },
+      navigationRetryDelayMs: 1,
+    },
+  );
+
+  assert.equal(await orchestrator.handleInbound(message('owner-missing', 'hello'), binding), 'started');
+  assert.deepEqual(openedThreadIds, ['thread-1']);
+  assert.equal(desktop.starts.length, 2);
+});
+
+test('does not retry a follower start when Desktop cannot prove the owner lookup missed', async () => {
+  const desktop = new FakeDesktop();
+  desktop.startFailures.push(new DesktopIpcRequestError(
+    'DESKTOP_IPC_REMOTE_REJECTED',
+    'DEFINITIVE_FAILURE',
+    1,
+    'thread-follower-start-turn',
+    'request-1',
+  ));
+  const openedThreadIds: string[] = [];
+  const orchestrator = new InMemoryOrchestrator(
+    config,
+    desktop as unknown as DesktopIpcClient,
+    new FakeCards(),
+    {
+      navigation: {
+        openThread: async (threadId: string) => {
+          openedThreadIds.push(threadId);
+        },
+      },
+      navigationRetryDelayMs: 1,
+    },
+  );
+
+  assert.equal(await orchestrator.handleInbound(message('remote-rejected', 'hello'), binding), 'started');
+  assert.deepEqual(openedThreadIds, []);
+  assert.equal(desktop.starts.length, 1);
 });
 
 test('steers the active turn and abandons all local state after Desktop loss', async () => {
@@ -180,6 +361,7 @@ test('does not retain a duplicate key when initial CardKit delivery fails before
       return 'card-1';
     },
     replyCard: async () => 'card-message-1',
+    sendCard: async () => 'card-message-1',
     replaceCard: async (_id, _card, sequence) => sequence + 1,
     closeStreaming: async (_id, sequence) => sequence + 1,
   };
@@ -196,6 +378,7 @@ test('retries a transient CardKit update without replaying the Desktop turn', as
   const cards: InMemoryCardClient = {
     createCard: async () => 'card-1',
     replyCard: async () => 'card-message-1',
+    sendCard: async () => 'card-message-1',
     replaceCard: async (_id, _card, sequence) => {
       updateAttempts += 1;
       if (updateAttempts === 1) {
@@ -229,8 +412,13 @@ test('keeps a terminal card briefly so late usage and rate limits update its ori
       readRateLimits: async () => ({
         rateLimitsByLimitId: {
           codex: {
-            primary: { usedPercent: 12, resetsAt: 1_784_016_000 },
-            secondary: { usedPercent: 34, resetsAt: 1_784_102_400 },
+            // The Desktop currently returns the remaining weekly window in
+            // `primary`; `secondary` is absent after the 5h window removal.
+            primary: {
+              usedPercent: 12,
+              resetsAt: 1_784_016_000,
+              windowDurationMins: 10_080,
+            },
             credits: { hasCredits: true, balance: '7' },
           },
         },
@@ -267,11 +455,11 @@ test('keeps a terminal card briefly so late usage and rate limits update its ori
   await new Promise((resolve) => setTimeout(resolve, 10));
 
   const serialized = JSON.stringify(cards.replacements.at(-1));
-  assert.ok(serialized.includes('gpt\\\\-5\\\\.6\\\\-sol'));
+  assert.ok(serialized.includes('gpt-5.6-sol'));
   assert.match(serialized, /API 3/);
-  assert.ok(serialized.includes('上下文 12\\\\.3K\\\\/128\\\\.0K'));
-  assert.ok(serialized.includes('5h\\\\: 12\\\\%'));
-  assert.ok(serialized.includes('7d\\\\: 34\\\\%'));
-  assert.ok(serialized.includes('点数\\\\: 7'));
+  assert.ok(serialized.includes('上下文 12.3K/128.0K'));
+  assert.doesNotMatch(serialized, /5h/);
+  assert.ok(serialized.includes('7d: 12%'));
+  assert.ok(serialized.includes('点数: 7'));
   assert.equal(cards.closed, 1);
 });

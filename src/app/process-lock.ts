@@ -37,6 +37,8 @@ export interface BridgeProcessLockOptions {
   readonly now?: () => Date;
   readonly token?: string;
   readonly isProcessAlive?: (pid: number) => boolean;
+  /** A private regular filename when the same primitive guards another operation. */
+  readonly lockFileName?: string;
 }
 
 /**
@@ -56,8 +58,15 @@ export class BridgeProcessLock {
     dataDirectory: string,
     options: BridgeProcessLockOptions = {},
   ) {
-    this.lockPath = join(dataDirectory, LOCK_FILE_NAME);
-    this.recoveryMutexPath = join(dataDirectory, RECOVERY_MUTEX_FILE_NAME);
+    const lockFileName = options.lockFileName ?? LOCK_FILE_NAME;
+    if (!/^[A-Za-z0-9._-]+$/.test(lockFileName)) {
+      throw new RangeError('Bridge lock filename is invalid');
+    }
+    this.lockPath = join(dataDirectory, lockFileName);
+    this.recoveryMutexPath = join(
+      dataDirectory,
+      lockFileName === LOCK_FILE_NAME ? RECOVERY_MUTEX_FILE_NAME : `${lockFileName}.recovery`,
+    );
     this.pid = options.pid ?? process.pid;
     this.token = options.token ?? randomUUID();
     this.now = options.now ?? (() => new Date());
@@ -125,6 +134,16 @@ export class BridgeProcessLock {
       // Never delete a file whose ownership can no longer be proven.
     } finally {
       closeSync(descriptor);
+    }
+  }
+
+  /** Fails if another live owner holds this lock; stale locks are safely removed. */
+  public assertAvailable(): void {
+    if (!existsSync(this.lockPath)) {
+      return;
+    }
+    if (!this.removeProvablyStaleLock()) {
+      throw new BridgeProcessLockError('Another operation currently owns this lock');
     }
   }
 

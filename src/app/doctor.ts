@@ -39,7 +39,7 @@ export async function runDoctor(
   const contract = await (dependencies.verifyRuntimeContract ?? verifyCodexRuntimeContract)(
     preflight.config,
     effectiveEnv,
-    preflight.dataDirectory.temporaryDir,
+    preflight.runtimeDirectory.temporaryDir,
   );
   const bindingsFileBytes = statSync(store.filePath, { throwIfNoEntry: false })?.size ?? 0;
   return Object.freeze({

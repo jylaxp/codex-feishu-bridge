@@ -4,7 +4,12 @@ import { deriveTaskCancelToken } from './action-tokens';
 import type { ChatThreadBinding } from './binding-store';
 import { CardKitError } from './cards/cardkit-client';
 import { type CardKitJson, createTaskCard } from './cards/layouts';
-import { sanitizeCardText } from './cards/sanitizer';
+import {
+  sanitizeCardMarkdown,
+  sanitizeCardPlainText,
+  sanitizeCardText,
+} from './cards/sanitizer';
+import type { ThreadNavigation } from './codex/app-navigation-adapter';
 import { DesktopIpcRequestError, type DesktopIpcClient } from './codex/desktop-ipc-client';
 import type {
   ServerNotification,
@@ -18,6 +23,7 @@ import type { InboundTextMessage } from './lark/intake';
 export interface InMemoryCardClient {
   createCard(card: CardKitJson): Promise<string>;
   replyCard(rootMessageId: string, cardId: string, idempotencyKey: string): Promise<string>;
+  sendCard(chatId: string, cardId: string, idempotencyKey: string): Promise<string>;
   replaceCard(
     cardId: string,
     card: CardKitJson,
@@ -35,8 +41,15 @@ export interface InMemoryOrchestratorOptions {
   readonly now?: () => number;
   readonly onCardError?: (error: Error) => void;
   readonly readRateLimits?: () => Promise<unknown>;
+  readonly uploadOutputFiles?: (answer: string, rootMessageId: string, taskId: string) => Promise<void>;
+  /** Activates the exact bound Desktop conversation after an owner lookup miss. */
+  readonly navigation?: ThreadNavigation;
+  /** Base delay used only while waiting for a newly opened Desktop owner. */
+  readonly navigationRetryDelayMs?: number;
   /** Testable base backoff for transient CardKit update failures. */
   readonly cardRetryDelayMs?: number;
+  /** Resolves one unambiguous Feishu chat for a Desktop-originated turn. */
+  readonly resolveBindingByThreadId?: (threadId: string) => ChatThreadBinding | undefined;
 }
 
 export type InMemoryInboundOutcome = 'started' | 'queued' | 'steered' | 'duplicate';
@@ -58,6 +71,7 @@ interface RuntimeTask {
   status: TaskStatus;
   commentary: string;
   tools: string;
+  readonly toolExecutions: ToolExecution[];
   finalAnswer: string;
   readonly startedAtMs: number;
   model: string | null;
@@ -76,6 +90,14 @@ interface RuntimeTask {
   cardRetryTimer: NodeJS.Timeout | undefined;
   terminalCleanupTimer: NodeJS.Timeout | undefined;
   updateTimer: NodeJS.Timeout | undefined;
+  outputFilesUploaded: boolean;
+}
+
+interface ToolExecution {
+  readonly itemId: string;
+  readonly command: string;
+  completed: boolean;
+  failed: boolean;
 }
 
 const TERMINAL: ReadonlySet<TaskStatus> = new Set(['SUCCEEDED', 'FAILED', 'INTERRUPTED']);
@@ -84,6 +106,8 @@ const TERMINAL_CARD_RETENTION_MS = 5 * 60_000;
 const TEXT_LIMIT = 128 * 1024;
 const MAX_CARD_RETRY_ATTEMPTS = 3;
 const CARD_RETRY_BASE_DELAY_MS = 250;
+const DEFAULT_NAVIGATION_RETRY_DELAY_MS = 500;
+const MAX_DESKTOP_OWNER_RETRIES = 4;
 
 /**
  * Current-process task state. It deliberately never serializes a task, queue,
@@ -93,7 +117,13 @@ export class InMemoryOrchestrator {
   private readonly now: () => number;
   private readonly onCardError: (error: Error) => void;
   private readonly readRateLimits: (() => Promise<unknown>) | undefined;
+  private readonly uploadOutputFiles: ((answer: string, rootMessageId: string, taskId: string) => Promise<void>) | undefined;
+  private readonly navigation: ThreadNavigation | undefined;
+  private readonly navigationRetryDelayMs: number;
   private readonly cardRetryDelayMs: number;
+  private readonly resolveBindingByThreadId:
+    | ((threadId: string) => ChatThreadBinding | undefined)
+    | undefined;
   private readonly tasksById = new Map<string, RuntimeTask>();
   private readonly activeByThreadId = new Map<string, RuntimeTask>();
   private readonly terminalByTurnKey = new Map<string, RuntimeTask>();
@@ -102,6 +132,8 @@ export class InMemoryOrchestrator {
     readonly binding: ChatThreadBinding;
   }>>();
   private readonly pendingByThreadId = new Map<string, ServerNotification[]>();
+  private readonly pendingDesktopByTurnKey = new Map<string, ServerNotification[]>();
+  private readonly startingDesktopTurnKeys = new Set<string>();
   private readonly processedMessageKeys = new Map<string, number>();
   private readonly inboundLocks = new Map<string, Promise<unknown>>();
 
@@ -114,6 +146,13 @@ export class InMemoryOrchestrator {
     this.now = options.now ?? Date.now;
     this.onCardError = options.onCardError ?? (() => undefined);
     this.readRateLimits = options.readRateLimits;
+    this.uploadOutputFiles = options.uploadOutputFiles;
+    this.navigation = options.navigation;
+    this.resolveBindingByThreadId = options.resolveBindingByThreadId;
+    this.navigationRetryDelayMs = positiveDelay(
+      options.navigationRetryDelayMs ?? DEFAULT_NAVIGATION_RETRY_DELAY_MS,
+      'navigationRetryDelayMs',
+    );
     this.cardRetryDelayMs = options.cardRetryDelayMs ?? CARD_RETRY_BASE_DELAY_MS;
   }
 
@@ -143,10 +182,7 @@ export class InMemoryOrchestrator {
       try {
         await this.desktop.steerTurnTracked(buildSteer(active, message), () => undefined);
       } catch (error) {
-        if (!(error instanceof DesktopIpcRequestError) || error.disposition === 'PROVABLY_UNSENT') {
-          throw error;
-        }
-        active.tools = '补充消息的 Desktop 送达结果无法确认，Bridge 不会自动重发。';
+        active.tools = deliveryFailureText(error, '补充消息');
         this.requestCardUpdate(active, true);
       }
       outcome = 'steered';
@@ -167,6 +203,7 @@ export class InMemoryOrchestrator {
     const task = this.activeByThreadId.get(identity.threadId)
       ?? this.terminalByTurnKey.get(turnKey(identity.threadId, identity.turnId));
     if (!task) {
+      this.captureDesktopOriginNotification(notification, identity);
       return;
     }
     if (!task.turnId) {
@@ -212,10 +249,14 @@ export class InMemoryOrchestrator {
       return true;
     }
     if (task.turnId) {
-      await this.desktop.interruptTurnTracked({
-        threadId: task.binding.threadId,
-        turnId: task.turnId,
-      }, () => undefined);
+      try {
+        await this.desktop.interruptTurnTracked({
+          threadId: task.binding.threadId,
+          turnId: task.turnId,
+        }, () => undefined);
+      } catch (error) {
+        return this.handleInterruptDeliveryFailure(task, error);
+      }
     }
     task.status = 'INTERRUPTED';
     task.completedAtMs = this.now();
@@ -238,7 +279,11 @@ export class InMemoryOrchestrator {
       return true;
     }
     if (task.turnId) {
-      await this.desktop.interruptTurnTracked({ threadId, turnId: task.turnId }, () => undefined);
+      try {
+        await this.desktop.interruptTurnTracked({ threadId, turnId: task.turnId }, () => undefined);
+      } catch (error) {
+        return this.handleInterruptDeliveryFailure(task, error);
+      }
     }
     task.status = 'INTERRUPTED';
     task.completedAtMs = this.now();
@@ -300,6 +345,8 @@ export class InMemoryOrchestrator {
     this.terminalByTurnKey.clear();
     this.queuesByThreadId.clear();
     this.pendingByThreadId.clear();
+    this.pendingDesktopByTurnKey.clear();
+    this.startingDesktopTurnKeys.clear();
     this.processedMessageKeys.clear();
     this.inboundLocks.clear();
   }
@@ -310,7 +357,18 @@ export class InMemoryOrchestrator {
   ): Promise<InMemoryInboundOutcome> {
     const id = randomUUID();
     const startedAtMs = this.now();
-    const initialCard = taskCard(message.text, 'CARD_CREATING', '', '', '', startedAtMs);
+    const initialCard = taskCard(
+      message.text,
+      'CARD_CREATING',
+      '',
+      [],
+      '',
+      '',
+      startedAtMs,
+      undefined,
+      undefined,
+      binding,
+    );
     const cardId = await this.cards.createCard(initialCard);
     const cardMessageId = await this.cards.replyCard(message.rootMessageId, cardId, `task:${id}`);
     const task: RuntimeTask = {
@@ -324,6 +382,7 @@ export class InMemoryOrchestrator {
       status: 'STARTING',
       commentary: '',
       tools: '',
+      toolExecutions: [],
       finalAnswer: '',
       startedAtMs,
       model: null,
@@ -342,12 +401,13 @@ export class InMemoryOrchestrator {
       cardRetryTimer: undefined,
       terminalCleanupTimer: undefined,
       updateTimer: undefined,
+      outputFilesUploaded: false,
     };
     this.tasksById.set(id, task);
     this.activeByThreadId.set(binding.threadId, task);
     void this.refreshRateLimits(task);
     try {
-      const turn = await this.desktop.startTurnTracked(buildStart(task, this.config), () => undefined);
+      const turn = await this.startTurnWithDesktopOwner(task);
       task.turnId = turn.id;
       if (task.cancelRequested) {
         await this.desktop.interruptTurnTracked({
@@ -364,15 +424,117 @@ export class InMemoryOrchestrator {
       this.replayPending(task);
       this.requestCardUpdate(task, true);
       return 'started';
-    } catch {
+    } catch (error) {
       task.status = task.cancelRequested ? 'INTERRUPTED' : 'FAILED';
       task.completedAtMs ??= this.now();
       task.tools = task.cancelRequested
-        ? '取消请求结束前，Desktop IPC 未能确认任务状态。'
-        : 'Desktop IPC 未能确认任务执行结果。';
+        ? deliveryFailureText(error, '取消请求')
+        : deliveryFailureText(error, '任务启动');
       await this.flushCard(task, true);
       this.finish(task);
       return 'started';
+    }
+  }
+
+  /**
+   * Projects a user turn created in the bound Desktop conversation. This path
+   * never sends a second Desktop RPC; it only mirrors the existing turn into
+   * the uniquely bound Feishu chat.
+   */
+  private captureDesktopOriginNotification(
+    notification: ServerNotification,
+    identity: { readonly threadId: string; readonly turnId: string },
+  ): void {
+    const binding = this.resolveBindingByThreadId?.(identity.threadId);
+    if (!binding) {
+      return;
+    }
+    const key = turnKey(identity.threadId, identity.turnId);
+    const pending = this.pendingDesktopByTurnKey.get(key) ?? [];
+    if (pending.length < 64) {
+      pending.push(notification);
+      this.pendingDesktopByTurnKey.set(key, pending);
+    }
+    if (notification.method !== 'turn/started' || this.startingDesktopTurnKeys.has(key)) {
+      return;
+    }
+    const turn = (notification.params as { readonly turn?: Turn }).turn;
+    const prompt = turn ? desktopPrompt(turn) : null;
+    if (!turn || !prompt) {
+      return;
+    }
+    this.startingDesktopTurnKeys.add(key);
+    void this.runExclusive(identity.threadId, async () => {
+      if (this.activeByThreadId.has(identity.threadId)) {
+        return;
+      }
+      await this.startDesktopProjection(binding, turn, prompt);
+    }).catch((error: unknown) => this.onCardError(toError(error))).finally(() => {
+      this.startingDesktopTurnKeys.delete(key);
+      if (!this.activeByThreadId.has(identity.threadId)) {
+        this.pendingDesktopByTurnKey.delete(key);
+      }
+    });
+  }
+
+  private async startDesktopProjection(
+    binding: ChatThreadBinding,
+    turn: Turn,
+    prompt: string,
+  ): Promise<void> {
+    const id = randomUUID();
+    const startedAtMs = this.now();
+    const cardId = await this.cards.createCard(taskCard(
+      prompt,
+      'RUNNING',
+      '',
+      [],
+      '',
+      '',
+      startedAtMs,
+      undefined,
+      undefined,
+      binding,
+    ));
+    const cardMessageId = await this.cards.sendCard(binding.chatId, cardId, `desktop:${id}`);
+    const task: RuntimeTask = {
+      id,
+      message: desktopMessage(binding, turn, prompt, cardMessageId, startedAtMs),
+      binding,
+      cardId,
+      cardMessageId,
+      cancelToken: deriveTaskCancelToken(this.config.larkAppSecret, id),
+      turnId: turn.id,
+      status: 'RUNNING',
+      commentary: '',
+      tools: '',
+      toolExecutions: [],
+      finalAnswer: '',
+      startedAtMs,
+      model: null,
+      inputTokens: null,
+      outputTokens: null,
+      contextTokens: null,
+      contextWindow: null,
+      apiCalls: null,
+      rateLimitText: null,
+      cardSequence: 0,
+      completedAtMs: null,
+      streamingClosed: false,
+      cancelRequested: false,
+      cardWrite: Promise.resolve(),
+      cardRetryCount: 0,
+      cardRetryTimer: undefined,
+      terminalCleanupTimer: undefined,
+      updateTimer: undefined,
+      outputFilesUploaded: false,
+    };
+    this.tasksById.set(id, task);
+    this.activeByThreadId.set(binding.threadId, task);
+    void this.refreshRateLimits(task);
+    this.replayDesktopPending(task);
+    if (!TERMINAL.has(task.status)) {
+      this.requestCardUpdate(task, true);
     }
   }
 
@@ -386,9 +548,70 @@ export class InMemoryOrchestrator {
     return 'queued';
   }
 
+  /**
+   * A no-client-found response is the Desktop router's proof that no owner
+   * received the request. It is therefore the sole delivery error that may be
+   * retried after opening the exact bound conversation.
+   */
+  private async startTurnWithDesktopOwner(task: RuntimeTask): Promise<Turn> {
+    const start = (): Promise<Turn> => this.desktop.startTurnTracked(
+      buildStart(task, this.config),
+      () => undefined,
+    );
+    try {
+      return await start();
+    } catch (error) {
+      if (!isMissingDesktopOwner(error) || !this.navigation) {
+        throw error;
+      }
+      await this.navigation.openThread(task.binding.threadId);
+      for (let attempt = 0; attempt < MAX_DESKTOP_OWNER_RETRIES; attempt += 1) {
+        await delay(this.navigationRetryDelayMs * 2 ** attempt);
+        if (task.cancelRequested) {
+          throw error;
+        }
+        try {
+          return await start();
+        } catch (retryError) {
+          if (!isMissingDesktopOwner(retryError) || attempt === MAX_DESKTOP_OWNER_RETRIES - 1) {
+            throw retryError;
+          }
+        }
+      }
+      throw error;
+    }
+  }
+
+  private handleInterruptDeliveryFailure(task: RuntimeTask, error: unknown): boolean {
+    task.tools = deliveryFailureText(error, '取消请求');
+    if (error instanceof DesktopIpcRequestError && error.disposition === 'PROVABLY_UNSENT') {
+      this.requestCardUpdate(task, true);
+      return false;
+    }
+    task.status = 'FAILED';
+    task.completedAtMs = this.now();
+    void this.flushCard(task, true).finally(() => this.finish(task));
+    return false;
+  }
+
   private replayPending(task: RuntimeTask): void {
     const pending = this.pendingByThreadId.get(task.binding.threadId) ?? [];
     this.pendingByThreadId.delete(task.binding.threadId);
+    for (const notification of pending) {
+      const identity = eventIdentity(notification);
+      if (identity?.turnId === task.turnId) {
+        this.applyNotification(task, notification);
+      }
+    }
+  }
+
+  private replayDesktopPending(task: RuntimeTask): void {
+    if (!task.turnId) {
+      return;
+    }
+    const key = turnKey(task.binding.threadId, task.turnId);
+    const pending = this.pendingDesktopByTurnKey.get(key) ?? [];
+    this.pendingDesktopByTurnKey.delete(key);
     for (const notification of pending) {
       const identity = eventIdentity(notification);
       if (identity?.turnId === task.turnId) {
@@ -403,6 +626,8 @@ export class InMemoryOrchestrator {
       applyUsage(task, params);
     } else if (notification.method === 'item/started') {
       appendStartedCommand(task, params);
+    } else if (notification.method === 'item/completed') {
+      completeCommand(task, params);
     } else if (notification.method === 'item/agentMessage/delta') {
       appendToTask(
         task,
@@ -412,7 +637,9 @@ export class InMemoryOrchestrator {
     } else if (notification.method === 'item/reasoning/summaryTextDelta') {
       appendToTask(task, 'commentary', stringField(params.delta));
     } else if (notification.method === 'item/commandExecution/outputDelta') {
-      appendToTask(task, 'tools', stringField(params.delta));
+      // Command stdout/stderr may be arbitrarily large and often contains
+      // workspace data. The card keeps only a compact invocation summary.
+      return;
     } else if (notification.method === 'error') {
       appendToTask(task, 'tools', stringField((params.error as Record<string, unknown> | undefined)?.message));
     } else if (notification.method === 'turn/completed') {
@@ -421,6 +648,7 @@ export class InMemoryOrchestrator {
       task.finalAnswer = finalAnswerFromTurn(turn);
       task.completedAtMs = this.now();
       void this.refreshRateLimits(task);
+      void this.uploadFilesForSuccessfulTask(task);
       void this.flushCard(task, true).finally(() => this.finish(task));
       return;
     }
@@ -457,10 +685,19 @@ export class InMemoryOrchestrator {
       return;
     }
     try {
+      if (terminal && !task.streamingClosed) {
+        task.cardSequence = await this.cards.closeStreaming(
+          task.cardId,
+          task.cardSequence,
+          `task:${task.id}:close:${task.cardSequence + 1}`,
+        );
+        task.streamingClosed = true;
+      }
       const card = taskCard(
         task.message.text,
         task.status,
         task.commentary,
+        task.toolExecutions,
         task.tools,
         task.finalAnswer,
         task.startedAtMs,
@@ -474,14 +711,6 @@ export class InMemoryOrchestrator {
         `task:${task.id}:${task.cardSequence + 1}`,
       );
       task.cardRetryCount = 0;
-      if (terminal && !task.streamingClosed) {
-        task.cardSequence = await this.cards.closeStreaming(
-          task.cardId,
-          task.cardSequence,
-          `task:${task.id}:close:${task.cardSequence + 1}`,
-        );
-        task.streamingClosed = true;
-      }
     } catch (error) {
       const cardError = toError(error);
       if (error instanceof CardKitError && error.retryable && task.cardRetryCount < MAX_CARD_RETRY_ATTEMPTS) {
@@ -556,6 +785,18 @@ export class InMemoryOrchestrator {
     }
   }
 
+  private async uploadFilesForSuccessfulTask(task: RuntimeTask): Promise<void> {
+    if (task.status !== 'SUCCEEDED' || task.outputFilesUploaded || !this.uploadOutputFiles) {
+      return;
+    }
+    task.outputFilesUploaded = true;
+    try {
+      await this.uploadOutputFiles(task.finalAnswer, task.message.rootMessageId, task.id);
+    } catch {
+      // File upload is opt-in convenience output; it never changes task status.
+    }
+  }
+
   private pruneDedupe(): void {
     const cutoff = this.now() - DEDUPE_TTL_MS;
     for (const [key, receivedAtMs] of this.processedMessageKeys) {
@@ -620,26 +861,73 @@ function taskCard(
   prompt: string,
   status: TaskStatus,
   commentary: string,
-  tools: string,
+  toolExecutions: readonly ToolExecution[],
+  toolError: string,
   finalAnswer: string,
   startedAtMs: number,
   usage?: RuntimeTask,
   cancelToken?: string,
+  binding?: ChatThreadBinding,
 ): CardKitJson {
   const terminal = TERMINAL.has(status);
+  const tools = toolProjection(toolExecutions, toolError);
+  const metadata = usage
+    ? taskMetadataForBinding(usage.binding)
+    : binding
+      ? taskMetadataForBinding(binding)
+      : null;
   return createTaskCard({
     status,
     cancelToken,
     payload: Object.freeze({
       title: sanitizeCardText('Codex 任务', { maxLength: 200 }),
-      prompt: sanitizeCardText(prompt, { maxLength: 10_000 }),
-      commentary: sanitizeCardText(commentary, { maxLength: 10_000 }),
-      toolSummary: sanitizeCardText(tools || '暂无', { maxLength: 10_000 }),
-      finalAnswer: sanitizeCardText(finalAnswer, { maxLength: 10_000 }),
-      footer: sanitizeCardText(formatFooter(status, startedAtMs, usage), { maxLength: 500 }),
+      prompt: sanitizeCardMarkdown(prompt, { maxLength: 10_000 }),
+      metadata: metadata ? sanitizeCardMarkdown(metadata, { maxLength: 1_000 }) : null,
+      commentary: sanitizeCardMarkdown(commentary, { maxLength: 10_000 }),
+      toolSummary: sanitizeCardPlainText(tools.text || '暂无', { maxLength: 10_000 }),
+      toolCount: tools.count,
+      finalAnswer: sanitizeCardMarkdown(finalAnswer, { maxLength: 10_000 }),
+      footer: sanitizeCardPlainText(formatFooter(status, startedAtMs, usage), { maxLength: 500 }),
       terminal,
     }),
   });
+}
+
+function toolProjection(
+  executions: readonly ToolExecution[],
+  error: string,
+): { readonly text: string; readonly count: number } {
+  const lines = executions.map((execution, index) => {
+    const state = execution.completed ? (execution.failed ? '❌' : '✅') : '⏳';
+    return `${state} ${index + 1}. ${summarizeCommand(execution.command)}`;
+  });
+  if (error.trim()) {
+    lines.push(`⚠️ ${oneLine(error, 500)}`);
+  }
+  return { text: lines.join('\n'), count: executions.length };
+}
+
+function summarizeCommand(command: string): string {
+  return oneLine(command, 240);
+}
+
+function oneLine(value: string, maxLength: number): string {
+  const compact = value.replace(/\s+/g, ' ').trim();
+  return compact.length <= maxLength ? compact : `${compact.slice(0, maxLength - 1)}…`;
+}
+
+function taskMetadataForBinding(binding: ChatThreadBinding): string {
+  const metadata: string[] = [];
+  if (binding.plan === 'plan') {
+    metadata.push('📝 **计划模式**: `开启`');
+  }
+  if (binding.personality && binding.personality !== 'none') {
+    metadata.push(`🎭 **回复风格**: \`${binding.personality}\``);
+  }
+  if (binding.model) {
+    metadata.push(`🤖 **模型**: \`${binding.model}\``);
+  }
+  return metadata.join(' ｜ ');
 }
 
 function applyUsage(task: RuntimeTask, params: Record<string, unknown>): void {
@@ -691,15 +979,29 @@ function formatRateLimits(response: unknown): string | null {
   if (!limits) {
     return null;
   }
-  const entries = [
-    formatRateLimit('5h', recordField(limits.primary)),
-    formatRateLimit('7d', recordField(limits.secondary)),
-  ].filter((entry): entry is string => Boolean(entry));
+  const entries = [formatRateLimit('7d', weeklyRateLimit(limits))]
+    .filter((entry): entry is string => Boolean(entry));
   const credits = recordField(limits.credits);
   if (credits?.hasCredits === true && (typeof credits.balance === 'string' || typeof credits.balance === 'number')) {
     entries.push(`点数: ${String(credits.balance)}`);
   }
   return entries.length > 0 ? entries.join(' | ') : null;
+}
+
+/**
+ * Desktop used to expose 5h as `primary` and 7d as `secondary`. With the 5h
+ * window removed, the remaining weekly window is returned as `primary`.
+ * Prefer the explicit duration, then preserve the prior `secondary` fallback.
+ */
+function weeklyRateLimit(limits: Record<string, unknown>): Record<string, unknown> | null {
+  const primary = recordField(limits.primary);
+  const secondary = recordField(limits.secondary);
+  const candidates = [primary, secondary].filter((limit): limit is Record<string, unknown> => limit !== null);
+  const weekly = candidates.find((limit) => {
+    const durationMins = numberField(limit.windowDurationMins);
+    return durationMins !== null && durationMins >= 6 * 24 * 60;
+  });
+  return weekly ?? secondary ?? primary;
 }
 
 function formatRateLimit(label: string, limit: Record<string, unknown> | null): string | null {
@@ -753,6 +1055,21 @@ function firstNumber(...values: unknown[]): number | null {
   return null;
 }
 
+function isMissingDesktopOwner(error: unknown): boolean {
+  return error instanceof DesktopIpcRequestError && error.remoteError === 'no-client-found';
+}
+
+function positiveDelay(value: number, label: string): number {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new RangeError(`${label} must be a positive safe integer`);
+  }
+  return value;
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
 function eventIdentity(notification: ServerNotification): { threadId: string; turnId: string } | null {
   const params = notification.params as Record<string, unknown>;
   const threadId = stringField(params.threadId);
@@ -775,17 +1092,41 @@ function appendToTask(
 
 function appendStartedCommand(task: RuntimeTask, params: Record<string, unknown>): void {
   const item = recordField(params.item);
-  if (item?.type !== 'commandExecution' || typeof item.command !== 'string' || !item.command.trim()) {
+  const itemId = stringField(item?.id) ?? stringField(params.itemId);
+  if (
+    item?.type !== 'commandExecution'
+    || !itemId
+    || typeof item.command !== 'string'
+    || !item.command.trim()
+  ) {
     return;
   }
-  const command = item.command.trim();
-  if (task.tools.includes(command)) {
+  if (task.toolExecutions.some((execution) => execution.itemId === itemId)) {
     return;
   }
-  const next = task.tools
-    ? `${task.tools}\n\n---\n🛠️ 运行命令: ${command}`
-    : `🛠️ 运行命令: ${command}`;
-  task.tools = next.length > TEXT_LIMIT ? next.slice(-TEXT_LIMIT) : next;
+  task.toolExecutions.push({
+    itemId,
+    command: item.command.trim(),
+    completed: false,
+    failed: false,
+  });
+}
+
+function completeCommand(task: RuntimeTask, params: Record<string, unknown>): void {
+  const item = recordField(params.item);
+  if (item?.type !== 'commandExecution') {
+    return;
+  }
+  const itemId = stringField(item.id) ?? stringField(params.itemId);
+  if (!itemId) {
+    return;
+  }
+  const execution = task.toolExecutions.find((entry) => entry.itemId === itemId);
+  if (!execution) {
+    return;
+  }
+  execution.completed = true;
+  execution.failed = numberField(item.exitCode) !== null && numberField(item.exitCode) !== 0;
 }
 
 function turnKey(threadId: string, turnId: string): string {
@@ -797,6 +1138,55 @@ function finalAnswerFromTurn(turn: Turn): string {
     .filter((item) => item.type === 'agentMessage' && item.phase === 'final_answer')
     .map((item) => item.text ?? '')
     .join('');
+}
+
+function desktopPrompt(turn: Turn): string | null {
+  const inputPrompt = (turn.input ?? [])
+    .filter((input) => input.type === 'text')
+    .map((input) => input.text)
+    .join('\n')
+    .trim();
+  if (inputPrompt) {
+    return inputPrompt;
+  }
+  for (const item of turn.items) {
+    if (item.type !== 'userMessage' && item.type !== 'user_message') {
+      continue;
+    }
+    if (item.text?.trim()) {
+      return item.text.trim();
+    }
+    if (!Array.isArray(item.content)) {
+      continue;
+    }
+    const prompt = item.content.map((content) => (
+      typeof content === 'string' ? content : content.text
+    )).join('\n').trim();
+    if (prompt) {
+      return prompt;
+    }
+  }
+  return null;
+}
+
+function desktopMessage(
+  binding: ChatThreadBinding,
+  turn: Turn,
+  prompt: string,
+  cardMessageId: string,
+  createdAtMs: number,
+): InboundTextMessage {
+  return {
+    tenantKey: binding.tenantKey,
+    eventId: `desktop:${binding.threadId}:${turn.id}`,
+    messageId: cardMessageId,
+    chatId: binding.chatId,
+    rootMessageId: cardMessageId,
+    senderOpenId: 'desktop',
+    text: prompt,
+    payloadDigest: turn.id,
+    createdAtMs,
+  };
 }
 
 function terminalStatus(status: Turn['status']): TaskStatus {
@@ -815,4 +1205,17 @@ function stringField(value: unknown): string | null {
 
 function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error('Card update failed');
+}
+
+function deliveryFailureText(error: unknown, operation: string): string {
+  if (!(error instanceof DesktopIpcRequestError)) {
+    return `${operation}失败；Desktop IPC 发生本地错误，Bridge 不会自动重试。`;
+  }
+  if (error.disposition === 'PROVABLY_UNSENT') {
+    return `${operation}未发送到 ChatGPT Desktop（${error.code}）；请在连接恢复后重新发送。`;
+  }
+  if (error.disposition === 'DEFINITIVE_FAILURE') {
+    return `${operation}被 ChatGPT Desktop 明确拒绝（${error.code}）；Bridge 不会重试。`;
+  }
+  return `${operation}的 Desktop 送达结果无法确认（${error.code}）；为避免重复执行，Bridge 不会自动重试。`;
 }

@@ -110,6 +110,25 @@ export class BindingStore {
     return Object.freeze([...this.bindings.values()]);
   }
 
+  /**
+   * Resolves a Desktop thread back to one Feishu chat only when the mapping is
+   * unambiguous. A Desktop-originated message has no chat scope of its own,
+   * so fan-out would risk projecting it into an unintended conversation.
+   */
+  public getUniqueByThreadId(threadId: string): ChatThreadBinding | undefined {
+    let match: ChatThreadBinding | undefined;
+    for (const binding of this.bindings.values()) {
+      if (binding.threadId !== threadId) {
+        continue;
+      }
+      if (match) {
+        return undefined;
+      }
+      match = binding;
+    }
+    return match;
+  }
+
   /** Persists one replacement binding using same-directory atomic replacement. */
   public bind(
     input: Omit<ChatThreadBinding, 'revision' | 'updatedAtMs'>,

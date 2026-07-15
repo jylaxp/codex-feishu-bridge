@@ -36,8 +36,11 @@ export type ApprovalDecision = 'accept' | 'acceptForSession' | 'decline' | 'canc
 export interface CardProjectionPayload {
   readonly title: SanitizedCardText;
   readonly prompt: SanitizedCardText;
+  readonly metadata?: SanitizedCardText | null;
   readonly commentary: SanitizedCardText;
   readonly toolSummary: SanitizedCardText;
+  /** Number of tool calls represented by the collapsed tools panel. */
+  readonly toolCount?: number;
   readonly finalAnswer: SanitizedCardText;
   readonly footer: SanitizedCardText;
   readonly terminal: boolean;
@@ -59,23 +62,27 @@ export interface BridgeConfig {
   readonly allowedWorkspaceRoots: readonly string[];
   /** Current runtime home; only .env and bindings.json are persistent state. */
   readonly configHome?: string;
-  /** @deprecated Legacy SQLite data directory. New runtime never uses this path. */
-  readonly dataDir?: string;
   readonly maxTextLength: number;
   readonly cardUpdateIntervalMs: number;
   readonly maxQueuedTasks: number;
+  /** Shared in-memory TTL for account/rate-limit reads. */
+  readonly rateLimitQueryIntervalMs: number;
+  /** Legacy opt-in operational log switch. Logs never contain task payloads. */
+  readonly logToFile: boolean;
+  /** Optional log filename/path, resolved beneath the Bridge config home. */
+  readonly logFilePath: string | null;
+  /** Retains the old opt-in output-file upload setting for the Lark adapter. */
+  readonly enableAutoFileUpload: boolean;
 }
 
-export interface DataDirectoryLayout {
+export interface RuntimeDirectoryLayout {
   readonly rootDir: string;
-  readonly databasePath: string;
-  readonly logDir: string;
   readonly temporaryDir: string;
 }
 
 export interface PreflightResult {
   readonly config: BridgeConfig;
   readonly configHome: string;
-  readonly dataDirectory: DataDirectoryLayout;
+  readonly runtimeDirectory: RuntimeDirectoryLayout;
   readonly nodeVersion: string;
 }

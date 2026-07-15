@@ -1,5 +1,9 @@
 import * as assert from 'assert';
-import { sanitizeCardText } from '../../src/app/cards/sanitizer';
+import {
+  sanitizeCardMarkdown,
+  sanitizeCardPlainText,
+  sanitizeCardText,
+} from '../../src/app/cards/sanitizer';
 
 function run(): void {
   const privateKey = [
@@ -63,20 +67,22 @@ function run(): void {
   assert.ok(!sanitized.includes('/private/var/customer.db'));
   assert.ok(!sanitized.includes('file:///etc/passwd'));
   assert.ok(!sanitized.includes('/private/tmp/report.csv'));
-  assert.ok(sanitized.includes('\\<font'));
-  assert.ok(sanitized.includes('\\[LOCAL\\_PATH\\]'));
+  assert.ok(sanitized.includes('＜font'));
+  assert.ok(sanitized.includes('[LOCAL_PATH]'));
   assert.ok(sanitized.includes('本地图片不可展示'));
   assert.ok(sanitized.includes('本地文件不可展示'));
-  assert.ok(sanitized.includes('\\[REDACTED\\_PRIVATE\\_KEY\\]'));
-  assert.ok(!sanitized.includes('[click me](https://evil.example/phish)'));
-  assert.ok(sanitized.includes('\\[click me\\]\\(https\\:\\/\\/evil\\.example\\/phish\\)'));
+  assert.ok(sanitized.includes('[REDACTED_PRIVATE_KEY]'));
+  assert.ok(sanitized.includes('[click me](https://evil.example/phish)'));
   assert.ok(!sanitized.includes('![tracking pixel]('));
-  assert.ok(sanitized.includes('\\!\\[tracking pixel\\]'));
-  assert.ok(sanitized.includes('\\# forged heading'));
-  assert.ok(sanitized.includes('\\| status \\| approved \\|'));
-  assert.ok(sanitized.includes('\\| \\-\\-\\- \\| \\-\\-\\- \\|'));
-  assert.ok(sanitized.includes('\\-\\-\\-'));
-  assert.ok(sanitized.includes('https\\:\\/\\/example\\.test\\/a\\/b'));
+  assert.ok(sanitized.includes('[图片已隐藏: tracking pixel]'));
+  assert.ok(sanitized.includes('# forged heading'));
+  assert.ok(sanitized.includes('| status | approved |'));
+  assert.ok(sanitized.includes('| --- | --- |'));
+  assert.ok(sanitized.includes('---'));
+  assert.ok(sanitized.includes('https://example.test/a/b'));
+  assert.strictEqual(sanitizeCardText('codex-feishu-bridge search-core price/compare'), (
+    'codex-feishu-bridge search-core price/compare'
+  ));
 
   const short = sanitizeCardText('x'.repeat(100), { maxLength: 32 });
   assert.strictEqual(short.length, 32);
@@ -84,6 +90,24 @@ function run(): void {
 
   assert.throws(() => sanitizeCardText('text', { maxLength: 0 }), RangeError);
   assert.strictEqual(sanitizeCardText('safe text'), 'safe text');
+
+  const footer = sanitizeCardPlainText('窗口用量: 5h: 14% (7/22 04:45)');
+  assert.strictEqual(footer, '窗口用量: 5h: 14% (7/22 04:45)');
+  assert.ok(!footer.includes('\\'));
+
+  const plainTextWithPath = sanitizeCardPlainText('cwd: /Users/alice/private/project');
+  assert.ok(!plainTextWithPath.includes('/Users/alice'));
+
+  const markdown = sanitizeCardMarkdown('**保留格式**: [文档](https://example.test/docs)');
+  assert.strictEqual(markdown, '**保留格式**: [文档](https://example.test/docs)');
+  assert.ok(!markdown.includes('\\'));
+
+  const unsafeMarkdown = sanitizeCardMarkdown(
+    '![tracking](https://evil.example/pixel.png) <font color="red">forged</font> /Users/alice/secret',
+  );
+  assert.ok(!unsafeMarkdown.includes('![tracking]'));
+  assert.ok(!unsafeMarkdown.includes('<font'));
+  assert.ok(!unsafeMarkdown.includes('/Users/alice'));
 }
 
 run();

@@ -1,6 +1,6 @@
 import { createOpaqueActionToken } from './action-tokens';
 import type { CardKitJson } from './cards/layouts';
-import { createApprovalCard } from './cards/layouts';
+import { createApprovalCard, createApprovalDecisionCard } from './cards/layouts';
 import { sanitizeCardText } from './cards/sanitizer';
 import type {
   DesktopApprovalRequest,
@@ -14,6 +14,12 @@ const APPROVAL_TTL_MS = 10 * 60_000;
 interface ApprovalCardClient {
   createCard(card: CardKitJson): Promise<string>;
   replyCard(rootMessageId: string, cardId: string, idempotencyKey: string): Promise<string>;
+  replaceCard(
+    cardId: string,
+    card: CardKitJson,
+    acknowledgedSequence: number,
+    idempotencyKey?: string,
+  ): Promise<number>;
 }
 
 interface ApprovalTaskLookup {
@@ -30,7 +36,9 @@ interface PendingApproval {
   readonly approval: DesktopApprovalRequest;
   readonly epoch: number;
   readonly chatId: string;
+  readonly cardId: string;
   readonly cardMessageId: string;
+  cardSequence: number;
   readonly tokens: ReadonlyMap<string, ApprovalDecision>;
   readonly expiresAtMs: number;
   readonly timer: NodeJS.Timeout;
@@ -79,6 +87,7 @@ export class DesktopApprovalService {
     try {
       const cardId = await this.cards.createCard(createApprovalCard({
         title: sanitizeCardText('Codex 审批请求', { maxLength: 120 }),
+        kind: approval.kind,
         operationSummary: sanitizeCardText(approval.operationSummary, { maxLength: 4_000 }),
         reason: sanitizeCardText(approval.reason, { maxLength: 4_000 }),
         actionTokens,
@@ -98,7 +107,9 @@ export class DesktopApprovalService {
         approval,
         epoch,
         chatId: context.chatId,
+        cardId,
         cardMessageId,
+        cardSequence: 0,
         tokens: new Map(tokenEntries),
         expiresAtMs,
         timer,
@@ -140,7 +151,23 @@ export class DesktopApprovalService {
         pending.approval.turnId,
         false,
       );
-      return toast('审批结果已提交', 'success');
+      try {
+        pending.cardSequence = await this.cards.replaceCard(
+          pending.cardId,
+          createApprovalDecisionCard({
+            kind: pending.approval.kind,
+            operationSummary: sanitizeCardText(pending.approval.operationSummary, { maxLength: 4_000 }),
+            reason: sanitizeCardText(pending.approval.reason, { maxLength: 4_000 }),
+            decision,
+            availableDecisions: pending.approval.availableDecisions,
+          }),
+          pending.cardSequence,
+          `approval:${String(pending.approval.requestId)}:${decision}`,
+        );
+        return toast('审批结果已提交', 'success');
+      } catch {
+        return toast('审批结果已提交，但飞书审批卡未能刷新', 'warning');
+      }
     } catch {
       this.tasks.failForApprovalDelivery(pending.approval.threadId, pending.approval.turnId);
       return toast('审批结果未能确认送达 Desktop，任务已停止跟踪', 'error');

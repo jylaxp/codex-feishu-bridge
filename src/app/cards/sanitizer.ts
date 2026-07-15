@@ -85,11 +85,17 @@ function redactAbsolutePaths(value: string): string {
     );
 }
 
-function escapeCommonMark(value: string): string {
-  // CommonMark allows every ASCII punctuation character to be backslash-escaped.
-  // Escaping the complete set prevents links, images, headings, tables, rules,
-  // HTML blocks, mentions, and future Markdown extensions from becoming active.
-  return value.replace(/[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]/g, '\\$&');
+function removeMarkdownImages(value: string): string {
+  return value.replace(
+    /!\[([^\]]*)\]\((?:\\.|[^)])*\)/g,
+    (_match, alt: string) => `[图片已隐藏${alt ? `: ${alt}` : ''}]`,
+  );
+}
+
+function neutralizeRawHtml(value: string): string {
+  return value.replace(/<\/?[A-Za-z][^>]*>/g, (markup) => (
+    markup.replaceAll('<', '＜').replaceAll('>', '＞')
+  ));
 }
 
 function truncate(value: string, maxLength: number): string {
@@ -102,13 +108,10 @@ function truncate(value: string, maxLength: number): string {
   return value.slice(0, maxLength - TRUNCATION_SUFFIX.length) + TRUNCATION_SUFFIX;
 }
 
-/**
- * Converts untrusted model/user/tool text into display-only CardKit content.
- * It never reads or uploads referenced local files.
- */
-export function sanitizeCardText(
+function sanitizeCardTextInternal(
   input: string,
-  options: SanitizeCardTextOptions = {},
+  options: SanitizeCardTextOptions,
+  rendering: 'plain' | 'markdown',
 ): SanitizedCardText {
   const maxLength = options.maxLength ?? DEFAULT_MAX_LENGTH;
   if (!Number.isSafeInteger(maxLength) || maxLength < 1 || maxLength > 20_000) {
@@ -120,6 +123,47 @@ export function sanitizeCardText(
   sanitized = redactSecrets(sanitized);
   sanitized = removeLocalFileRendering(sanitized);
   sanitized = redactAbsolutePaths(sanitized);
-  sanitized = escapeCommonMark(sanitized);
+  if (rendering === 'markdown') {
+    sanitized = removeMarkdownImages(sanitized);
+    sanitized = neutralizeRawHtml(sanitized);
+  }
   return truncate(sanitized, maxLength) as SanitizedCardText;
+}
+
+/**
+ * Converts untrusted model/user/tool text into display-only CardKit content.
+ * It never reads or uploads referenced local files.
+ */
+export function sanitizeCardText(
+  input: string,
+  options: SanitizeCardTextOptions = {},
+): SanitizedCardText {
+  return sanitizeCardTextInternal(input, options, 'markdown');
+}
+
+/**
+ * Converts text for a CardKit plain_text element.
+ *
+ * The element does not parse Markdown, so keeping punctuation literal is safe
+ * and avoids rendering implementation-owned status text with escape slashes.
+ */
+export function sanitizeCardPlainText(
+  input: string,
+  options: SanitizeCardTextOptions = {},
+): SanitizedCardText {
+  return sanitizeCardTextInternal(input, options, 'plain');
+}
+
+/**
+ * Converts untrusted text for CardKit's Markdown element without turning
+ * normal punctuation into visible backslash escapes.
+ *
+ * Inline images and raw HTML are neutralized while text redaction and local
+ * file blocking remain in force.
+ */
+export function sanitizeCardMarkdown(
+  input: string,
+  options: SanitizeCardTextOptions = {},
+): SanitizedCardText {
+  return sanitizeCardTextInternal(input, options, 'markdown');
 }

@@ -24,11 +24,14 @@ function bridgeConfig(): BridgeConfig {
     codexBin: '/usr/bin/codex',
     codexCwd: '/workspace',
     allowedWorkspaceRoots: Object.freeze(['/workspace']),
-    dataDir: '/data',
     maxTextLength: 10_000,
     cardUpdateIntervalMs: 1_500,
-    maxQueuedTasks: 100,
-  });
+  maxQueuedTasks: 100,
+  rateLimitQueryIntervalMs: 300_000,
+  logToFile: false,
+  logFilePath: null,
+  enableAutoFileUpload: false,
+});
 }
 
 test('redacted SDK logger emits severity only and never forwards raw arguments', () => {
