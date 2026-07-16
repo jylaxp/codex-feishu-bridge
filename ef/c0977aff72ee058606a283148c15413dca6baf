@@ -1,0 +1,75 @@
+src/app/cards/card-image-renderer.ts
+  s_4672ec237d452e::t_6d59af9f8cd6ec 26
+src/adapter.ts
+  s_4672ec237d452e::t_6d59af9f8cd6ec 717
+src/app/main.ts
+  s_4672ec237d452e::t_6d59af9f8cd6ec 91
+plans/2026-07-13-feishu-app-server-bridge/deployment-guide.md
+  s_4672ec237d452e::t_f76b63a3402db3 36
+test/app/command-service.test.ts
+  s_4672ec237d452e::t_5c97ca6c217ca5 18
+src/app/in-memory-orchestrator.ts
+  s_4672ec237d452e::t_d6bc61a55f732d 602,876
+  s_4672ec237d452e::t_6d59af9f8cd6ec 884
+src/app/lark/output-file-uploader.ts
+  s_4672ec237d452e::t_6d59af9f8cd6ec 35,58,135,140
+test/app/doctor.test.ts
+  s_4672ec237d452e::t_aade11e6bf300a 22,30
+src/app/preflight.ts
+  s_4672ec237d452e::t_6d59af9f8cd6ec 190
+src/app/domain.ts
+  s_4672ec237d452e::t_6d59af9f8cd6ec 72
+src/app/setup.ts
+  s_4672ec237d452e::t_3a7e9f76ddcb1c 260,281-282,286,295-316,318-347
+  s_4672ec237d452e::t_6b4bf4c2140be9 247-248
+  s_4672ec237d452e::t_692e3eb16aac22 50,105,207-210,234-235,246,348
+  s_4672ec237d452e::t_b9784c6bfca96a 9,194,274-280,287-294,317
+  s_4672ec237d452e::t_2c3e9513591ecc 99
+  s_4672ec237d452e::t_6fd8a62e6e4478 48,52,80,107,211-233,242,249
+  s_4672ec237d452e::t_d9c6315f2cc0b5 244-245
+  s_4672ec237d452e::t_0de148350964c1 349
+test/app/card-image-renderer.test.ts
+  s_4672ec237d452e::t_c1e142aff0f2d5 15,41-56
+docs/plans/2026-07-14-001-feat-feishu-chatgpt-desktop-ipc-bridge-plan.md
+  s_4672ec237d452e::t_f76b63a3402db3 102,263,269,493,767,1200
+.env.example
+  s_4672ec237d452e::t_3d0e152dca3583 1-11,14,18,21-22,24,27-28,30-35,37-38,40,42,45-46,48-50,52,54
+test/app/in-memory-orchestrator.test.ts
+  s_4672ec237d452e::t_42faf0362c4a89 133-135
+  s_4672ec237d452e::t_5c97ca6c217ca5 37
+src/app/config-file.ts
+  s_4672ec237d452e::t_b9784c6bfca96a 26,41-42
+test/app/setup.test.ts
+  s_4672ec237d452e::t_6fd8a62e6e4478 94-97,113-116,123-131
+  s_4672ec237d452e::t_b9784c6bfca96a 137-162
+  s_4672ec237d452e::t_3a7e9f76ddcb1c 23,26-28,70
+  s_4672ec237d452e::t_f5a06e0def44b3 91,122
+  s_4672ec237d452e::t_aade11e6bf300a 24-25,71-72
+  s_4672ec237d452e::t_6b4bf4c2140be9 90,120-121
+  s_4672ec237d452e::t_5c97ca6c217ca5 92,117
+  s_4672ec237d452e::t_1e73c93daddc6f 132-136
+test/app/output-file-uploader.test.ts
+  s_4672ec237d452e::t_c1e142aff0f2d5 2,10-11,13-16,18,20,36,41,48,50,79
+test/app/config.test.ts
+  s_4672ec237d452e::t_aade11e6bf300a 77-83,183-185
+README.md
+  s_4672ec237d452e::t_d9c6315f2cc0b5 104-105,115-117
+src/app/config.ts
+  s_4672ec237d452e::t_6d59af9f8cd6ec 175-179,190-191
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "efc0977aff72ee058606a283148c15413dca6baf",
+  "prompts": {},
+  "sessions": {
+    "s_4672ec237d452e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5be6-2b87-7190-8898-ae985cbeb51e",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    }
+  }
+}
