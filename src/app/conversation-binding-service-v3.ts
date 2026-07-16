@@ -76,6 +76,7 @@ export class ConversationBindingServiceV3 {
     private readonly logger: BindingLoggerV3 | undefined = undefined,
     private readonly workspaceStateReader: () => Promise<BindingWorkspaceState> = readWorkspaceState,
     private readonly readRateLimits: (() => Promise<unknown>) | undefined = undefined,
+    private readonly projectActiveDesktopTurn: ((binding: ChatThreadBinding) => Promise<boolean>) | undefined = undefined,
   ) {}
 
   public getBinding(tenantKey: string, chatId: string): ChatThreadBinding | undefined {
@@ -257,6 +258,24 @@ export class ConversationBindingServiceV3 {
     binding: ChatThreadBinding,
     messageId: string,
   ): Promise<void> {
+    try {
+      if (await this.projectActiveDesktopTurn?.(binding)) {
+        this.logger?.info('binding_active_turn_projected', {
+          chatId: binding.chatId,
+          threadId: binding.threadId,
+        });
+        return;
+      }
+    } catch (error) {
+      this.logger?.warn('binding_active_turn_projection_failed', {
+        chatId: binding.chatId,
+        threadId: binding.threadId,
+      });
+      this.logger?.error('binding_active_turn_projection_error', error, {
+        chatId: binding.chatId,
+        threadId: binding.threadId,
+      });
+    }
     await this.pushLatestHistoryCard(
       binding,
       `history:${messageId}:${binding.threadId}`,
@@ -354,7 +373,7 @@ export class ConversationBindingServiceV3 {
 function latestTerminalTurn(thread: Thread): Turn | null {
   for (let index = thread.turns.length - 1; index >= 0; index -= 1) {
     const turn = thread.turns[index];
-    if (turn && turn.status !== 'inProgress') {
+    if (turn && (turn.status === 'completed' || turn.status === 'failed')) {
       return turn;
     }
   }

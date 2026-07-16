@@ -42,6 +42,14 @@ export interface CardToolGroup {
   readonly failed?: boolean;
 }
 
+/** One ordered and timestamped activity in a task card. */
+export interface CardTimelineEntry {
+  readonly kind: 'reasoning' | 'tool';
+  readonly time: SanitizedCardText;
+  readonly content?: SanitizedCardText;
+  readonly tool?: CardToolGroup;
+}
+
 export interface CardProjectionPayload {
   readonly title: SanitizedCardText;
   readonly prompt: SanitizedCardText;
@@ -52,6 +60,8 @@ export interface CardProjectionPayload {
   readonly toolCount?: number;
   /** Ordered collapsed tool rows. Preferred over the legacy aggregate summary. */
   readonly toolGroups?: readonly CardToolGroup[];
+  /** Ordered activity stream; replaces separated text and tool sections when present. */
+  readonly timeline?: readonly CardTimelineEntry[];
   readonly finalAnswer: SanitizedCardText;
   readonly footer: SanitizedCardText;
   readonly terminal: boolean;

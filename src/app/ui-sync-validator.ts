@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
 import { AppServerClient } from './codex/app-server-client';
-import { SUPPORTED_APP_SERVER_VERSION } from './codex/contract';
 import { verifyCodexRuntimeContract } from './codex/runtime-contract';
 import {
   ServerNotification,
@@ -70,7 +69,6 @@ export async function runUiSyncValidator(
       title: 'Lark Codex UI Sync Validator',
       version: '2.0.0',
     },
-    expectedServerVersion: SUPPORTED_APP_SERVER_VERSION,
   });
 
   await client.start();

@@ -9,7 +9,6 @@ import {
   sanitizeCardPlainText,
   sanitizeCardText,
 } from './cards/sanitizer';
-import type { ThreadNavigation } from './codex/app-navigation-adapter';
 import { DesktopIpcRequestError, type DesktopIpcClient } from './codex/desktop-ipc-client';
 import type {
   ServerNotification,
@@ -18,7 +17,12 @@ import type {
   TurnSteerParams,
   UserInput,
 } from './codex/protocol';
-import type { BridgeConfig, CardToolGroup, TaskStatus } from './domain';
+import type {
+  BridgeConfig,
+  CardTimelineEntry,
+  CardToolGroup,
+  TaskStatus,
+} from './domain';
 import type { InboundTextMessage } from './lark/intake';
 
 export interface InMemoryCardClient {
@@ -43,10 +47,6 @@ export interface InMemoryOrchestratorOptions {
   readonly onCardError?: (error: Error) => void;
   readonly readRateLimits?: () => Promise<unknown>;
   readonly uploadOutputFiles?: (answer: string, rootMessageId: string, taskId: string) => Promise<void>;
-  /** Activates the exact bound Desktop conversation after an owner lookup miss. */
-  readonly navigation?: ThreadNavigation;
-  /** Base delay used only while waiting for a newly opened Desktop owner. */
-  readonly navigationRetryDelayMs?: number;
   /** Testable base backoff for transient CardKit update failures. */
   readonly cardRetryDelayMs?: number;
   /** Resolves one unambiguous Feishu chat for a Desktop-originated turn. */
@@ -74,8 +74,10 @@ interface RuntimeTask {
   turnId: string | null;
   status: TaskStatus;
   commentary: string;
+  lastProcessItemId: string | null;
   tools: string;
   readonly toolExecutions: ToolExecution[];
+  readonly timeline: TimelineEntry[];
   finalAnswer: string;
   readonly startedAtMs: number;
   model: string | null;
@@ -110,14 +112,20 @@ interface ToolExecution {
   failed: boolean;
 }
 
+interface TimelineEntry {
+  readonly kind: 'reasoning' | 'tool';
+  readonly itemId: string;
+  readonly occurredAtMs: number;
+  text?: string;
+  execution?: ToolExecution;
+}
+
 const TERMINAL: ReadonlySet<TaskStatus> = new Set(['SUCCEEDED', 'FAILED', 'INTERRUPTED']);
 const DEDUPE_TTL_MS = 10 * 60_000;
 const TERMINAL_CARD_RETENTION_MS = 5 * 60_000;
 const TEXT_LIMIT = 128 * 1024;
 const MAX_CARD_RETRY_ATTEMPTS = 3;
 const CARD_RETRY_BASE_DELAY_MS = 250;
-const DEFAULT_NAVIGATION_RETRY_DELAY_MS = 500;
-const MAX_DESKTOP_OWNER_RETRIES = 4;
 
 /**
  * Current-process task state. It deliberately never serializes a task, queue,
@@ -128,8 +136,6 @@ export class InMemoryOrchestrator {
   private readonly onCardError: (error: Error) => void;
   private readonly readRateLimits: (() => Promise<unknown>) | undefined;
   private readonly uploadOutputFiles: ((answer: string, rootMessageId: string, taskId: string) => Promise<void>) | undefined;
-  private readonly navigation: ThreadNavigation | undefined;
-  private readonly navigationRetryDelayMs: number;
   private readonly cardRetryDelayMs: number;
   private readonly resolveBindingByThreadId:
     | ((threadId: string) => ChatThreadBinding | undefined)
@@ -158,13 +164,8 @@ export class InMemoryOrchestrator {
     this.onCardError = options.onCardError ?? (() => undefined);
     this.readRateLimits = options.readRateLimits;
     this.uploadOutputFiles = options.uploadOutputFiles;
-    this.navigation = options.navigation;
     this.resolveBindingByThreadId = options.resolveBindingByThreadId;
     this.readSkills = options.readSkills;
-    this.navigationRetryDelayMs = positiveDelay(
-      options.navigationRetryDelayMs ?? DEFAULT_NAVIGATION_RETRY_DELAY_MS,
-      'navigationRetryDelayMs',
-    );
     this.cardRetryDelayMs = options.cardRetryDelayMs ?? CARD_RETRY_BASE_DELAY_MS;
   }
 
@@ -421,8 +422,10 @@ export class InMemoryOrchestrator {
       turnId: null,
       status: 'STARTING',
       commentary: '',
+      lastProcessItemId: null,
       tools: '',
       toolExecutions: [],
+      timeline: [],
       finalAnswer: '',
       startedAtMs,
       model: null,
@@ -449,7 +452,7 @@ export class InMemoryOrchestrator {
     this.activeByThreadId.set(binding.threadId, task);
     void this.refreshRateLimits(task);
     try {
-      const turn = await this.startTurnWithDesktopOwner(task);
+      const turn = await this.desktop.startTurnTracked(buildStart(task), () => undefined);
       task.turnId = turn.id;
       if (task.cancelRequested) {
         await this.desktop.interruptTurnTracked({
@@ -549,8 +552,10 @@ export class InMemoryOrchestrator {
       turnId: turn.id,
       status: 'RUNNING',
       commentary: '',
+      lastProcessItemId: null,
       tools: '',
       toolExecutions: [],
+      timeline: [],
       finalAnswer: '',
       startedAtMs,
       model: null,
@@ -590,40 +595,6 @@ export class InMemoryOrchestrator {
     queue.push({ message, binding });
     this.queuesByThreadId.set(binding.threadId, queue);
     return 'queued';
-  }
-
-  /**
-   * A no-client-found response is the Desktop router's proof that no owner
-   * received the request. It is therefore the sole delivery error that may be
-   * retried after opening the exact bound conversation.
-   */
-  private async startTurnWithDesktopOwner(task: RuntimeTask): Promise<Turn> {
-    const start = (): Promise<Turn> => this.desktop.startTurnTracked(
-      buildStart(task),
-      () => undefined,
-    );
-    try {
-      return await start();
-    } catch (error) {
-      if (!isMissingDesktopOwner(error) || !this.navigation) {
-        throw error;
-      }
-      await this.navigation.openThread(task.binding.threadId);
-      for (let attempt = 0; attempt < MAX_DESKTOP_OWNER_RETRIES; attempt += 1) {
-        await delay(this.navigationRetryDelayMs * 2 ** attempt);
-        if (task.cancelRequested) {
-          throw error;
-        }
-        try {
-          return await start();
-        } catch (retryError) {
-          if (!isMissingDesktopOwner(retryError) || attempt === MAX_DESKTOP_OWNER_RETRIES - 1) {
-            throw retryError;
-          }
-        }
-      }
-      throw error;
-    }
   }
 
   private handleInterruptDeliveryFailure(task: RuntimeTask, error: unknown): boolean {
@@ -669,20 +640,20 @@ export class InMemoryOrchestrator {
     if (notification.method === 'thread/tokenUsage/updated') {
       applyUsage(task, params);
     } else if (notification.method === 'item/started') {
-      appendStartedTool(task, params);
+      appendStartedTool(task, params, this.now());
     } else if (notification.method === 'item/completed') {
       completeTool(task, params);
     } else if (notification.method === 'item/agentMessage/delta') {
-      const appended = appendToTask(
-        task,
-        stringField(params.phase) === 'commentary' ? 'commentary' : 'finalAnswer',
-        stringField(params.delta),
-      );
+      const phase = stringField(params.phase);
+      const delta = stringField(params.delta);
+      const appended = phase === 'commentary'
+        ? appendProcessDelta(task, params, delta, this.now())
+        : appendToTask(task, 'finalAnswer', delta);
       if (appended) {
         task.lastActivityKind = 'text';
       }
     } else if (notification.method === 'item/reasoning/summaryTextDelta') {
-      if (appendToTask(task, 'commentary', stringField(params.delta))) {
+      if (appendProcessDelta(task, params, stringField(params.delta), this.now())) {
         task.lastActivityKind = 'text';
       }
     } else if (notification.method === 'item/commandExecution/outputDelta') {
@@ -933,11 +904,50 @@ function taskCard(
       toolSummary: sanitizeCardPlainText(tools.text || '暂无', { maxLength: 10_000 }),
       toolCount: tools.count,
       toolGroups: tools.groups,
+      timeline: timelineProjection(usage?.timeline ?? []),
       finalAnswer: sanitizeCardMarkdown(finalAnswer, { maxLength: 10_000 }),
       footer: sanitizeCardPlainText(formatFooter(status, startedAtMs, usage), { maxLength: 500 }),
       terminal,
     }),
   });
+}
+
+function timelineProjection(entries: readonly TimelineEntry[]): readonly CardTimelineEntry[] {
+  return entries.flatMap<CardTimelineEntry>((entry): readonly CardTimelineEntry[] => {
+    const time = sanitizeCardPlainText(formatTimelineTime(entry.occurredAtMs), { maxLength: 16 });
+    if (entry.kind === 'reasoning' && entry.text) {
+      return [Object.freeze({
+        kind: 'reasoning' as const,
+        time,
+        content: sanitizeCardMarkdown(entry.text, { maxLength: 10_000 }),
+      })];
+    }
+    if (entry.kind === 'tool' && entry.execution) {
+      return [Object.freeze({
+        kind: 'tool' as const,
+        time,
+        tool: toolGroupForExecution(entry.execution),
+      })];
+    }
+    return [];
+  });
+}
+
+function toolGroupForExecution(execution: ToolExecution): CardToolGroup {
+  return Object.freeze({
+    title: sanitizeCardPlainText(`🛠️ 工具执行 · ${execution.actionCount} 步`, { maxLength: 100 }),
+    content: sanitizeCardMarkdown(`- \`${execution.command}\``, { maxLength: 2_000 }),
+    count: execution.actionCount,
+    icon: 'api-app_outlined',
+    completed: execution.completed,
+    failed: execution.failed,
+  });
+}
+
+function formatTimelineTime(timestampMs: number): string {
+  const date = new Date(timestampMs);
+  const pad = (value: number): string => String(value).padStart(2, '0');
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
 function toolProjection(
@@ -1161,21 +1171,6 @@ function firstNumber(...values: unknown[]): number | null {
   return null;
 }
 
-function isMissingDesktopOwner(error: unknown): boolean {
-  return error instanceof DesktopIpcRequestError && error.remoteError === 'no-client-found';
-}
-
-function positiveDelay(value: number, label: string): number {
-  if (!Number.isSafeInteger(value) || value < 1) {
-    throw new RangeError(`${label} must be a positive safe integer`);
-  }
-  return value;
-}
-
-function delay(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
 function eventIdentity(notification: ServerNotification): { threadId: string; turnId: string } | null {
   const params = notification.params as Record<string, unknown>;
   const threadId = stringField(params.threadId);
@@ -1197,7 +1192,46 @@ function appendToTask(
   return true;
 }
 
-function appendStartedTool(task: RuntimeTask, params: Record<string, unknown>): void {
+function appendProcessDelta(
+  task: RuntimeTask,
+  params: Record<string, unknown>,
+  delta: string | null,
+  nowMs: number,
+): boolean {
+  if (!delta || isDesktopInternalProgressLabel(delta)) {
+    return false;
+  }
+  const itemId = stringField(params.itemId);
+  const separator = task.commentary && itemId && task.lastProcessItemId !== itemId
+    ? '\n\n'
+    : '';
+  const appended = appendToTask(task, 'commentary', `${separator}${delta}`);
+  if (appended && itemId) {
+    task.lastProcessItemId = itemId;
+    const latest = task.timeline.at(-1);
+    if (latest?.kind === 'reasoning' && latest.itemId === itemId) {
+      latest.text = `${latest.text ?? ''}${delta}`;
+    } else {
+      task.timeline.push({
+        kind: 'reasoning',
+        itemId,
+        occurredAtMs: numberField(params.startedAtMs) ?? nowMs,
+        text: delta,
+      });
+    }
+  }
+  return appended;
+}
+
+function isDesktopInternalProgressLabel(value: string): boolean {
+  if (/[^\x00-\x7F]/.test(value)) {
+    return false;
+  }
+  return /^\s*(?:planning|designing|implementing|finalizing|reviewing|inspecting|assessing|fixing|analyzing|searching|reading|loading|validating)\b/i
+    .test(value);
+}
+
+function appendStartedTool(task: RuntimeTask, params: Record<string, unknown>, nowMs: number): void {
   const item = recordField(params.item);
   const itemId = stringField(item?.id) ?? stringField(params.itemId);
   const descriptor = toolDescriptor(item);
@@ -1211,7 +1245,7 @@ function appendStartedTool(task: RuntimeTask, params: Record<string, unknown>): 
     task.nextToolGroupId += 1;
   }
   task.lastActivityKind = 'tool';
-  task.toolExecutions.push({
+  const execution: ToolExecution = {
     itemId,
     groupId: task.nextToolGroupId,
     command: descriptor.command,
@@ -1220,6 +1254,13 @@ function appendStartedTool(task: RuntimeTask, params: Record<string, unknown>): 
     actionCount: descriptor.count,
     completed: false,
     failed: false,
+  };
+  task.toolExecutions.push(execution);
+  task.timeline.push({
+    kind: 'tool',
+    itemId,
+    occurredAtMs: numberField(params.startedAtMs) ?? nowMs,
+    execution,
   });
 }
 

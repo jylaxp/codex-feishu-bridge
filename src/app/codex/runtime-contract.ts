@@ -10,10 +10,7 @@ import { basename, join, relative } from 'node:path';
 import { promisify } from 'node:util';
 
 import type { BridgeConfig } from '../domain';
-import {
-  SUPPORTED_APP_SERVER_SCHEMA_DIGEST,
-  SUPPORTED_CODEX_CLI_VERSION,
-} from './contract';
+import { SUPPORTED_APP_SERVER_SCHEMA_DIGEST } from './contract';
 import { buildCodexEnvironment } from './environment';
 
 const execFileAsync = promisify(execFile);
@@ -33,21 +30,26 @@ export async function verifyCodexRuntimeContract(
   const env = buildCodexEnvironment(sourceEnv);
   try {
     const codexVersion = await codexOutput(config, ['--version'], env);
-    if (codexVersion !== SUPPORTED_CODEX_CLI_VERSION) {
-      throw new Error('Configured Codex CLI version is unsupported');
-    }
     await codexOutput(
       config,
       ['app-server', 'generate-json-schema', '--experimental', '--out', schemaDirectory],
       env,
     );
     const schemaDigest = digestJsonSchemaDirectory(schemaDirectory);
-    if (schemaDigest !== SUPPORTED_APP_SERVER_SCHEMA_DIGEST) {
-      throw new Error('Configured Codex App Server schema is unsupported');
-    }
+    assertCompatibleCodexRuntime(codexVersion, schemaDigest);
     return Object.freeze({ codexVersion, schemaDigest });
   } finally {
     rmSync(schemaDirectory, { recursive: true, force: true });
+  }
+}
+
+/** Accepts patch-level CLI changes only when the generated protocol is unchanged. */
+export function assertCompatibleCodexRuntime(codexVersion: string, schemaDigest: string): void {
+  if (!/^codex-cli \d+\.\d+\.\d+$/.test(codexVersion)) {
+    throw new Error('Configured Codex CLI version response is invalid');
+  }
+  if (schemaDigest !== SUPPORTED_APP_SERVER_SCHEMA_DIGEST) {
+    throw new Error('Configured Codex App Server schema is unsupported');
   }
 }
 

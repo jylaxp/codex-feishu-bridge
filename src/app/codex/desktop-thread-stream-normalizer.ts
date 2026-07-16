@@ -101,6 +101,24 @@ export class DesktopThreadStreamNormalizer {
     return this.activeEpoch;
   }
 
+  /**
+   * Replays the current live Desktop snapshot for its in-flight turn only.
+   * This lets a newly bound Feishu chat attach to a turn that started before
+   * the binding existed, without re-emitting historical terminal turns.
+   */
+  public activeTurnSnapshot(threadId: string): readonly ServerNotification[] {
+    const state = this.statesByThreadId.get(threadId);
+    if (!state) {
+      return [];
+    }
+    const activeTurn = latestTurn(turnsById(state));
+    if (!activeTurn || activeTurn.status !== 'inProgress') {
+      return [];
+    }
+    return diffThreadState(threadId, undefined, state, this.nowMs())
+      .filter((notification) => notificationTurnId(notification) === activeTurn.id);
+  }
+
   private emitApprovals(threadId: string, state: UnknownRecord): void {
     const epoch = this.activeEpoch;
     if (!epoch) {
@@ -259,6 +277,13 @@ function latestTurn(turns: ReadonlyMap<string, Turn>): Turn | undefined {
     }
   }
   return values[values.length - 1];
+}
+
+function notificationTurnId(notification: ServerNotification): string | undefined {
+  const params = asRecord(notification.params);
+  return stringValue(params?.turnId)
+    ?? stringValue(asRecord(params?.turn)?.id)
+    ?? undefined;
 }
 
 function usageChanged(previous: UnknownRecord | undefined, current: UnknownRecord): boolean {

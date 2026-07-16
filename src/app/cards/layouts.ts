@@ -1,6 +1,7 @@
 import {
   ApprovalDecision,
   CardProjectionPayload,
+  CardTimelineEntry,
   SanitizedCardText,
   TaskStatus,
 } from '../domain';
@@ -147,7 +148,14 @@ export function createTaskCard(options: TaskCardOptions): CardKitJson {
     elements.push(markdown(payload.metadata, running ? 'codex_metadata' : undefined));
   }
 
-  if (running || payload.commentary) {
+  const timeline = timelineElements(payload.timeline);
+  if (timeline.length > 0) {
+    elements.push(
+      { tag: 'hr' },
+      markdown('🧠 **模型推理过程**', running ? 'codex_reasoning' : undefined),
+      ...timeline,
+    );
+  } else if (running || payload.commentary) {
     elements.push(
       { tag: 'hr' },
       markdown(
@@ -156,7 +164,7 @@ export function createTaskCard(options: TaskCardOptions): CardKitJson {
       ),
     );
   }
-  const toolPanels = running ? toolPanelElements(payload) : [];
+  const toolPanels = timeline.length === 0 && running ? toolPanelElements(payload) : [];
   if (toolPanels.length > 0) {
     elements.push(
       { tag: 'hr' },
@@ -205,6 +213,33 @@ export function createTaskCard(options: TaskCardOptions): CardKitJson {
       elements,
     },
   };
+}
+
+function timelineElements(entries: readonly CardTimelineEntry[] | undefined): readonly Record<string, unknown>[] {
+  if (!entries || entries.length === 0) {
+    return [];
+  }
+  return entries.flatMap((entry, index) => {
+    if (entry.kind === 'reasoning' && entry.content) {
+      return [markdown(
+        `📎 **[${entry.time}] 模型推理**\n${entry.content}`,
+        `codex_timeline_reasoning_${index + 1}`,
+      )];
+    }
+    if (entry.kind === 'tool' && entry.tool) {
+      return [toolPanel(
+        `🛠️ [${entry.time}] 工具执行 · ${entry.tool.count} 步`,
+        entry.tool.content,
+        entry.tool.count,
+        `codex_timeline_tool_${index + 1}`,
+        `codex_timeline_tool_content_${index + 1}`,
+        entry.tool.icon,
+        entry.tool.completed,
+        entry.tool.failed,
+      )];
+    }
+    return [];
+  });
 }
 
 function toolPanelElements(payload: CardProjectionPayload): readonly Record<string, unknown>[] {

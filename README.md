@@ -19,7 +19,7 @@ App Server 只承担控制面：会话列表、创建/派生/归档、目标/压
 
 ## 安装方式
 
-要求 Node.js `>=24.18.0 <25`，并且当前登录用户可以正常使用 ChatGPT Desktop。当前发布接入的是经过验证的 macOS Desktop IPC；Windows 适配后续单独接入。
+要求 Node.js `>=20.17.0 <21`，推荐通过项目 `.nvmrc` 使用已验证的 `20.20.1`，并且当前登录用户可以正常使用 ChatGPT Desktop。当前发布接入的是经过验证的 macOS Desktop IPC；Windows 适配后续单独接入。
 
 ### 方式 A：从 GitHub 全局安装（推荐）
 
@@ -40,7 +40,7 @@ npm link
 
 也可以使用 `npm install -g .` 代替 `npm link`。
 
-### 方式 C：离线包安装
+### 方式 C：本地安装包
 
 在源码目录打包：
 
@@ -53,6 +53,8 @@ npm pack
 ```bash
 npm install -g ./codex-feishu-bridge-2.0.0.tgz
 ```
+
+`.tgz` 包含 Bridge 编译产物；npm 会按标准包安装流程解析运行依赖，因此目标机器首次安装时需要能访问配置的 npm registry，或已经具备对应依赖缓存。
 
 ## 初始化与飞书扫码绑定
 
@@ -236,13 +238,12 @@ codex-feishu-bridge config reset --confirm --destructive
 
 Desktop 请求 command/file approval 时，Bridge 在相同飞书 root 下发送独立审批卡。`accept`、`acceptForSession`、`decline`、`cancel` 只在 Desktop 允许时显示；操作后会将原审批卡替换为不可再点击的最终状态卡。审批或任务的 IPC 结果会区分“未发送、明确拒绝、结果未知”，未知结果绝不自动重试。
 
-打开指定会话使用当前 Codex 文档保留的 `codex://threads/<threadId>` 兼容 deep link。导航只使用已持久绑定的精确 thread ID，失败不会改变 binding 或任务投递目标。若 Desktop follower router 返回 `no-client-found`（明确表示该 thread 尚未有页面 owner，未执行 turn），Bridge 会自动打开该绑定会话，并在短暂等待后限次重试；超时、连接丢失或其他拒绝结果绝不自动重试。
+打开指定会话使用当前 Codex 文档保留的 `codex://threads/<threadId>` 兼容 deep link。只有用户显式执行 `/open` 或点击“在 ChatGPT 中打开”时才会导航；绑定、飞书消息投递和失败重试都不会自动打开或切换 ChatGPT 页面。导航失败不会改变 binding 或任务投递目标。Desktop follower router 返回 `no-client-found`、超时、连接丢失或其他拒绝结果时，Bridge 会直接将本次任务标记为失败，不自动导航且不自动重试。
 
 ## 验收
 
 ```bash
 npm run typecheck:app
-npm run test:app
 npm run build:app
 npm run check:package
 ```

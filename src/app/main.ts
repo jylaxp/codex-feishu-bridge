@@ -4,7 +4,6 @@ import { BindingStore } from './binding-store';
 import { CardKitClient, type LarkReplyApi } from './cards/cardkit-client';
 import { CardImageRenderer, type LarkImageApi } from './cards/card-image-renderer';
 import { AppServerClient, type AppServerTransportOptions } from './codex/app-server-client';
-import { SUPPORTED_APP_SERVER_VERSION } from './codex/contract';
 import { DesktopIpcClient } from './codex/desktop-ipc-client';
 import { DesktopIpcSupervisor } from './codex/desktop-ipc-supervisor';
 import { DesktopThreadStreamNormalizer } from './codex/desktop-thread-stream-normalizer';
@@ -80,7 +79,6 @@ export async function startBridge(
       title: 'Lark Codex Gateway',
       version: '3.0.0',
     },
-    expectedServerVersion: SUPPORTED_APP_SERVER_VERSION,
   });
   const desktop = new DesktopIpcClient();
   const normalizer = new DesktopThreadStreamNormalizer();
@@ -113,7 +111,6 @@ export async function startBridge(
     uploadOutputFiles: (answer, rootMessageId, taskId) => (
       outputFileUploader.uploadMarkdownFiles(answer, rootMessageId, taskId)
     ),
-    navigation,
     resolveBindingByThreadId: (threadId) => bindings.getUniqueByThreadId(threadId),
     readSkills: (cwd) => appServer.request('skills/list', { cwds: [cwd] }),
   });
@@ -128,6 +125,16 @@ export async function startBridge(
     logger,
     undefined,
     () => rateLimits.get(),
+    async (binding) => {
+      const notifications = normalizer.activeTurnSnapshot(binding.threadId);
+      if (notifications.length === 0) {
+        return false;
+      }
+      for (const notification of notifications) {
+        orchestrator.handleNotification(notification);
+      }
+      return true;
+    },
   );
   const commands = new BridgeCommandService(
     config,
