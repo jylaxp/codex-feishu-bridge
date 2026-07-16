@@ -23,7 +23,7 @@ export function loadBridgeEnvironment(
   }
 
   assertRegularConfigFile(configHome, envPath);
-  const fromFile = parseEnvironmentFile(readFileSync(envPath, 'utf8'), envPath);
+  const fromFile = parseEnvironmentSource(readFileSync(envPath, 'utf8'), envPath);
   return { ...fromFile, ...baseEnv };
 }
 
@@ -38,7 +38,8 @@ function assertRegularConfigFile(configHome: string, envPath: string): void {
   }
 }
 
-function parseEnvironmentFile(source: string, sourceName: string): NodeJS.ProcessEnv {
+/** Parses Bridge dotenv syntax for setup and runtime loading. */
+export function parseEnvironmentSource(source: string, sourceName: string): NodeJS.ProcessEnv {
   const parsed: NodeJS.ProcessEnv = {};
   const lines = source.replace(/^\uFEFF/, '').split(/\r?\n/);
   for (let index = 0; index < lines.length; index += 1) {

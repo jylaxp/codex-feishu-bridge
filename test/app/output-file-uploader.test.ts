@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -7,11 +7,17 @@ import test from 'node:test';
 import type { BridgeConfig } from '../../src/app/domain';
 import { OutputFileUploader, type FileUploadApi } from '../../src/app/lark/output-file-uploader';
 
-test('uploads only opted-in non-image output files below the authorized workspace root', async () => {
-  const workspace = mkdtempSync(join(tmpdir(), 'bridge-output-file-'));
+test('uploads opted-in absolute output files without a configured workspace allowlist', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'bridge-output-file-'));
   try {
+    const workspace = join(root, 'workspace');
+    const otherWorkspace = join(root, 'other-workspace');
+    mkdirSync(workspace);
+    mkdirSync(otherWorkspace);
     const output = join(workspace, 'result.txt');
+    const otherOutput = join(otherWorkspace, 'other.txt');
     writeFileSync(output, 'result');
+    writeFileSync(otherOutput, 'other');
     const calls: string[] = [];
     const api: FileUploadApi = {
       im: { v1: {
@@ -27,21 +33,21 @@ test('uploads only opted-in non-image output files below the authorized workspac
       larkAppId: 'cli_0123456789abcdef', larkAppSecret: 'secret', larkTenantKey: 'tenant',
       allowedChats: ['chat'], authorizedUsers: ['user'], allowedApprovers: ['approver'],
       appServerMode: 'owned_stdio', appServerSocketPath: null, codexBin: '/codex', codexCwd: workspace,
-      allowedWorkspaceRoots: [workspace], maxTextLength: 10_000, cardUpdateIntervalMs: 1_000,
+      maxTextLength: 10_000, cardUpdateIntervalMs: 1_000,
       maxQueuedTasks: 10, rateLimitQueryIntervalMs: 300_000, logToFile: false, logFilePath: null,
       enableAutoFileUpload: true,
     };
     await new OutputFileUploader(config, api).uploadMarkdownFiles(
-      `[result](${output})\n![ignored](${output}.png)\n[outside](/etc/hosts)`,
+      `[result](${output})\n![ignored](${output}.png)\n[other](${otherOutput})`,
       'root-message',
       'task-id',
     );
     assert.equal(calls[0], 'upload');
     assert.match(calls[1] ?? '', /root-message/);
     assert.match(calls[1] ?? '', /file-key/);
-    assert.equal(calls.length, 2);
+    assert.equal(calls.length, 4);
   } finally {
-    rmSync(workspace, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
   }
 });
 
@@ -70,7 +76,7 @@ test('de-duplicates output files and continues after a rejected file reply', asy
       larkAppId: 'cli_0123456789abcdef', larkAppSecret: 'secret', larkTenantKey: 'tenant',
       allowedChats: ['chat'], authorizedUsers: ['user'], allowedApprovers: ['approver'],
       appServerMode: 'owned_stdio', appServerSocketPath: null, codexBin: '/codex', codexCwd: workspace,
-      allowedWorkspaceRoots: [workspace], maxTextLength: 10_000, cardUpdateIntervalMs: 1_000,
+      maxTextLength: 10_000, cardUpdateIntervalMs: 1_000,
       maxQueuedTasks: 10, rateLimitQueryIntervalMs: 300_000, logToFile: false, logFilePath: null,
       enableAutoFileUpload: true,
     };

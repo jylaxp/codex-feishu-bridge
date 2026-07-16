@@ -2,7 +2,6 @@ import { readFile, realpath, stat } from 'node:fs/promises';
 import { extname } from 'node:path';
 
 import type { CardKitJson } from './layouts';
-import { isPathWithinRoot } from '../preflight';
 
 const LOCAL_IMAGE_PATTERN = /!\[([^\]]*)\]\(((?:\/|file:\/\/)[^)]+)\)/g;
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg']);
@@ -24,10 +23,7 @@ export interface LarkImageApi {
 export class CardImageRenderer {
   private readonly cache = new Map<string, Promise<string | null>>();
 
-  public constructor(
-    private readonly allowedWorkspaceRoots: readonly string[],
-    private readonly api: LarkImageApi,
-  ) {}
+  public constructor(private readonly api: LarkImageApi) {}
 
   public async render(card: CardKitJson): Promise<CardKitJson> {
     const clone = JSON.parse(JSON.stringify(card)) as unknown;
@@ -82,16 +78,6 @@ export class CardImageRenderer {
   private async uploadOnce(candidate: string): Promise<string | null> {
     try {
       const path = await realpath(candidate);
-      const roots = await Promise.all(this.allowedWorkspaceRoots.map(async (root) => {
-        try {
-          return await realpath(root);
-        } catch {
-          return root;
-        }
-      }));
-      if (!roots.some((root) => isPathWithinRoot(path, root))) {
-        return null;
-      }
       const metadata = await stat(path);
       if (!metadata.isFile() || metadata.size > MAX_IMAGE_BYTES) {
         return null;

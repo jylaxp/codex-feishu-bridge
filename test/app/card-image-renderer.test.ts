@@ -12,7 +12,7 @@ test('replaces local Markdown images with Lark image keys without rewriting othe
     const imagePath = join(root, 'diagram.png');
     writeFileSync(imagePath, Buffer.from('png'));
     let uploads = 0;
-    const renderer = new CardImageRenderer([root], {
+    const renderer = new CardImageRenderer({
       im: { v1: { image: { create: async () => {
         uploads += 1;
         return { image_key: 'img_v3_key' };
@@ -38,16 +38,20 @@ test('replaces local Markdown images with Lark image keys without rewriting othe
   }
 });
 
-test('does not upload local images outside the configured workspace roots', async () => {
-  const renderer = new CardImageRenderer(['/workspace'], {
-    im: { v1: { image: { create: async () => {
-      throw new Error('must not upload');
-    } } } },
-  });
-  const source = '![outside](/tmp/outside.png)';
-  const card = await renderer.render({
-    schema: '2.0',
-    body: { elements: [{ tag: 'markdown', content: source }] },
-  });
-  assert.match(JSON.stringify(card), /outside\.png/);
+test('uploads an absolute local image without a configured workspace allowlist', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'card-image-any-workspace-'));
+  try {
+    const imagePath = join(root, 'outside.png');
+    writeFileSync(imagePath, Buffer.from('png'));
+    const renderer = new CardImageRenderer({
+      im: { v1: { image: { create: async () => ({ image_key: 'img_anywhere' }) } } },
+    });
+    const card = await renderer.render({
+      schema: '2.0',
+      body: { elements: [{ tag: 'markdown', content: `![outside](${imagePath})` }] },
+    });
+    assert.match(JSON.stringify(card), /img_anywhere/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

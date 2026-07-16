@@ -88,10 +88,7 @@ export async function startBridge(
     logSink: (level) => logger.warn(`lark_sdk_${level}`),
     onTerminalWebsocketError: resolveFailure,
   });
-  const cardImages = new CardImageRenderer(
-    config.allowedWorkspaceRoots,
-    lark.api as unknown as LarkImageApi,
-  );
+  const cardImages = new CardImageRenderer(lark.api as unknown as LarkImageApi);
   const cards = new CardKitClient(
     new CachedTenantTokenProvider(config.larkAppId, config.larkAppSecret),
     lark.api as unknown as LarkReplyApi,

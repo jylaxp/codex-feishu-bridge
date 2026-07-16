@@ -6,6 +6,7 @@ import { dirname, join, normalize } from 'node:path';
 
 import { BindingStore } from './binding-store';
 import { ConfigurationError, resolveConfigHome } from './config';
+import { parseEnvironmentSource } from './config-file';
 
 const PLACEHOLDER_APP_ID = 'cli_0123456789abcdef';
 const PLACEHOLDER_SECRET = 'replace_me';
@@ -44,10 +45,11 @@ export function initializeSetupFiles(
   const envPath = join(configHome, '.env');
   ensureConfigDirectory(configHome);
   let source = readEnvironmentFileIfPresent(envPath);
+  const shouldRenderManagedEnvironment = source.trim().length === 0;
   source = ensureDefaultEnvironment(source, {
-    cwd: normalize(process.cwd()),
+    cwd: configHome,
     codexBin: inferDefaultCodexBin(),
-  });
+  }, shouldRenderManagedEnvironment);
   writeFileSync(envPath, source, { encoding: 'utf8', mode: 0o600 });
   ensureBindingsFile(configHome);
   return Object.freeze({
@@ -75,6 +77,7 @@ export async function runSetup(
   ensureConfigDirectory(configHome);
 
   let source = readEnvironmentFileIfPresent(envPath);
+  const shouldRenderManagedEnvironment = source.trim().length === 0;
   const currentAppId = readEnvValue(source, 'LARK_APP_ID') ?? baseEnv.LARK_APP_ID ?? '';
   const currentAppSecret = readEnvValue(source, 'LARK_APP_SECRET') ?? baseEnv.LARK_APP_SECRET ?? '';
   const shouldRegister = options.rebind === true
@@ -93,15 +96,15 @@ export async function runSetup(
     appSecret = result.client_secret.trim();
     source = setEnvValue(source, 'LARK_APP_ID', appId);
     source = setEnvValue(source, 'LARK_APP_SECRET', appSecret);
-  } else {
+  } else if (shouldRenderManagedEnvironment) {
     source = setEnvValue(source, 'LARK_APP_ID', appId);
     source = setEnvValue(source, 'LARK_APP_SECRET', appSecret);
   }
 
   source = ensureDefaultEnvironment(source, {
-    cwd: normalize(process.cwd()),
+    cwd: configHome,
     codexBin: inferDefaultCodexBin(),
-  });
+  }, shouldRenderManagedEnvironment);
   writeFileSync(envPath, source, { encoding: 'utf8', mode: 0o600 });
   ensureBindingsFile(configHome);
 
@@ -188,12 +191,7 @@ function isPlaceholder(value: string, exactPlaceholder: string): boolean {
 }
 
 function readEnvValue(source: string, key: string): string | undefined {
-  const escaped = escapeRegExp(key);
-  const match = new RegExp(`^(?:export\\s+)?${escaped}\\s*=\\s*(.*)$`, 'm').exec(source);
-  if (!match) {
-    return undefined;
-  }
-  return unquoteEnvValue(match[1]!.trim());
+  return parseEnvironmentSource(source, 'Bridge .env')[key];
 }
 
 function setEnvValue(source: string, key: string, value: string): string {
@@ -206,14 +204,49 @@ function setEnvValue(source: string, key: string, value: string): string {
   return appendLine(source, line);
 }
 
+function removeEnvValue(source: string, key: string): string {
+  const escaped = escapeRegExp(key);
+  const pattern = new RegExp(`^(?:export\\s+)?${escaped}\\s*=.*(?:\\r?\\n|$)`, 'gm');
+  return source.replace(pattern, '');
+}
+
+function setUniqueEnvValue(source: string, key: string, value: string): string {
+  const line = `${key}=${formatEnvValue(value)}`;
+  const escaped = escapeRegExp(key);
+  const pattern = new RegExp(`^(?:export[ \\t]+)?${escaped}[ \\t]*=.*$`);
+  let replaced = false;
+  const lines = source.split(/\r?\n/).filter((currentLine) => {
+    if (!pattern.test(currentLine)) {
+      return true;
+    }
+    if (!replaced) {
+      replaced = true;
+      return true;
+    }
+    return false;
+  }).map((currentLine) => {
+    if (!pattern.test(currentLine)) {
+      return currentLine;
+    }
+    return line;
+  });
+  return replaced ? lines.join('\n') : appendLine(source, line);
+}
+
 function ensureDefaultEnvironment(
   source: string,
   defaults: {
     readonly cwd: string;
     readonly codexBin: string;
   },
+  renderManaged: boolean,
 ): string {
-  let next = source;
+  // Each Codex task has full-machine access, so the legacy workspace
+  // allowlist is removed during setup and no longer emitted.
+  let next = removeEnvValue(source, 'ALLOWED_WORKSPACE_ROOTS');
+  // CODEX_CWD is owned by setup: it must always follow the effective config
+  // home instead of preserving a machine-specific path from an older install.
+  next = setUniqueEnvValue(next, 'CODEX_CWD', defaults.cwd);
   const defaultValues: readonly [string, string][] = [
     ['BRIDGE_CONFIG_VERSION', '2'],
     ['LARK_APP_ID', PLACEHOLDER_APP_ID],
@@ -224,8 +257,7 @@ function ensureDefaultEnvironment(
     ['ALLOWED_APPROVERS', ''],
     ['APP_SERVER_MODE', 'owned_stdio'],
     ['CODEX_BIN', defaults.codexBin],
-    ['CODEX_CWD', defaults.cwd],
-    ['ALLOWED_WORKSPACE_ROOTS', defaults.cwd],
+    ['ALLOWED_SHELL_COMMANDS', 'ls,pwd,git,find,cd'],
     ['MAX_TEXT_LENGTH', '10000'],
     ['CARD_UPDATE_INTERVAL_MS', '1500'],
     ['MAX_QUEUED_TASKS', '100'],
@@ -239,7 +271,80 @@ function ensureDefaultEnvironment(
       next = appendLine(next, `${key}=${formatEnvValue(value)}`);
     }
   }
+  const managedKeys = new Set([
+    ...defaultValues.map(([key]) => key),
+    'CODEX_CWD',
+    'APP_SERVER_SOCKET_PATH',
+  ]);
+  const parsedKeys = Object.keys(parseEnvironmentSource(next, 'Bridge .env'));
+  if (renderManaged || parsedKeys.every((key) => managedKeys.has(key))) {
+    return renderManagedEnvironment(next);
+  }
   return next.endsWith('\n') ? next : `${next}\n`;
+}
+
+function renderManagedEnvironment(source: string): string {
+  const parsed = parseEnvironmentSource(source, 'Bridge .env');
+  const value = (key: string): string => `${key}=${formatEnvValue(parsed[key] ?? '')}`;
+  const socketPath = parsed.APP_SERVER_SOCKET_PATH
+    ? [
+      '# 外部 App Server socket 的绝对路径，仅相应模式使用。',
+      value('APP_SERVER_SOCKET_PATH'),
+    ]
+    : [];
+  return [
+    '# Codex Feishu Bridge 配置文件',
+    '# 由 codex-feishu-bridge setup 创建和维护。',
+    '',
+    '# ==================== 配置版本 ====================',
+    '# Bridge 配置结构版本，请勿手工修改。',
+    value('BRIDGE_CONFIG_VERSION'),
+    '',
+    '# ==================== 飞书应用与访问范围 ====================',
+    '# 飞书应用凭证。新用户通过 setup 扫码后自动写入。',
+    value('LARK_APP_ID'),
+    value('LARK_APP_SECRET'),
+    '# 首次私聊时自动绑定租户、会话和用户；留空即可启用自动绑定。',
+    value('LARK_TENANT_KEY'),
+    value('ALLOWED_CHATS'),
+    value('AUTHORIZED_USERS'),
+    '# 可处理审批操作的飞书用户 open_id，多个值使用英文逗号分隔。',
+    value('ALLOWED_APPROVERS'),
+    '',
+    '# ==================== ChatGPT App Server ====================',
+    '# owned_stdio 表示由 Bridge 启动并管理 App Server 子进程。',
+    value('APP_SERVER_MODE'),
+    ...socketPath,
+    '',
+    '# ==================== Codex 运行环境 ====================',
+    '# Codex CLI 可执行文件的真实绝对路径。',
+    value('CODEX_BIN'),
+    '# setup 自动写入当前 Bridge 配置目录，作为任务默认工作目录。',
+    value('CODEX_CWD'),
+    '# /cmd、/run、/shell 可执行的本地命令，多个值使用英文逗号分隔。',
+    value('ALLOWED_SHELL_COMMANDS'),
+    '',
+    '# ==================== 飞书卡片与任务队列 ====================',
+    '# 单次卡片文本上限。',
+    value('MAX_TEXT_LENGTH'),
+    '# 流式卡片刷新间隔，单位为毫秒。',
+    value('CARD_UPDATE_INTERVAL_MS'),
+    '# Bridge 内存中的最大排队任务数。',
+    value('MAX_QUEUED_TASKS'),
+    '',
+    '# ==================== 用量查询 ====================',
+    '# 用量窗口查询间隔，单位为毫秒。',
+    value('RATE_LIMIT_QUERY_INTERVAL_MS'),
+    '',
+    '# ==================== 日志与文件输出 ====================',
+    '# true 时写入日志文件；false 时输出到标准输出。',
+    value('LOG_TO_FILE'),
+    '# 相对路径位于 Bridge 配置目录下，启用文件日志时生效。',
+    value('LOG_FILE_PATH'),
+    '# 是否自动上传 Codex 最终回复中引用的本地文件。',
+    value('ENABLE_AUTO_FILE_UPLOAD'),
+    '',
+  ].join('\n');
 }
 
 function hasEnvAssignment(source: string, key: string): boolean {
@@ -251,8 +356,6 @@ function requiredKeysWithPlaceholders(source: string): readonly string[] {
     ['LARK_APP_ID', PLACEHOLDER_APP_ID],
     ['LARK_APP_SECRET', PLACEHOLDER_SECRET],
     ['CODEX_BIN', '/absolute/path/to/codex'],
-    ['CODEX_CWD', '/absolute/path/to/project'],
-    ['ALLOWED_WORKSPACE_ROOTS', '/absolute/path/to/project'],
   ] as const;
   return required
     .filter(([key, placeholder]) => isPlaceholder(readEnvValue(source, key) ?? '', placeholder))
@@ -312,17 +415,6 @@ function formatEnvValue(value: string): string {
     return value;
   }
   return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
-}
-
-function unquoteEnvValue(value: string): string {
-  if (value.startsWith('"') && value.endsWith('"')) {
-    return value.slice(1, -1).replace(/\\(["\\])/g, '$1');
-  }
-  if (value.startsWith("'") && value.endsWith("'")) {
-    return value.slice(1, -1);
-  }
-  const commentIndex = value.search(/\s#/);
-  return (commentIndex === -1 ? value : value.slice(0, commentIndex)).trim();
 }
 
 function escapeRegExp(value: string): string {

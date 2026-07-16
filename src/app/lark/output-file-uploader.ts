@@ -2,7 +2,6 @@ import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { basename, extname, isAbsolute } from 'node:path';
 
 import type { BridgeConfig } from '../domain';
-import { isPathWithinRoot } from '../preflight';
 
 const MAX_FILE_BYTES = 30 * 1024 * 1024;
 const MAX_TOTAL_FILE_BYTES = 100 * 1024 * 1024;
@@ -33,7 +32,7 @@ export interface FileUploadApi {
 
 /**
  * Retains the legacy opt-in output-file delivery without making any file or
- * prompt durable. Only regular files below an authorized workspace root are
+ * prompt durable. Only absolute regular files within the size limits are
  * eligible; image references are intentionally not file-pushed.
  */
 export class OutputFileUploader {
@@ -56,7 +55,7 @@ export class OutputFileUploader {
       }
       const reference = references[index]!;
       try {
-        const filePath = trustedFilePath(reference.path, this.config.allowedWorkspaceRoots);
+        const filePath = trustedFilePath(reference.path);
         if (
           !filePath
           || uploadedPaths.has(filePath)
@@ -133,19 +132,12 @@ function fileStat(filePath: string): ReturnType<typeof statSync> | null {
   }
 }
 
-function trustedFilePath(value: string, roots: readonly string[]): string | null {
+function trustedFilePath(value: string): string | null {
   if (!isAbsolute(value)) {
     return null;
   }
   try {
-    const resolved = realpathSync.native(value);
-    return roots.some((root) => {
-      try {
-        return isPathWithinRoot(resolved, realpathSync.native(root));
-      } catch {
-        return false;
-      }
-    }) ? resolved : null;
+    return realpathSync.native(value);
   } catch {
     return null;
   }

@@ -21,7 +21,6 @@ const config: BridgeConfig = {
   appServerSocketPath: null,
   codexBin: '/codex',
   codexCwd: '/workspace',
-  allowedWorkspaceRoots: ['/workspace'],
   maxTextLength: 10_000,
   cardUpdateIntervalMs: 1,
   maxQueuedTasks: 10,
@@ -35,7 +34,7 @@ const binding: ChatThreadBinding = {
   tenantKey: 'tenant',
   chatId: 'chat',
   threadId: 'thread-1',
-  workspaceId: 'workspace-one',
+  workspaceId: '/workspace-one',
   personality: 'friendly',
   plan: 'plan',
   revision: 1,
@@ -131,6 +130,9 @@ test('sends a bound prompt only once through Desktop IPC and projects its termin
   assert.equal(await orchestrator.handleInbound(message('1', 'hello'), binding), 'duplicate');
   assert.equal(desktop.starts.length, 1);
   assert.equal(desktop.starts[0]?.threadId, 'thread-1');
+  assert.equal(desktop.starts[0]?.cwd, '/workspace-one');
+  assert.equal(desktop.starts[0]?.runtimeWorkspaceRoots, undefined);
+  assert.deepEqual(desktop.starts[0]?.sandboxPolicy, { type: 'dangerFullAccess' });
   assert.equal(desktop.starts[0]?.personality, 'friendly');
   assert.equal(desktop.starts[0]?.collaborationMode, 'plan');
   assert.doesNotMatch(JSON.stringify(cards.created[0]), /↑/);

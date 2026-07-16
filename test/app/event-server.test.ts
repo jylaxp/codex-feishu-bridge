@@ -20,7 +20,6 @@ const config: BridgeConfig = {
   appServerSocketPath: null,
   codexBin: '/usr/local/bin/codex',
   codexCwd: '/workspace/project',
-  allowedWorkspaceRoots: ['/workspace'],
   maxTextLength: 10_000,
   cardUpdateIntervalMs: 1_500,
   maxQueuedTasks: 100,

@@ -19,7 +19,7 @@ test('doctor reports bindings without opening a Bridge SQLite database', async (
     const report = await runDoctor({
       LARK_APP_ID: 'cli_0123456789abcdef', LARK_APP_SECRET: 'secret', LARK_TENANT_KEY: 'tenant',
       ALLOWED_CHATS: 'chat', AUTHORIZED_USERS: 'user', ALLOWED_APPROVERS: 'approver',
-      CODEX_BIN: codex, CODEX_CWD: workspace, ALLOWED_WORKSPACE_ROOTS: workspace,
+      CODEX_BIN: codex, CODEX_CWD: workspace,
       BRIDGE_CONFIG_HOME: configHome,
     }, {
       verifyRuntimeContract: async () => ({ codexVersion: 'codex-cli test', schemaDigest: 'schema' }),
@@ -27,6 +27,7 @@ test('doctor reports bindings without opening a Bridge SQLite database', async (
     });
     assert.equal(report.bindingCount, 0);
     assert.equal('sqliteVersion' in report, false);
+    assert.equal('allowedWorkspaceRootCount' in report, false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

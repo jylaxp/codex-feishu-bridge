@@ -187,20 +187,13 @@ export function runPreflight(
   const nodeVersion = options.nodeVersion ?? process.versions.node;
   assertSupportedNodeVersion(nodeVersion);
 
+  const configHome = prepareConfigHome(config.configHome ?? '');
   const codexBin = canonicalExecutable(config.codexBin);
   const codexCwd = canonicalDirectory(config.codexCwd, 'CODEX_CWD');
-  const allowedWorkspaceRoots = config.allowedWorkspaceRoots.map((root, index) => (
-    canonicalDirectory(root, `ALLOWED_WORKSPACE_ROOTS[${index}]`)
-  ));
-
-  if (!allowedWorkspaceRoots.some((root) => isPathWithinRoot(codexCwd, root))) {
-    throw new PreflightError('CODEX_CWD resolves outside ALLOWED_WORKSPACE_ROOTS');
-  }
   const appServerSocketPath = config.appServerSocketPath
     ? canonicalManagedSocket(config.appServerSocketPath)
     : null;
 
-  const configHome = prepareConfigHome(config.configHome ?? '');
   const runtimeDirectory: RuntimeDirectoryLayout = Object.freeze({
     rootDir: configHome,
     temporaryDir: fs.realpathSync.native(os.tmpdir()),
@@ -210,7 +203,6 @@ export function runPreflight(
     ...config,
     codexBin,
     codexCwd,
-    allowedWorkspaceRoots: Object.freeze([...allowedWorkspaceRoots]),
     appServerSocketPath,
     configHome,
   });

@@ -421,16 +421,6 @@ export class BridgeCommandService {
         );
         return true;
       }
-      if (!this.config.allowedWorkspaceRoots.some((root) => isPathWithinRoot(workspace, root))) {
-        await this.reply(
-          message,
-          '🚫 路径绑定失败',
-          `路径不在 Bridge 已授权的工作区范围内：\n\`${workspace}\``,
-          'workspace-outside-roots',
-          'red',
-        );
-        return true;
-      }
       this.store.bind({ ...binding, workspaceId: workspace });
       this.exploreCwds.set(message.chatId, workspace);
       await this.reply(

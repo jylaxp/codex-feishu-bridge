@@ -101,8 +101,8 @@ AUTHORIZED_USERS=
 ALLOWED_APPROVERS=
 
 CODEX_BIN=/absolute/path/to/codex
-CODEX_CWD=/absolute/path/to/project
-ALLOWED_WORKSPACE_ROOTS=/absolute/path/to/project
+# 可省略；默认使用 ~/.codex-feishu-bridge
+CODEX_CWD=/absolute/path/to/default/directory
 
 # 旧配置语义继续保留
 RATE_LIMIT_QUERY_INTERVAL_MS=300000
@@ -112,7 +112,9 @@ ENABLE_AUTO_FILE_UPLOAD=false
 ALLOWED_SHELL_COMMANDS=ls,pwd,git,find,cd
 ```
 
-`LOG_TO_FILE=true` 时，Bridge 写脱敏、轮转的运行日志；相对 `LOG_FILE_PATH` 位于 config-home 的 `logs/`，绝对路径按用户显式配置处理。日志不会记录 prompt、回复或 CardKit payload。`ENABLE_AUTO_FILE_UPLOAD=true` 时，最终回复中指向授权 workspace 内的非图片本地 Markdown 文件会作为同一飞书话题的文件回复上传；该信息不会保存到 Bridge 文件。
+`CODEX_CWD` 只决定未单独绑定目录时的默认启动目录；省略时使用 `BRIDGE_CONFIG_HOME`（通常是 `~/.codex-feishu-bridge`）。每个 Codex 任务以 `dangerFullAccess` 启动，可以读取和修改本机任意路径，不再使用 `ALLOWED_WORKSPACE_ROOTS` 白名单。
+
+`LOG_TO_FILE=true` 时，Bridge 写脱敏、轮转的运行日志；相对 `LOG_FILE_PATH` 位于 config-home 的 `logs/`，绝对路径按用户显式配置处理。日志不会记录 prompt、回复或 CardKit payload。`ENABLE_AUTO_FILE_UPLOAD=true` 时，最终回复中指向绝对本地路径的非图片 Markdown 文件会作为同一飞书话题的文件回复上传；文件数量、类型和大小校验仍然保留，该信息不会保存到 Bridge 文件。
 
 持久业务数据只有 `.env` 和 `bindings.json`。Bridge 不创建 SQLite、WAL、任务历史或恢复队列。后台模式还会生成 `bridge.pid` 和 `logs/`，它们只用于进程管理与运行日志，不保存 prompt、模型回复、推理、工具输出或卡片 payload。Bridge 崩溃/重启、Desktop 断开或网络结果未知时，当前进程内任务直接停止跟踪且绝不自动重放，用户可在 ChatGPT Desktop 继续处理或重新从飞书发送。
 

@@ -99,7 +99,7 @@ validated_baseline: 6183db5
 - 不直接修改 ChatGPT、Codex rollout 或其 SQLite 数据；Bridge 自身也不建立业务 SQLite。
 - 不把 raw hidden reasoning/CoT 推送到飞书。
 - 不在本计划内实现多实例 Bridge；继续使用单实例进程锁。
-- 不把某台开发机的 workspace 复制给其他安装实例。`CODEX_CWD` 和 `ALLOWED_WORKSPACE_ROOTS` 是机器本地安全边界，必须由本机管理员选择；迁移器不得用 Bridge 仓库位置、进程启动目录或最近访问目录静默推断。
+- 不把某台开发机的 workspace 复制给其他安装实例。`CODEX_CWD` 只是可选默认目录，未配置时使用 config home；任务统一使用 `dangerFullAccess`，不再配置 `ALLOWED_WORKSPACE_ROOTS`。
 - 不为崩溃恢复保存任务状态。prompt、回复、工具输出、审批、队列和卡片投递状态只存在于当前进程内存，进程结束即释放。
 
 ### Deferred to Follow-Up Work
@@ -260,13 +260,13 @@ Windows 只有在 transport discovery、framing、handshake、follower start/ste
 | Rollback | staging 构建或目录切换失败时恢复旧目录；只有新目录通过完整校验后才递归删除 rollback 目录，成功后不永久保留旧备份 |
 | Binding behavior | `bindings.json` 初始为空，不迁移 `sessions.json` 或 SQLite binding；首次启动明确提示用户执行 `/bind` |
 | Automatically resolvable | `CODEX_BIN` 保留有效显式值，否则由平台 resolver 提议唯一可执行目标；不再新增 `BRIDGE_DATA_DIR` |
-| Administrator-required | `LARK_TENANT_KEY`、`ALLOWED_CHATS`、`AUTHORIZED_USERS`、`CODEX_CWD`、`ALLOWED_WORKSPACE_ROOTS` 以及空的 `ALLOWED_APPROVERS` 必须明确补齐 |
+| Administrator-required | `CODEX_BIN` 以及无法通过首次私聊认领的飞书应用/租户配置必须明确补齐；`CODEX_CWD` 可省略 |
 | Legacy settings | `RATE_LIMIT_QUERY_INTERVAL_MS`、`LOG_TO_FILE`、`LOG_FILE_PATH`、`ENABLE_AUTO_FILE_UPLOAD` 和 `ALLOWED_SHELL_COMMANDS` 继续按原用户语义接入 |
 | Path handling | 只展开开头的 home shorthand，再按平台 canonicalize；Windows 覆盖盘符大小写、UNC、junction/reparse point 和长路径形式 |
 | Precedence | 显式进程环境覆盖新 `.env`，但重置器不把临时进程环境值写回文件 |
 | Startup gate | 必填项缺失时允许 doctor 运行但拒绝模型任务；binding 为空时允许启动和执行 `/bind`、`/help`、`/status` |
 | Idempotency | 已是新目录结构且没有 legacy 项时 reset 返回 no-op；不得清空已有新 `bindings.json`，再次全量重置必须要求单独的 destructive flag |
-| Portability | 共享代码、`.env.example`、README 和测试不得包含开发者个人路径；workspace 由每台机器管理员显式配置 |
+| Portability | 共享代码、`.env.example`、README 和测试不得包含开发者个人路径；可选 `CODEX_CWD` 由每台机器自行配置 |
 
 
 ### Runtime State and Minimal Persistence Contract
@@ -490,7 +490,7 @@ flowchart TB
 - Windows adapter 使用当前用户 SID 与 interactive session 约束 pipe server；若 Node 标准库无法完成 server-process/ACL attestation，则引入范围最小、可签名和可测试的 Windows native probe seam。未完成等价安全校验时 Windows execution capability 必须 unavailable。
 - Windows binary resolver 区分 Desktop package discovery 与可执行 Codex CLI discovery；对 Store/MSIX `WindowsApps` 路径先验证实际可执行性，失败时使用管理员显式 `CODEX_BIN` 或 `PATH` 中的原生 Windows binary，不把某个 package version path 写入配置模板。
 - Windows config/data 目录应用当前用户专属 ACL；路径 containment 处理盘符、大小写、UNC、junction 和 reparse point。process lock、atomic replace、shutdown/interrupt 不假定 POSIX `chmod`、UID、signal 或 unlink 语义。
-- binding 只持久化 logical `workspace_id`；platform/config adapter 从本机 `ALLOWED_WORKSPACE_ROOTS` 映射到 canonical 绝对路径。映射缺失、歧义或路径已逃逸时阻止执行，但允许解绑、doctor 和人工修复。
+- binding 持久化 canonical 绝对 `workspace_id` 作为任务 CWD；不做根目录白名单映射，Desktop turn 使用 `dangerFullAccess` 获得整机访问能力。
 - 上层 Desktop client 只接收经过 attestation 的 duplex endpoint，继续使用相同 delivery outcome、epoch 和 canonical state contract；平台断开差异不得绕过“放弃旧任务、禁止重发”的规则。
 
 **Patterns to follow:**
@@ -764,7 +764,7 @@ flowchart TB
 - 清理采用新目录白名单，而不是维护旧文件黑名单。成功后的静态文件只允许 `.env` 与 `bindings.json`；lock、轮转日志和临时目录由运行期按需创建并受固定生命周期约束。
 - 清理验收必须明确不存在 `sessions.json`、`approvals.json`、`pushed_turns.json`、`app-server-v2/`、`backups/`、旧 `logs/`、`tmp/`、`.DS_Store`、DB/WAL/SHM 和 stale lock。
 - 若目录已经是新结构，普通 reset 为 no-op，不得清空已有新 binding；真正再次清空必须使用单独 destructive flag，并再次确认。
-- 不可从旧配置推导的 tenant、chat、user 和 workspace 边界由管理员显式提供。若只选一个 workspace，`CODEX_CWD` 与 `ALLOWED_WORKSPACE_ROOTS` 可指向同一 canonical path；不得取 Bridge repo 或 `process.cwd()`。
+- tenant、chat 和 owner 可由第一次私聊自动认领。`CODEX_CWD` 缺失时取 config home，升级时删除遗留 `ALLOWED_WORKSPACE_ROOTS`，不得取 Bridge repo 或 `process.cwd()`。
 - 不再新增或依赖 `BRIDGE_DATA_DIR`；若旧 `.env` 已含该键则保留原文本并报告 deprecated。`CODEX_BIN` 先尊重有效覆盖，否则由平台 resolver 查找 ChatGPT bundle 或 `PATH`，只有唯一可执行目标才可自动采用。
 - `.env.example` 只列键、说明和占位符；README 使用机器无关示例并明确成功重置后的重新 `/bind` 步骤。
 
@@ -1197,7 +1197,7 @@ flowchart TB
 - `LARK_APP_SECRET` 等凭证继续从现有私有 `.env` 或受控进程环境读取，不进入仓库、日志或卡片。
 - 已有安装继续使用 `~/.codex-feishu-bridge/.env`；升级采用显式 `config reset`，只保留并升级该配置文件，其他旧运行文件全部删除，不迁移 binding。
 - README 分别列出“保留键”“安全派生键”“管理员必填键”；缺项时 doctor 可运行但模型 start fail closed。
-- `CODEX_CWD` 和 `ALLOWED_WORKSPACE_ROOTS` 只写入各机器自己的私有配置；仓库示例不得出现开发者目录。
+- `CODEX_CWD` 是各机器私有的可选默认目录；省略时使用 config home。`ALLOWED_WORKSPACE_ROOTS` 已移除，任务统一使用整机访问模式。
 - `bindings.json` 直接位于 config home；不再要求 `BRIDGE_DATA_DIR`。进程锁和启用后的轮转日志也位于该应用目录并按生命周期清理。
 - README 分别说明 macOS Unix socket/POSIX 权限与 Windows named pipe/ACL/Store-MSIX binary 诊断，不向 Windows 用户展示 `/Applications` 路径。
 - 发布文档列出 macOS 与 Windows 各自验证 build、protocol fingerprint、Node.js 版本和真实 E2E 证据；WSL 混合模式标记不支持。

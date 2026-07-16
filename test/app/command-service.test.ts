@@ -15,7 +15,7 @@ const config: BridgeConfig = {
   larkAppId: 'cli_0123456789abcdef', larkAppSecret: 'secret', larkTenantKey: 'tenant',
   allowedChats: ['chat'], authorizedUsers: ['user'], allowedApprovers: ['approver'],
   appServerMode: 'owned_stdio', appServerSocketPath: null, codexBin: '/codex', codexCwd: '/workspace',
-  allowedWorkspaceRoots: ['/workspace'], maxTextLength: 10_000, cardUpdateIntervalMs: 1_000,
+  maxTextLength: 10_000, cardUpdateIntervalMs: 1_000,
   maxQueuedTasks: 10,
   rateLimitQueryIntervalMs: 300_000,
   logToFile: false,

@@ -16,7 +16,6 @@ export interface DoctorReport {
   readonly schemaDigest: string;
   readonly bindingCount: number;
   readonly bindingsFileBytes: number;
-  readonly allowedWorkspaceRootCount: number;
   readonly allowedChatCount: number;
   readonly authorizedUserCount: number;
   readonly allowedApproverCount: number;
@@ -51,7 +50,6 @@ export async function runDoctor(
     schemaDigest: contract.schemaDigest,
     bindingCount: store.list().length,
     bindingsFileBytes,
-    allowedWorkspaceRootCount: preflight.config.allowedWorkspaceRoots.length,
     allowedChatCount: preflight.config.allowedChats.length,
     authorizedUserCount: preflight.config.authorizedUsers.length,
     allowedApproverCount: preflight.config.allowedApprovers.length,

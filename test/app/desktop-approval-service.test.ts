@@ -17,7 +17,6 @@ const config: BridgeConfig = {
   appServerSocketPath: null,
   codexBin: '/codex',
   codexCwd: '/workspace',
-  allowedWorkspaceRoots: ['/workspace'],
   maxTextLength: 10_000,
   cardUpdateIntervalMs: 1_000,
   maxQueuedTasks: 10,

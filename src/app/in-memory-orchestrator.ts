@@ -599,7 +599,7 @@ export class InMemoryOrchestrator {
    */
   private async startTurnWithDesktopOwner(task: RuntimeTask): Promise<Turn> {
     const start = (): Promise<Turn> => this.desktop.startTurnTracked(
-      buildStart(task, this.config),
+      buildStart(task),
       () => undefined,
     );
     try {
@@ -873,22 +873,15 @@ export class InMemoryOrchestrator {
   }
 }
 
-function buildStart(task: RuntimeTask, config: BridgeConfig): TurnStartParams {
+function buildStart(task: RuntimeTask): TurnStartParams {
   return {
     threadId: task.binding.threadId,
     clientUserMessageId: task.message.messageId,
     input: taskInput(task.message.text, task.binding),
     cwd: task.binding.workspaceId,
-    runtimeWorkspaceRoots: [...config.allowedWorkspaceRoots],
     approvalPolicy: 'on-request',
     approvalsReviewer: 'user',
-    sandboxPolicy: {
-      type: 'workspaceWrite',
-      writableRoots: [...config.allowedWorkspaceRoots],
-      networkAccess: false,
-      excludeTmpdirEnvVar: false,
-      excludeSlashTmp: false,
-    },
+    sandboxPolicy: { type: 'dangerFullAccess' },
     ...(task.binding.model ? { model: task.binding.model } : {}),
     ...(task.binding.plan ? { collaborationMode: task.binding.plan } : {}),
     ...(task.binding.personality && task.binding.personality !== 'none'

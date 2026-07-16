@@ -714,13 +714,7 @@ export class LocalAppServerAdapter implements CodexThreadAdapter {
       input: options.input || [{ type: 'text', text: options.prompt, text_elements: [] }],
       cwd: options.cwd,
       collaborationMode: options.collaborationMode || null,
-      sandboxPolicy: {
-        type: 'workspaceWrite',
-        writableRoots: [options.cwd],
-        networkAccess: false,
-        excludeTmpdirEnvVar: false,
-        excludeSlashTmp: false
-      },
+      sandboxPolicy: { type: 'dangerFullAccess' },
       approvalPolicy: 'on-request',
       approvalsReviewer: 'user',
       permissions: null,

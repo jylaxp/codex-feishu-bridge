@@ -27,14 +27,13 @@ outbox lease 不能替代完整的多实例协调。
 - `AUTHORIZED_USERS`
 - `ALLOWED_APPROVERS`
 - `CODEX_BIN`：Codex CLI 的绝对可执行路径
-- `CODEX_CWD`：绝对工作区路径
-- `ALLOWED_WORKSPACE_ROOTS`：逗号分隔的绝对路径白名单
 - `BRIDGE_DATA_DIR`：绝对私有数据目录
 
 可选：
 
 - `APP_SERVER_MODE=owned_stdio|managed_proxy`，默认 `owned_stdio`
 - `APP_SERVER_SOCKET_PATH`：managed proxy 的自定义控制 socket
+- `CODEX_CWD`：可选默认目录；省略时使用 `~/.codex-feishu-bridge`。任务使用整机访问模式
 - `MAX_TEXT_LENGTH`：`1000..20000`，默认 `10000`
 - `CARD_UPDATE_INTERVAL_MS`：`1000..2000`，默认 `1500`
 - `MAX_QUEUED_TASKS`：`1..1000`，默认 `100`，达到上限后新 root 拒绝进入队列

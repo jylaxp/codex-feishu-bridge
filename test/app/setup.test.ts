@@ -20,6 +20,12 @@ test('init creates a manual configuration skeleton without invoking QR registrat
     assert.match(env, /^ALLOWED_CHATS=$/m);
     assert.match(env, /^AUTHORIZED_USERS=$/m);
     assert.match(env, /^ALLOWED_APPROVERS=$/m);
+    assert.match(env, /^ALLOWED_SHELL_COMMANDS=ls,pwd,git,find,cd$/m);
+    assert.match(env, new RegExp(`^CODEX_CWD=${configHome}$`, 'm'));
+    assert.doesNotMatch(env, /^ALLOWED_WORKSPACE_ROOTS=/m);
+    assert.match(env, /# ==================== 飞书应用与访问范围 ====================/);
+    assert.match(env, /# ==================== Codex 运行环境 ====================/);
+    assert.match(env, /# ==================== 日志与文件输出 ====================/);
     assert.equal(existsSync(join(configHome, 'bindings.json')), true);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -61,6 +67,9 @@ test('setup scans a QR code, writes app credentials and preserves existing env e
     assert.match(env, /^AUTHORIZED_USERS=$/m);
     assert.match(env, /^ALLOWED_APPROVERS=$/m);
     assert.match(env, /^BRIDGE_CONFIG_VERSION=2$/m);
+    assert.match(env, /^ALLOWED_SHELL_COMMANDS=ls,pwd,git,find,cd$/m);
+    assert.match(env, new RegExp(`^CODEX_CWD=${configHome}$`, 'm'));
+    assert.doesNotMatch(env, /^ALLOWED_WORKSPACE_ROOTS=/m);
     assert.deepEqual(qrUrls, ['https://open.feishu.cn/qr']);
     assert.match(output.join(''), /飞书应用扫码绑定已完成/);
   } finally {
@@ -78,7 +87,14 @@ test('setup keeps valid credentials and only fills missing defaults', async () =
       '# keep this comment',
       'LARK_APP_ID=cli_aaaabbbbccccdddd',
       'LARK_APP_SECRET=existing-secret',
+      'CODEX_CWD=/old/machine-specific/path',
+      'CODEX_CWD=/another/stale/path',
+      'ALLOWED_WORKSPACE_ROOTS=/legacy/workspace',
       'CUSTOM_KEY=custom',
+      'custom_key=keep-lowercase',
+      '_CUSTOM=keep-leading-underscore',
+      'APP_SERVER_SOCKET_PATH=/tmp/app-server.sock',
+      'LOG_FILE_PATH="logs/bridge # 1.log" # local',
     ].join('\n');
     writeFileSync(envPath, customized);
 
@@ -94,8 +110,56 @@ test('setup keeps valid credentials and only fills missing defaults', async () =
     assert.equal(report.qrRegistered, false);
     assert.match(env, /^# keep this comment$/m);
     assert.match(env, /^CUSTOM_KEY=custom$/m);
+    assert.match(env, /^custom_key=keep-lowercase$/m);
+    assert.match(env, /^_CUSTOM=keep-leading-underscore$/m);
+    assert.match(env, /^APP_SERVER_SOCKET_PATH=\/tmp\/app-server\.sock$/m);
+    assert.match(env, /^LOG_FILE_PATH="logs\/bridge # 1\.log" # local$/m);
+    assert.doesNotMatch(env, /^ALLOWED_WORKSPACE_ROOTS=/m);
     assert.match(env, /^LARK_APP_ID=cli_aaaabbbbccccdddd$/m);
     assert.match(env, /^LARK_APP_SECRET=existing-secret$/m);
+    assert.match(env, new RegExp(`^CODEX_CWD=${configHome}$`, 'm'));
+    assert.doesNotMatch(env, /^CODEX_CWD=\/old\/machine-specific\/path$/m);
+    assert.equal([...env.matchAll(/^CODEX_CWD=/gm)].length, 1);
+
+    await runSetup({
+      configHome,
+      stdout: { write: () => true },
+      registerApp: async () => {
+        throw new Error('registerApp should not be called');
+      },
+    }, {});
+    assert.equal(readFileSync(envPath, 'utf8'), env);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('setup safely organizes standard keys with quoted values and socket configuration', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'bridge-setup-standard-existing-'));
+  try {
+    const configHome = join(root, 'config');
+    const envPath = join(configHome, '.env');
+    mkdirSync(configHome);
+    writeFileSync(envPath, [
+      'LARK_APP_ID=cli_aaaabbbbccccdddd',
+      'LARK_APP_SECRET="existing # secret" # local',
+      'APP_SERVER_MODE=managed_proxy',
+      'APP_SERVER_SOCKET_PATH=/tmp/app-server.sock',
+    ].join('\n'));
+
+    await runSetup({
+      configHome,
+      stdout: { write: () => true },
+      registerApp: async () => {
+        throw new Error('registerApp should not be called');
+      },
+    }, {});
+
+    const env = readFileSync(envPath, 'utf8');
+    assert.match(env, /^LARK_APP_SECRET="existing # secret"$/m);
+    assert.match(env, /# ==================== ChatGPT App Server ====================/);
+    assert.match(env, /^APP_SERVER_MODE=managed_proxy$/m);
+    assert.match(env, /^APP_SERVER_SOCKET_PATH=\/tmp\/app-server\.sock$/m);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

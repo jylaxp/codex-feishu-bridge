@@ -95,19 +95,6 @@ function parseAppServerMode(
   };
 }
 
-function parseRequiredList(env: NodeJS.ProcessEnv, key: string): readonly string[] {
-  const raw = requireValue(env, key);
-  const values = raw
-    .split(',')
-    .map((value) => value.trim())
-    .filter(Boolean);
-  const uniqueValues = [...new Set(values)];
-  if (uniqueValues.length === 0) {
-    throw new ConfigurationError(`${key} must contain at least one value`);
-  }
-  return Object.freeze(uniqueValues);
-}
-
 function parseOptionalList(env: NodeJS.ProcessEnv, key: string): readonly string[] {
   const raw = optionalValue(env, key);
   if (!raw) {
@@ -118,17 +105,6 @@ function parseOptionalList(env: NodeJS.ProcessEnv, key: string): readonly string
     .map((value) => value.trim())
     .filter(Boolean);
   return Object.freeze([...new Set(values)]);
-}
-
-function parseRequiredAbsolutePathList(env: NodeJS.ProcessEnv, key: string): readonly string[] {
-  const values = parseRequiredList(env, key);
-  const normalizedValues = values.map((value) => {
-    if (!path.isAbsolute(value)) {
-      throw new ConfigurationError(`${key} entries must be absolute paths`);
-    }
-    return path.normalize(value);
-  });
-  return Object.freeze(normalizedValues);
 }
 
 function parseAllowedShellCommands(env: NodeJS.ProcessEnv): readonly string[] {
@@ -196,6 +172,11 @@ function parseLogFilePath(env: NodeJS.ProcessEnv): string | null {
  */
 export function parseEnvironment(env: NodeJS.ProcessEnv): BridgeConfig {
   const appServer = parseAppServerMode(env);
+  const configHome = resolveConfigHome(env);
+  const configuredCwd = optionalValue(env, 'CODEX_CWD');
+  if (configuredCwd && !path.isAbsolute(configuredCwd)) {
+    throw new ConfigurationError('CODEX_CWD must be an absolute path');
+  }
   const config: BridgeConfig = {
     larkAppId: requireLarkAppId(env),
     larkAppSecret: requireValue(env, 'LARK_APP_SECRET'),
@@ -206,9 +187,8 @@ export function parseEnvironment(env: NodeJS.ProcessEnv): BridgeConfig {
     allowedShellCommands: parseAllowedShellCommands(env),
     ...appServer,
     codexBin: requireAbsolutePath(env, 'CODEX_BIN'),
-    codexCwd: requireAbsolutePath(env, 'CODEX_CWD'),
-    allowedWorkspaceRoots: parseRequiredAbsolutePathList(env, 'ALLOWED_WORKSPACE_ROOTS'),
-    configHome: resolveConfigHome(env),
+    codexCwd: configuredCwd ? path.normalize(configuredCwd) : configHome,
+    configHome,
     maxTextLength: parseBoundedInteger(
       env,
       'MAX_TEXT_LENGTH',

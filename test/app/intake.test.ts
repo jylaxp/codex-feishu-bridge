@@ -14,7 +14,6 @@ const config: BridgeConfig = Object.freeze({
   appServerSocketPath: null,
   codexBin: '/opt/codex',
   codexCwd: '/workspace',
-  allowedWorkspaceRoots: Object.freeze(['/workspace']),
   maxTextLength: 1_000,
   cardUpdateIntervalMs: 1_500,
   maxQueuedTasks: 100,

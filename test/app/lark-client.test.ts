@@ -23,7 +23,6 @@ function bridgeConfig(): BridgeConfig {
     appServerSocketPath: null,
     codexBin: '/usr/bin/codex',
     codexCwd: '/workspace',
-    allowedWorkspaceRoots: Object.freeze(['/workspace']),
     maxTextLength: 10_000,
     cardUpdateIntervalMs: 1_500,
   maxQueuedTasks: 100,

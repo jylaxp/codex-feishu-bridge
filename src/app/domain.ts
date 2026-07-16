@@ -69,8 +69,8 @@ export interface BridgeConfig {
   readonly appServerMode: 'owned_stdio' | 'managed_proxy';
   readonly appServerSocketPath: string | null;
   readonly codexBin: string;
+  /** Default working directory. Task execution itself uses full-machine access. */
   readonly codexCwd: string;
-  readonly allowedWorkspaceRoots: readonly string[];
   /** Current runtime home; only .env and bindings.json are persistent state. */
   readonly configHome?: string;
   readonly maxTextLength: number;

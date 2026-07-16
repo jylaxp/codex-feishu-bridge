@@ -21,7 +21,6 @@ function validEnvironment(root: string): NodeJS.ProcessEnv {
     ALLOWED_APPROVERS: 'ou_approver_1',
     CODEX_BIN: path.join(root, 'codex'),
     CODEX_CWD: path.join(root, 'workspace'),
-    ALLOWED_WORKSPACE_ROOTS: path.join(root, 'workspace'),
     BRIDGE_CONFIG_HOME: path.join(root, 'config-home'),
     MAX_TEXT_LENGTH: '10000',
     CARD_UPDATE_INTERVAL_MS: '1500',
@@ -68,14 +67,19 @@ async function run(): Promise<void> {
       'LARK_APP_ID',
       'LARK_APP_SECRET',
       'CODEX_BIN',
-      'CODEX_CWD',
-      'ALLOWED_WORKSPACE_ROOTS',
     ];
     for (const key of requiredKeys) {
       const missing = { ...env };
       delete missing[key];
       expectThrows(() => parseEnvironment(missing), ConfigurationError);
     }
+
+    const withoutCwd = { ...env };
+    delete withoutCwd.CODEX_CWD;
+    assert.strictEqual(
+      parseEnvironment(withoutCwd).codexCwd,
+      path.join(root, 'config-home'),
+    );
 
     assert.strictEqual(parseEnvironment({ ...env, LARK_TENANT_KEY: '' }).larkTenantKey, '');
     assert.deepStrictEqual(parseEnvironment({ ...env, ALLOWED_CHATS: ' , ' }).allowedChats, []);
@@ -176,9 +180,9 @@ async function run(): Promise<void> {
     const escapeLink = path.join(workspace, 'escape');
     fs.symlinkSync(outside, escapeLink, 'dir');
     const escapedConfig = parseEnvironment({ ...env, CODEX_CWD: escapeLink });
-    expectThrows(
-      () => runPreflight(escapedConfig, { nodeVersion: '24.18.0' }),
-      PreflightError,
+    assert.strictEqual(
+      runPreflight(escapedConfig, { nodeVersion: '24.18.0' }).config.codexCwd,
+      fs.realpathSync.native(outside),
     );
 
     const symlinkConfig = path.join(root, 'symlink-config');
