@@ -1,0 +1,64 @@
+src/app/config.ts
+  s_4672ec237d452e::t_ce69c2e485c3b1 5-6
+src/app/domain.ts
+  s_4672ec237d452e::t_cf2b86a576cd89 45-52,63-64
+.nvmrc
+  s_4672ec237d452e::t_ce69c2e485c3b1 1
+src/app/in-memory-orchestrator.ts
+  s_4672ec237d452e::t_d0b1b541ca0478 20-25,80,115-120
+  s_4672ec237d452e::t_1a7fac7b482d42 77,121,425,555,647-649,651,951,1195-1198,1200-1210,1222-1232
+  s_4672ec237d452e::t_ca78002158696f 455
+  s_4672ec237d452e::t_91956684fcae61 428,558
+  s_4672ec237d452e::t_955692e9c66600 907,915,917-950
+  s_4672ec237d452e::t_9e922b2182141d 643,650,656
+  s_4672ec237d452e::t_1ed5c179e50c98 916
+  s_4672ec237d452e::t_ad4ccd4e228b79 1199,1211-1221,1234,1248,1257-1263
+  s_4672ec237d452e::t_ae9cf7d09953cc 122
+  s_4672ec237d452e::t_b1514265c193b5 952
+  s_4672ec237d452e::t_0ba7b384dfdab4 1233
+src/app/codex/runtime-contract.ts
+  s_4672ec237d452e::t_dd7652aeeb6296 13,39,46-53
+  s_4672ec237d452e::t_2cd6cc0653f29b 54-55
+scripts/clean-app-build.mjs
+  s_4672ec237d452e::t_40bc0533497a35 5
+src/app/codex/desktop-thread-stream-normalizer.ts
+  s_4672ec237d452e::t_9e6be009c28b02 104-121,282-284
+  s_4672ec237d452e::t_ae303306cd4791 285-286
+  s_4672ec237d452e::t_8a05e030a2bab7 287-288
+src/app/conversation-binding-service-v3.ts
+  s_4672ec237d452e::t_9e6be009c28b02 79,261-278
+  s_4672ec237d452e::t_be175dbd5b89cb 376
+src/app/main.ts
+  s_4672ec237d452e::t_9e6be009c28b02 128-137
+package.json
+  s_4672ec237d452e::t_ce69c2e485c3b1 32
+  s_4672ec237d452e::t_40bc0533497a35 26-27
+README.md
+  s_4672ec237d452e::t_ce69c2e485c3b1 22
+  s_4672ec237d452e::t_ca78002158696f 241
+  s_4672ec237d452e::t_f3aef40e0ff568 43,57
+  s_4672ec237d452e::t_31f717db2a228a 58
+src/app/codex/contract.ts
+  s_4672ec237d452e::t_dd7652aeeb6296 1
+src/app/cards/layouts.ts
+  s_4672ec237d452e::t_8479697628bc49 4,151-158,167,218-242
+  s_4672ec237d452e::t_96baffc5a9a778 243-244
+package-lock.json
+  s_4672ec237d452e::t_df1e4b5f51e7ec 22
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "6b9c7cfd639a7d0afcbc22944c9af1330d09849e",
+  "prompts": {},
+  "sessions": {
+    "s_4672ec237d452e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5be6-2b87-7190-8898-ae985cbeb51e",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    }
+  }
+}
