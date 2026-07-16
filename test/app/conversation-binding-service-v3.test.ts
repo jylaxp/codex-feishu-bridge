@@ -31,6 +31,20 @@ const config: BridgeConfig = {
   enableAutoFileUpload: false,
 };
 
+const testWorkspaceState = async () => ({
+  savedWorkspaces: [
+    '/workspace/app-server',
+    '/workspace/search-ai',
+    '/workspace/project',
+    '/workspace/current-project',
+    '/workspace/other',
+    '/workspace/bridge',
+    '/workspace',
+  ],
+  workspaceLabels: {},
+  projectlessThreadIds: ['thread-selected'],
+});
+
 function inbound(text: string): InboundTextMessage {
   return {
     tenantKey: 'tenant',
@@ -47,6 +61,11 @@ function inbound(text: string): InboundTextMessage {
 
 class FakeCards {
   public readonly cards: CardKitJson[] = [];
+  public readonly replacements: Array<{
+    readonly cardId: string;
+    readonly card: CardKitJson;
+    readonly sequence: number;
+  }> = [];
   public readonly sent: Array<{
     readonly chatId: string;
     readonly cardId: string;
@@ -65,6 +84,11 @@ class FakeCards {
   public async sendCard(chatId: string, cardId: string, idempotencyKey: string): Promise<string> {
     this.sent.push({ chatId, cardId, idempotencyKey });
     return 'card-message';
+  }
+
+  public async replaceCard(cardId: string, card: CardKitJson, sequence: number): Promise<number> {
+    this.replacements.push({ cardId, card, sequence });
+    return sequence + 1;
   }
 }
 
@@ -88,12 +112,30 @@ function pickerOptionLabels(card: CardKitJson): string[] {
   });
 }
 
+function pickerElement(card: CardKitJson): Record<string, unknown> {
+  const body = card.body as { elements: Array<Record<string, unknown>> };
+  const picker = body.elements.find((element) => element.tag === 'select_static');
+  assert.ok(picker);
+  return picker;
+}
+
+function callbackCard(result: object): CardKitJson {
+  const response = result as { card?: { type?: unknown; data?: unknown } };
+  assert.equal(response.card?.type, 'raw');
+  assert.ok(response.card?.data);
+  return response.card.data as CardKitJson;
+}
+
 function openToken(card: CardKitJson): string {
   const body = card.body as { elements: Array<Record<string, unknown>> };
   const button = body.elements.find((element) => element.tag === 'button');
   const value = button?.value as { token?: unknown } | undefined;
   assert.equal(typeof value?.token, 'string');
   return value?.token as string;
+}
+
+async function flushBindingSideEffects(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
 test('binds only an explicit signed picker choice to the current Feishu chat', async () => {
@@ -121,6 +163,9 @@ test('binds only an explicit signed picker choice to the current Feishu chat', a
       },
       cards,
       () => 1_000,
+      undefined,
+      undefined,
+      testWorkspaceState,
     );
 
     assert.equal(await service.handleCommand(inbound('/bind')), true);
@@ -133,18 +178,75 @@ test('binds only an explicit signed picker choice to the current Feishu chat', a
       token,
     });
 
-    assert.deepEqual(result, {
-      toast: {
-        type: 'warning',
-        content: '绑定成功；未能自动打开 ChatGPT 会话，可发送 /open 重试',
-        i18n: {
-          zh_cn: '绑定成功；未能自动打开 ChatGPT 会话，可发送 /open 重试',
-          en_us: '绑定成功；未能自动打开 ChatGPT 会话，可发送 /open 重试',
-        },
+    assert.deepEqual((result as { toast: unknown }).toast, {
+      type: 'success',
+      content: '成功绑定到 Codex 会话',
+      i18n: {
+        zh_cn: '成功绑定到 Codex 会话',
+        en_us: '成功绑定到 Codex 会话',
       },
     });
     assert.equal(store.get('tenant', 'chat')?.threadId, 'thread-selected');
-    assert.deepEqual(calls.map((call) => call.method), ['thread/list', 'thread/read', 'thread/resume']);
+    assert.equal(cards.replacements.length, 0);
+    const patchedCard = callbackCard(result);
+    assert.equal((patchedCard.header as { title: { content: string } }).title.content, '📂 Codex 绑定会话');
+    const patchedPicker = pickerElement(patchedCard);
+    assert.equal(patchedPicker.disabled, true);
+    assert.equal(patchedPicker.element_id, 'bind_select_locked');
+    assert.equal(patchedPicker.initial_option, '🌐 Feishu test (全局)');
+    const patchedOptions = patchedPicker.options as Array<{ value: string; selected?: boolean }>;
+    assert.equal(patchedOptions.some((option) => 'selected' in option), false);
+    await flushBindingSideEffects();
+    assert.deepEqual(calls.map((call) => call.method), ['thread/list', 'thread/resume']);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('persists the selected ChatGPT thread cwd instead of the Bridge process cwd', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'binding-v3-cwd-'));
+  try {
+    const store = new BindingStore(root, { now: () => 100 });
+    store.load();
+    const cards = new FakeCards();
+    const service = new ConversationBindingServiceV3(
+      config,
+      store,
+      {
+        request: async <TResult>(method: string): Promise<TResult> => {
+          if (method === 'thread/list') {
+            return {
+              data: [{ id: 'thread-selected', name: 'Project task', cwd: '/workspace/project' }],
+            } as TResult;
+          }
+          if (method === 'thread/read') {
+            return {
+              thread: { id: 'thread-selected', name: 'Project task', cwd: '/workspace/project' },
+            } as TResult;
+          }
+          return { thread: { id: 'thread-selected', turns: [] } } as TResult;
+        },
+      },
+      cards,
+      () => 1_000,
+      undefined,
+      undefined,
+      testWorkspaceState,
+    );
+
+    await service.handleCommand(inbound('/bind'));
+    const result = await service.handleCardAction({
+      tenantKey: 'tenant',
+      chatId: 'chat',
+      messageId: 'card-message',
+      operatorOpenId: 'user',
+      token: firstBindingToken(cards.cards[0]!),
+    });
+
+    assert.equal(store.get('tenant', 'chat')?.workspaceId, '/workspace/project');
+    const patchedCard = callbackCard(result);
+    assert.match(JSON.stringify(patchedCard), /Project task/);
+    assert.equal(pickerElement(patchedCard).disabled, true);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -182,9 +284,20 @@ test('pushes the latest terminal ChatGPT history card immediately after binding'
                   id: 'turn-latest',
                   status: 'completed',
                   input: [{ type: 'text', text: 'latest prompt', text_elements: [] }],
+                  tokenUsage: {
+                    last: { inputTokens: 12_300, outputTokens: 456, totalTokens: 12_756 },
+                    modelContextWindow: 258_400,
+                  },
                   items: [
                     { id: 'latest-reasoning', type: 'agentMessage', phase: 'commentary', text: 'thinking' },
-                    { id: 'latest-tool', type: 'commandExecution', command: 'npm test', exitCode: 0 },
+                    {
+                      id: 'latest-tool',
+                      type: 'commandExecution',
+                      command: 'npm test',
+                      exitCode: 0,
+                      aggregatedOutput: 'tests passed',
+                    },
+                    { id: 'latest-tool-2', type: 'commandExecution', command: 'git diff', exitCode: 0 },
                     { id: 'latest-answer', type: 'agentMessage', phase: 'final_answer', text: 'latest answer' },
                   ],
                   itemsView: 'full',
@@ -212,6 +325,14 @@ test('pushes the latest terminal ChatGPT history card immediately after binding'
       },
       cards,
       () => 1_000,
+      undefined,
+      undefined,
+      testWorkspaceState,
+      async () => ({
+        rateLimits: {
+          primary: { usedPercent: 18, resetsAt: 1_800_000_000, windowDurationMins: 10_080 },
+        },
+      }),
     );
 
     await service.handleCommand(inbound('/bind'));
@@ -222,6 +343,7 @@ test('pushes the latest terminal ChatGPT history card immediately after binding'
       operatorOpenId: 'user',
       token: firstBindingToken(cards.cards[0]!),
     });
+    await flushBindingSideEffects();
 
     assert.deepEqual(cards.sent, [{
       chatId: 'chat',
@@ -232,15 +354,23 @@ test('pushes the latest terminal ChatGPT history card immediately after binding'
     assert.match(historyCard, /\[历史\]/);
     assert.match(historyCard, /latest prompt/);
     assert.match(historyCard, /thinking/);
-    assert.match(historyCard, /npm test/);
+    assert.match(historyCard, /运行命令: `npm test`/);
+    assert.match(historyCard, /tests passed/);
+    assert.match(historyCard, /后续执行指令已自动折叠/);
+    assert.doesNotMatch(historyCard, /git diff|collapsible_panel/);
     assert.match(historyCard, /latest answer/);
+    assert.match(historyCard, /gpt-5.6-sol/);
+    assert.match(historyCard, /↑ 12.3K ↓ 456/);
+    assert.match(historyCard, /上下文 12.8K\/258.4K \(5%\)/);
+    assert.match(historyCard, /窗口用量: 7d: 18%/);
+    assert.doesNotMatch(historyCard, /绑定时同步的最近历史记录|🤖 \*\*模型\*\*/);
     assert.doesNotMatch(historyCard, /old prompt|running prompt/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test('pushes bound thread history when opening the picker for an already bound chat', async () => {
+test('does not push bound thread history merely by opening the picker', async () => {
   const root = mkdtempSync(join(tmpdir(), 'binding-v3-'));
   try {
     const store = new BindingStore(root, { now: () => 100 });
@@ -277,17 +407,15 @@ test('pushes bound thread history when opening the picker for an already bound c
       },
       cards,
       () => 1_000,
+      undefined,
+      undefined,
+      testWorkspaceState,
     );
 
     assert.equal(await service.handleCommand(inbound('/l')), true);
 
-    assert.deepEqual(cards.sent, [{
-      chatId: 'chat',
-      cardId: 'card-2',
-      idempotencyKey: 'history:message-1:thread-bound:turn-latest',
-    }]);
-    assert.match(JSON.stringify(cards.cards[1]!), /bound prompt/);
-    assert.match(JSON.stringify(cards.cards[1]!), /bound answer/);
+    assert.deepEqual(cards.sent, []);
+    assert.equal(cards.cards.length, 1);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -315,6 +443,9 @@ test('renders picker option labels as plain text without markdown escaping', asy
       },
       cards,
       () => 1_000,
+      undefined,
+      undefined,
+      testWorkspaceState,
     );
 
     assert.equal(await service.handleCommand(inbound('/l')), true);
@@ -322,15 +453,56 @@ test('renders picker option labels as plain text without markdown escaping', asy
     const labels = pickerOptionLabels(cards.cards[0]!);
     assert.deepEqual(labels, [
       '💬 codex-feishu-bridge (📁 app-server)',
-      '💬 search-core (📁 search-ai)',
       '💬 price/compare (📁 project)',
+      '💬 search-core (📁 search-ai)',
     ]);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test('opens the exact bound thread after binding and through /open', async () => {
+test('keeps the currently bound thread at the top when App Server omits it from /ll', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'binding-v3-current-'));
+  try {
+    const store = new BindingStore(root);
+    store.load();
+    store.bind({
+      tenantKey: 'tenant', chatId: 'chat', threadId: 'thread-current', workspaceId: '/workspace/current-project',
+    });
+    const cards = new FakeCards();
+    const service = new ConversationBindingServiceV3(
+      config,
+      store,
+      {
+        request: async <TResult>(method: string): Promise<TResult> => {
+          if (method === 'thread/list') {
+            return { data: [{ id: 'thread-other', name: 'Other', cwd: '/workspace/other' }] } as TResult;
+          }
+          if (method === 'thread/read') {
+            return { thread: { id: 'thread-current', name: 'Current session' } } as TResult;
+          }
+          assert.equal(method, 'thread/resume');
+          return { thread: { id: 'thread-current', turns: [] } } as TResult;
+        },
+      },
+      cards,
+      () => 1_000,
+      undefined,
+      undefined,
+      testWorkspaceState,
+    );
+
+    assert.equal(await service.handleCommand(inbound('/ll')), true);
+    assert.deepEqual(pickerOptionLabels(cards.cards[0]!), [
+      '#1 ➜ Current session',
+      '#2 ➜ Other',
+    ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('does not navigate after binding and opens the exact bound thread only through /open', async () => {
   const root = mkdtempSync(join(tmpdir(), 'binding-v3-'));
   try {
     const store = new BindingStore(root);
@@ -350,6 +522,8 @@ test('opens the exact bound thread after binding and through /open', async () =>
       cards,
       () => 1_000,
       { openThread: async (threadId) => { opened.push(threadId); } },
+      undefined,
+      testWorkspaceState,
     );
 
     await service.handleCommand(inbound('/bind'));
@@ -360,19 +534,18 @@ test('opens the exact bound thread after binding and through /open', async () =>
       operatorOpenId: 'user',
       token: firstBindingToken(cards.cards[0]!),
     });
-    assert.deepEqual(result, {
-      toast: {
-        type: 'success',
-        content: '绑定成功，已打开对应 ChatGPT 会话',
-        i18n: {
-          zh_cn: '绑定成功，已打开对应 ChatGPT 会话',
-          en_us: '绑定成功，已打开对应 ChatGPT 会话',
-        },
+    assert.deepEqual((result as { toast: unknown }).toast, {
+      type: 'success',
+      content: '成功绑定到 Codex 会话',
+      i18n: {
+        zh_cn: '成功绑定到 Codex 会话',
+        en_us: '成功绑定到 Codex 会话',
       },
     });
 
+    await flushBindingSideEffects();
     assert.equal(await service.handleCommand(inbound('/open')), true);
-    assert.deepEqual(opened, ['thread-selected', 'thread-selected']);
+    assert.deepEqual(opened, ['thread-selected']);
     assert.equal(cards.cards.at(-1)?.header && (cards.cards.at(-1)?.header as { template: string }).template, 'green');
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -395,6 +568,9 @@ test('rejects a picker token when another Feishu chat attempts to use it', async
       },
       cards,
       () => 1_000,
+      undefined,
+      undefined,
+      testWorkspaceState,
     );
 
     await service.handleCommand(inbound('/bind'));
@@ -443,6 +619,9 @@ test('keeps /l and /list aliases with trailing arguments on the legacy binding-p
       },
       cards,
       () => 1_000,
+      undefined,
+      undefined,
+      testWorkspaceState,
     );
 
     assert.equal(await service.handleCommand(inbound('/l filter')), true);

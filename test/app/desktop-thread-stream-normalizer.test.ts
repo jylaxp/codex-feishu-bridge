@@ -308,6 +308,36 @@ test('ignores patches until an authoritative snapshot exists', () => {
   assert.deepEqual(normalizer.handle(completionBroadcast()), []);
 });
 
+test('does not replay a terminal turn from the first Desktop snapshot as a new live task', () => {
+  const normalizer = new DesktopThreadStreamNormalizer(() => 12_000);
+  const broadcast = snapshotBroadcast();
+  const change = broadcast.params.change;
+  if (change.type !== 'snapshot') {
+    throw new Error('snapshot fixture must provide state');
+  }
+  const state = change.conversationState as {
+    turns: Array<Record<string, unknown>>;
+  };
+  state.turns[0] = {
+    ...state.turns[0],
+    status: 'completed',
+    completedAt: 11_000,
+    items: [{
+      id: 'agent-final',
+      type: 'agentMessage',
+      phase: 'final_answer',
+      status: 'completed',
+      text: 'historical answer',
+    }],
+  };
+
+  const notifications = normalizer.handle(broadcast);
+
+  assert.equal(notifications.some((notification) => notification.method === 'turn/started'), false);
+  assert.equal(notifications.some((notification) => notification.method === 'turn/completed'), false);
+  assert.equal(notifications.some((notification) => notification.method === 'item/started'), false);
+});
+
 test('bootstraps a Desktop-origin turn when the first post-restart event is a full turns patch', () => {
   const normalizer = new DesktopThreadStreamNormalizer(() => 12_000);
   const notifications = normalizer.handle({

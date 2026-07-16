@@ -45,8 +45,12 @@ function validEvent(): RawMessageEvent {
   };
 }
 
+function normalize(event: RawMessageEvent) {
+  return normalizeInboundMessage(event, config, () => 1_783_960_010_000);
+}
+
 test('accepts an authorized text event and derives the root binding', () => {
-  const result = normalizeInboundMessage(validEvent(), config);
+  const result = normalize(validEvent());
   assert.equal(result.accepted, true);
   if (!result.accepted) {
     return;
@@ -62,7 +66,7 @@ test('uses explicit root_id for replies', () => {
     ...baseEvent,
     message: { ...baseEvent.message, message_id: 'om-reply', root_id: 'om-root' },
   };
-  const result = normalizeInboundMessage(event, config);
+  const result = normalize(event);
   assert.equal(result.accepted && result.message.rootMessageId, 'om-root');
 });
 
@@ -77,7 +81,7 @@ test('preserves multiline prompt structure after removing the bot mention', () =
       }),
     },
   };
-  const result = normalizeInboundMessage(event, config);
+  const result = normalize(event);
 
   assert.equal(
     result.accepted && result.message.text,
@@ -110,7 +114,7 @@ test('fails closed for identity, tenant, chat, user and message type', () => {
   ];
 
   for (const [event, expectedReason] of cases) {
-    const result = normalizeInboundMessage(event, config);
+    const result = normalize(event);
     assert.equal(result.accepted, false);
     if (!result.accepted) {
       assert.equal(result.reason, expectedReason);
@@ -124,7 +128,7 @@ test('rejects malformed and oversized text without parsing arbitrary payloads', 
     ...malformedBase,
     message: { ...malformedBase.message, content: '{invalid' },
   };
-  assert.deepEqual(normalizeInboundMessage(malformed, config), {
+  assert.deepEqual(normalize(malformed), {
     accepted: false,
     reason: 'TEXT_INVALID',
   });
@@ -137,8 +141,15 @@ test('rejects malformed and oversized text without parsing arbitrary payloads', 
       content: JSON.stringify({ text: 'x'.repeat(1_001) }),
     },
   };
-  assert.deepEqual(normalizeInboundMessage(oversized, config), {
+  assert.deepEqual(normalize(oversized), {
     accepted: false,
     reason: 'TEXT_TOO_LONG',
   });
+});
+
+test('rejects Feishu backlog messages older than thirty seconds', () => {
+  assert.deepEqual(
+    normalizeInboundMessage(validEvent(), config, () => 1_783_960_031_000),
+    { accepted: false, reason: 'MESSAGE_TOO_OLD' },
+  );
 });

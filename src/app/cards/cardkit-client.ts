@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import { CardKitJson } from './layouts';
 import { FetchLike, TenantTokenProvider } from '../lark/client';
@@ -6,6 +6,9 @@ import { FetchLike, TenantTokenProvider } from '../lark/client';
 const CARDKIT_BASE_URL = 'https://open.feishu.cn/open-apis/cardkit/v1/cards';
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 const MAX_CARD_SEQUENCE = 2_147_483_647;
+const MAX_MESSAGE_UUID_LENGTH = 50;
+const CARD_REFERENCE_MAX_ATTEMPTS = 6;
+const CARD_REFERENCE_RETRY_BASE_DELAY_MS = 500;
 
 export type CardKitErrorKind =
   | 'HTTP_RETRYABLE'
@@ -59,6 +62,13 @@ export interface LarkReplyApi {
         readonly msg?: string;
         readonly data?: { readonly message_id?: string };
       }>;
+      patch(payload: {
+        readonly path: { readonly message_id: string };
+        readonly data: { readonly content: string };
+      }): Promise<{
+        readonly code?: number;
+        readonly msg?: string;
+      }>;
     };
   };
 }
@@ -75,13 +85,15 @@ export class CardKitClient {
     private readonly larkApi: LarkReplyApi,
     private readonly fetchImpl: FetchLike = fetch,
     private readonly timeoutMs = 10_000,
+    private readonly transformCard: (card: CardKitJson) => Promise<CardKitJson> = async (card) => card,
   ) {}
 
   /** Creates a CardKit instance in streaming mode. */
   public async createCard(card: CardKitJson): Promise<string> {
+    const renderedCard = await this.transformCard(card);
     const payload = await this.request(CARDKIT_BASE_URL, {
       method: 'POST',
-      body: JSON.stringify({ type: 'card_json', data: JSON.stringify(card) }),
+      body: JSON.stringify({ type: 'card_json', data: JSON.stringify(renderedCard) }),
     });
     const cardId = payload.data?.card_id;
     if (!cardId) {
@@ -96,34 +108,36 @@ export class CardKitClient {
     cardId: string,
     idempotencyKey: string = randomUUID(),
   ): Promise<string> {
-    try {
-      const response = await this.larkApi.im.message.reply({
-        path: { message_id: rootMessageId },
-        data: {
-          msg_type: 'interactive',
-          reply_in_thread: false,
-          uuid: idempotencyKey,
-          content: JSON.stringify({ type: 'card', data: { card_id: cardId } }),
-        },
-      });
-      if (response.code !== undefined && response.code !== 0) {
-        throw new CardKitError(
-          'API_FATAL',
-          `Lark card reply rejected: ${response.msg ?? 'unknown error'}`,
-          response.code,
-        );
+    return this.retryCardReference(async () => {
+      try {
+        const response = await this.larkApi.im.message.reply({
+          path: { message_id: rootMessageId },
+          data: {
+            msg_type: 'interactive',
+            reply_in_thread: false,
+            uuid: messageOperationId(idempotencyKey),
+            content: JSON.stringify({ type: 'card', data: { card_id: cardId } }),
+          },
+        });
+        if (response.code !== undefined && response.code !== 0) {
+          throw new CardKitError(
+            'API_FATAL',
+            `Lark card reply rejected: ${response.msg ?? 'unknown error'}`,
+            response.code,
+          );
+        }
+        const messageId = response.data?.message_id;
+        if (!messageId) {
+          throw new CardKitError('INVALID_RESPONSE', 'Lark card reply has no message id');
+        }
+        return messageId;
+      } catch (error) {
+        if (error instanceof CardKitError) {
+          throw error;
+        }
+        throw new CardKitError('NETWORK_RETRYABLE', 'Lark card reply request failed');
       }
-      const messageId = response.data?.message_id;
-      if (!messageId) {
-        throw new CardKitError('INVALID_RESPONSE', 'Lark card reply has no message id');
-      }
-      return messageId;
-    } catch (error) {
-      if (error instanceof CardKitError) {
-        throw error;
-      }
-      throw new CardKitError('NETWORK_RETRYABLE', 'Lark card reply request failed');
-    }
+    });
   }
 
   /** Posts an independent card into a bound Feishu chat for a Desktop-originated turn. */
@@ -132,34 +146,73 @@ export class CardKitClient {
     cardId: string,
     idempotencyKey: string = randomUUID(),
   ): Promise<string> {
+    return this.retryCardReference(async () => {
+      try {
+        const response = await this.larkApi.im.message.create({
+          params: { receive_id_type: 'chat_id' },
+          data: {
+            receive_id: chatId,
+            msg_type: 'interactive',
+            uuid: messageOperationId(idempotencyKey),
+            content: JSON.stringify({ type: 'card', data: { card_id: cardId } }),
+          },
+        });
+        if (response.code !== undefined && response.code !== 0) {
+          throw new CardKitError(
+            'API_FATAL',
+            `Lark card send rejected: ${response.msg ?? 'unknown error'}`,
+            response.code,
+          );
+        }
+        const messageId = response.data?.message_id;
+        if (!messageId) {
+          throw new CardKitError('INVALID_RESPONSE', 'Lark card send has no message id');
+        }
+        return messageId;
+      } catch (error) {
+        if (error instanceof CardKitError) {
+          throw error;
+        }
+        throw new CardKitError('NETWORK_RETRYABLE', 'Lark card send request failed');
+      }
+    });
+  }
+
+  /** Replaces one interactive message with a complete card, matching the legacy product flow. */
+  public async patchMessage(messageId: string, card: CardKitJson): Promise<void> {
+    const renderedCard = await this.transformCard(card);
     try {
-      const response = await this.larkApi.im.message.create({
-        params: { receive_id_type: 'chat_id' },
-        data: {
-          receive_id: chatId,
-          msg_type: 'interactive',
-          uuid: idempotencyKey,
-          content: JSON.stringify({ type: 'card', data: { card_id: cardId } }),
-        },
+      const response = await this.larkApi.im.message.patch({
+        path: { message_id: messageId },
+        data: { content: JSON.stringify(renderedCard) },
       });
       if (response.code !== undefined && response.code !== 0) {
         throw new CardKitError(
           'API_FATAL',
-          `Lark card send rejected: ${response.msg ?? 'unknown error'}`,
+          `Lark card patch rejected: ${response.msg ?? 'unknown error'}`,
           response.code,
         );
       }
-      const messageId = response.data?.message_id;
-      if (!messageId) {
-        throw new CardKitError('INVALID_RESPONSE', 'Lark card send has no message id');
-      }
-      return messageId;
     } catch (error) {
       if (error instanceof CardKitError) {
         throw error;
       }
-      throw new CardKitError('NETWORK_RETRYABLE', 'Lark card send request failed');
+      throw new CardKitError('NETWORK_RETRYABLE', 'Lark card patch request failed');
     }
+  }
+
+  private async retryCardReference<TResult>(operation: () => Promise<TResult>): Promise<TResult> {
+    for (let attempt = 1; attempt <= CARD_REFERENCE_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        return await operation();
+      } catch (error) {
+        if (!isCardReferenceRetryable(error) || attempt === CARD_REFERENCE_MAX_ATTEMPTS) {
+          throw error;
+        }
+        await delay(CARD_REFERENCE_RETRY_BASE_DELAY_MS * attempt);
+      }
+    }
+    throw new CardKitError('NETWORK_RETRYABLE', 'Lark card reference retry exhausted');
   }
 
   /** Replaces the complete card at one exact CardKit sequence. */
@@ -170,10 +223,11 @@ export class CardKitClient {
     idempotencyKey?: string,
   ): Promise<number> {
     const sequence = nextCardSequence(acknowledgedSequence);
+    const renderedCard = await this.transformCard(card);
     await this.request(`${CARDKIT_BASE_URL}/${encodeURIComponent(cardId)}`, {
       method: 'PUT',
       body: JSON.stringify({
-        card: { type: 'card_json', data: JSON.stringify(card) },
+        card: { type: 'card_json', data: JSON.stringify(renderedCard) },
         sequence,
         ...(idempotencyKey ? { uuid: requireCardOperationId(idempotencyKey) } : {}),
       }),
@@ -310,4 +364,22 @@ function requireCardOperationId(value: string): string {
     throw new CardKitError('API_FATAL', 'CardKit operation id must contain 1 to 64 characters');
   }
   return value;
+}
+
+function messageOperationId(value: string): string {
+  if (!value) {
+    throw new CardKitError('API_FATAL', 'Lark message operation id must not be empty');
+  }
+  return value.length <= MAX_MESSAGE_UUID_LENGTH
+    ? value
+    : createHash('sha256').update(value).digest('base64url');
+}
+
+function isCardReferenceRetryable(error: unknown): boolean {
+  return error instanceof CardKitError
+    && (error.retryable || error.apiCode === 230099 || /card\s*id is invalid/i.test(error.message));
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

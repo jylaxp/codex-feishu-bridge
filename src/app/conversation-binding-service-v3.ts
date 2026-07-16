@@ -1,4 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { readFile, stat } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { basename, join, normalize, sep } from 'node:path';
 
 import { type BindingStore, type ChatThreadBinding } from './binding-store';
 import { createTaskCard, type CardKitJson } from './cards/layouts';
@@ -20,6 +23,12 @@ export interface BindingCardsV3 {
   createCard(card: CardKitJson): Promise<string>;
   replyCard(rootMessageId: string, cardId: string, idempotencyKey: string): Promise<string>;
   sendCard(chatId: string, cardId: string, idempotencyKey: string): Promise<string>;
+  replaceCard(
+    cardId: string,
+    card: CardKitJson,
+    acknowledgedSequence: number,
+    idempotencyKey?: string,
+  ): Promise<number>;
 }
 
 export interface BindingLoggerV3 {
@@ -43,9 +52,19 @@ interface ThreadChoice {
   readonly updatedAt: number | null;
 }
 
+interface PendingBindingCard {
+  readonly cardId: string;
+  readonly messageId: string;
+  readonly card: CardKitJson;
+  readonly choice: ThreadChoice;
+  readonly expiresAtMs: number;
+}
+
 /** Stateless command surface backed only by BindingStore. */
 export class ConversationBindingServiceV3 {
   private readonly consumedOpenTokens = new Map<string, number>();
+  private readonly pendingBindingCards = new Map<string, PendingBindingCard>();
+  private readonly pushedHistoryTurns = new Set<string>();
 
   public constructor(
     private readonly config: BridgeConfig,
@@ -55,6 +74,8 @@ export class ConversationBindingServiceV3 {
     private readonly now: () => number = Date.now,
     private readonly navigation: ThreadNavigation | undefined = undefined,
     private readonly logger: BindingLoggerV3 | undefined = undefined,
+    private readonly workspaceStateReader: () => Promise<BindingWorkspaceState> = readWorkspaceState,
+    private readonly readRateLimits: (() => Promise<unknown>) | undefined = undefined,
   ) {}
 
   public getBinding(tenantKey: string, chatId: string): ChatThreadBinding | undefined {
@@ -64,12 +85,8 @@ export class ConversationBindingServiceV3 {
   public async handleCommand(message: InboundTextMessage): Promise<boolean> {
     const command = firstCommand(message.text);
     if (command === '/bind' || command === '/l' || command === '/list' || command === '/ll') {
-    await this.sendPicker(message, command === '/ll');
-    const binding = this.getBinding(message.tenantKey, message.chatId);
-    if (binding) {
-      await this.pushLatestHistoryCard(binding, `history:${message.messageId}:${binding.threadId}`, 'picker');
-    }
-    return true;
+      await this.sendPicker(message, command === '/ll');
+      return true;
     }
     if (command === '/binding') {
       await this.sendStatus(message);
@@ -107,24 +124,37 @@ export class ConversationBindingServiceV3 {
     if (payload.revision !== revision) {
       return toast('选择卡已过期，请重新 /bind', 'warning');
     }
-    try {
-      await this.catalog.request('thread/read', { threadId: payload.threadId, includeTurns: false });
-    } catch {
-      return toast('所选会话不存在或暂时不可用，请重新 /bind', 'warning');
+    this.prunePendingBindingCards();
+    const pending = this.pendingBindingCards.get(action.token);
+    if (!pending || pending.messageId !== action.messageId) {
+      return toast('选择卡已过期，请重新 /bind', 'warning');
     }
+    const workspaceId = pending.choice.cwd ?? this.config.codexCwd;
+    const selectedCard = disabledPickerCard(pending.card, action.token);
     const binding = this.store.bind({
       tenantKey: action.tenantKey,
       chatId: action.chatId,
       threadId: payload.threadId,
-      workspaceId: this.config.codexCwd,
+      workspaceId,
     });
+    for (const [token, context] of this.pendingBindingCards) {
+      if (context.cardId === pending.cardId) {
+        this.pendingBindingCards.delete(token);
+      }
+    }
     this.logger?.info('binding_action_accepted', {
       chatId: action.chatId,
       threadId: payload.threadId,
       revision: binding.revision,
     });
-    await this.pushLatestHistoryCard(binding, `history:${action.messageId}:${binding.threadId}`, 'card_action');
-    return this.openAfterBinding(payload.threadId);
+    void this.completeBindingSideEffects(binding, action.messageId);
+    return {
+      ...toast('成功绑定到 Codex 会话', 'success'),
+      card: {
+        type: 'raw',
+        data: selectedCard,
+      },
+    };
   }
 
   public async handleOpenAction(action: BindingActionV3): Promise<object> {
@@ -151,13 +181,58 @@ export class ConversationBindingServiceV3 {
       sortDirection: 'desc',
       archived: false,
     });
-    const choices = parseChoices(response);
-    const revision = this.getBinding(message.tenantKey, message.chatId)?.revision ?? 0;
+    const binding = this.getBinding(message.tenantKey, message.chatId);
+    const choices = await this.includeCurrentBinding(parseChoices(response), binding);
+    const revision = binding?.revision ?? 0;
     const entries = choices.map((choice) => ({
       choice,
       token: createToken(choice.id, revision, message, this.config.larkAppSecret, this.now),
     }));
-    await this.reply(message, pickerCard(entries, table), table ? 'picker-table' : 'picker');
+    const card = await pickerCard(entries, table, binding?.threadId, await this.workspaceStateReader());
+    const cardId = await this.cards.createCard(card);
+    const messageId = await this.cards.replyCard(
+      message.rootMessageId,
+      cardId,
+      `binding:${message.eventId}:${table ? 'picker-table' : 'picker'}`,
+    );
+    const expiresAtMs = this.now() + TOKEN_TTL_MS;
+    for (const entry of entries) {
+      this.pendingBindingCards.set(entry.token, Object.freeze({
+        cardId,
+        messageId,
+        card,
+        choice: entry.choice,
+        expiresAtMs,
+      }));
+    }
+  }
+
+  private async includeCurrentBinding(
+    choices: readonly ThreadChoice[],
+    binding: ChatThreadBinding | undefined,
+  ): Promise<readonly ThreadChoice[]> {
+    if (!binding || choices.some((choice) => choice.id === binding.threadId)) {
+      return choices;
+    }
+    let title = '当前绑定会话';
+    try {
+      const response = asRecord(await this.catalog.request<unknown>('thread/read', {
+        threadId: binding.threadId,
+        includeTurns: false,
+      }));
+      const thread = asRecord(response?.thread) ?? response;
+      if (typeof thread?.name === 'string' && thread.name.trim()) {
+        title = thread.name.trim();
+      }
+    } catch {
+      // The stored binding remains selectable even if its metadata is temporarily unavailable.
+    }
+    return Object.freeze([{
+      id: binding.threadId,
+      title,
+      cwd: binding.workspaceId,
+      updatedAt: null,
+    }, ...choices]);
   }
 
   private async sendStatus(message: InboundTextMessage): Promise<void> {
@@ -178,11 +253,15 @@ export class ConversationBindingServiceV3 {
     await this.reply(message, openResultCard(result), 'open');
   }
 
-  private async openAfterBinding(threadId: string): Promise<object> {
-    const result = await this.openThread(threadId);
-    return result.type === 'success'
-      ? toast('绑定成功，已打开对应 ChatGPT 会话', 'success')
-      : toast('绑定成功；未能自动打开 ChatGPT 会话，可发送 /open 重试', 'warning');
+  private async completeBindingSideEffects(
+    binding: ChatThreadBinding,
+    messageId: string,
+  ): Promise<void> {
+    await this.pushLatestHistoryCard(
+      binding,
+      `history:${messageId}:${binding.threadId}`,
+      'card_action',
+    );
   }
 
   private async openThread(threadId: string): Promise<{ readonly type: 'success' | 'warning' }> {
@@ -222,9 +301,17 @@ export class ConversationBindingServiceV3 {
         });
         return;
       }
-      const card = createHistoryTaskCard(turn, response.model);
+      const historyKey = `${binding.threadId.length}:${binding.threadId}${turn.id.length}:${turn.id}`;
+      if (this.pushedHistoryTurns.has(historyKey)) {
+        return;
+      }
+      const rateLimitText = this.readRateLimits
+        ? formatHistoryRateLimits(await this.readRateLimits().catch(() => null))
+        : null;
+      const card = createHistoryTaskCard(turn, response.model, rateLimitText);
       const cardId = await this.cards.createCard(card);
       await this.cards.sendCard(binding.chatId, cardId, `${idempotencyPrefix}:${turn.id}`);
+      this.pushedHistoryTurns.add(historyKey);
       this.logger?.info('history_push_sent', {
         source,
         chatId: binding.chatId,
@@ -253,6 +340,15 @@ export class ConversationBindingServiceV3 {
       }
     }
   }
+
+  private prunePendingBindingCards(): void {
+    const now = this.now();
+    for (const [token, pending] of this.pendingBindingCards) {
+      if (pending.expiresAtMs < now) {
+        this.pendingBindingCards.delete(token);
+      }
+    }
+  }
 }
 
 function latestTerminalTurn(thread: Thread): Turn | null {
@@ -265,20 +361,183 @@ function latestTerminalTurn(thread: Thread): Turn | null {
   return null;
 }
 
-function createHistoryTaskCard(turn: Turn, model: string | null | undefined): CardKitJson {
+function createHistoryTaskCard(
+  turn: Turn,
+  model: string | null | undefined,
+  rateLimitText: string | null,
+): CardKitJson {
   const status = taskStatusFromTurn(turn);
+  const stats = extractHistoryStats(turn);
+  if (model) {
+    stats.model = model;
+  }
   const payload: CardProjectionPayload = {
     title: sanitizeCardText('Codex 历史任务', { maxLength: 200 }),
     prompt: sanitizeCardMarkdown(promptFromTurn(turn) ?? '无输入文本', { maxLength: 10_000 }),
-    metadata: model ? sanitizeCardMarkdown(`🤖 **模型**: \`${model}\``, { maxLength: 1_000 }) : null,
+    metadata: sanitizeCardMarkdown(historyMetadata(turn), { maxLength: 1_000 }) || null,
     commentary: sanitizeCardMarkdown(commentaryFromTurn(turn), { maxLength: 10_000 }),
     toolSummary: sanitizeCardPlainText(toolSummaryFromTurn(turn), { maxLength: 10_000 }),
     toolCount: toolCountFromTurn(turn),
     finalAnswer: sanitizeCardMarkdown(finalAnswerFromTurn(turn) || failureTextFromTurn(turn), { maxLength: 10_000 }),
-    footer: sanitizeCardPlainText('绑定时同步的最近历史记录', { maxLength: 500 }),
+    footer: sanitizeCardPlainText(historyFooter(turn, status, stats, rateLimitText), { maxLength: 1_000 }),
     terminal: true,
   };
   return createTaskCard({ status, payload, historical: true });
+}
+
+interface HistoryStats {
+  model?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  contextTokens?: number;
+  contextLength?: number;
+  apiCalls?: number;
+}
+
+function historyMetadata(turn: Turn): string {
+  const metadata: string[] = [];
+  const skill = turn.input?.find((input) => input.type === 'skill');
+  if (skill?.type === 'skill') {
+    metadata.push(`✨ **调用的技能**: \`${skill.name}\``);
+  }
+  const raw = turn as Turn & { readonly collaborationMode?: string | null; readonly personality?: string | null };
+  if (raw.collaborationMode === 'plan') {
+    metadata.push('📝 **计划模式**: `开启`');
+  }
+  if (raw.personality && raw.personality !== 'none') {
+    const labels: Readonly<Record<string, string>> = { friendly: '亲和', pragmatic: '务实' };
+    metadata.push(`🎭 **回复风格**: \`${labels[raw.personality] ?? raw.personality}\``);
+  }
+  return metadata.join(' ｜ ');
+}
+
+function historyFooter(
+  turn: Turn,
+  status: TaskStatus,
+  stats: HistoryStats,
+  rateLimitText: string | null,
+): string {
+  const state = status === 'SUCCEEDED' ? '✅ 已完成'
+    : status === 'INTERRUPTED' ? '🛑 已取消' : '❌ 失败';
+  const parts = [state];
+  const durationMs = turn.durationMs ?? durationBetween(turn.startedAt, turn.completedAt);
+  if (durationMs !== null) {
+    parts.push(`耗时 ${formatHistoryDuration(durationMs)}`);
+  }
+  if (stats.model) {
+    parts.push(stats.model);
+  }
+  if (stats.inputTokens !== undefined || stats.outputTokens !== undefined) {
+    parts.push(`↑ ${formatHistoryCount(stats.inputTokens)} ↓ ${formatHistoryCount(stats.outputTokens)}`);
+  }
+  if (stats.contextTokens !== undefined && stats.contextLength) {
+    const percent = Math.round((stats.contextTokens / stats.contextLength) * 100);
+    parts.push(
+      `上下文 ${formatHistoryCount(stats.contextTokens)}/${formatHistoryCount(stats.contextLength)} (${percent}%)`,
+    );
+  }
+  if (stats.apiCalls !== undefined) {
+    parts.push(`API ${stats.apiCalls}`);
+  }
+  const footer = parts.join(' · ');
+  return rateLimitText ? `${footer}\n窗口用量: ${rateLimitText}` : footer;
+}
+
+function extractHistoryStats(value: unknown): HistoryStats {
+  const stats: HistoryStats = {};
+  const visit = (candidate: unknown, depth: number): void => {
+    if (depth > 8) return;
+    const record = asRecord(candidate);
+    if (!record) {
+      if (Array.isArray(candidate)) candidate.forEach((entry) => visit(entry, depth + 1));
+      return;
+    }
+    stats.model ??= firstHistoryString(record, ['model', 'model_name', 'modelName', 'model_id', 'modelId']);
+    stats.inputTokens ??= firstHistoryNumber(record, [
+      'input_tokens', 'inputTokens', 'prompt_tokens', 'promptTokens', 'tokens_in', 'tokensIn',
+    ]);
+    stats.outputTokens ??= firstHistoryNumber(record, [
+      'output_tokens', 'outputTokens', 'completion_tokens', 'completionTokens', 'tokens_out', 'tokensOut',
+    ]);
+    stats.contextTokens ??= firstHistoryNumber(record, [
+      'context_tokens', 'contextTokens', 'context_used_tokens', 'contextUsedTokens', 'total_tokens', 'totalTokens',
+    ]);
+    stats.contextLength ??= firstHistoryNumber(record, [
+      'context_length', 'contextLength', 'context_window', 'contextWindow', 'modelContextWindow',
+      'max_context_tokens', 'maxContextTokens',
+    ]);
+    stats.apiCalls ??= firstHistoryNumber(record, [
+      'api_calls', 'apiCalls', 'api_requests', 'apiRequests', 'request_count', 'requestCount',
+    ]);
+    for (const [key, entry] of Object.entries(record)) {
+      if (key !== 'total' || depth === 0) visit(entry, depth + 1);
+    }
+  };
+  visit(value, 0);
+  return stats;
+}
+
+function firstHistoryString(record: Readonly<Record<string, unknown>>, keys: readonly string[]): string | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+function firstHistoryNumber(record: Readonly<Record<string, unknown>>, keys: readonly string[]): number | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string' && /^\d+$/.test(value)) return Number.parseInt(value, 10);
+  }
+  return undefined;
+}
+
+function durationBetween(startedAt: number | null, completedAt: number | null): number | null {
+  if (startedAt === null || completedAt === null) return null;
+  const multiplier = Math.max(startedAt, completedAt) < 100_000_000_000 ? 1_000 : 1;
+  return Math.max(0, (completedAt - startedAt) * multiplier);
+}
+
+function formatHistoryDuration(milliseconds: number): string {
+  const seconds = milliseconds / 1_000;
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}m${Math.floor(seconds % 60).toString().padStart(2, '0')}s`;
+}
+
+function formatHistoryCount(value?: number): string {
+  if (value === undefined) return '-';
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
+  return String(value);
+}
+
+function formatHistoryRateLimits(response: unknown): string | null {
+  const root = asRecord(response);
+  const byLimitId = asRecord(root?.rateLimitsByLimitId);
+  const limits = asRecord(asRecord(byLimitId?.codex) ?? root?.rateLimits);
+  if (!limits) return null;
+  const candidates = [asRecord(limits.primary), asRecord(limits.secondary)]
+    .filter((limit): limit is Record<string, unknown> => limit !== null);
+  const weekly = candidates.find((limit) => {
+    const duration = firstHistoryNumber(limit, ['windowDurationMins']);
+    return duration !== undefined && duration >= 6 * 24 * 60;
+  }) ?? asRecord(limits.secondary) ?? asRecord(limits.primary);
+  if (!weekly) return null;
+  const usedPercent = firstHistoryNumber(weekly, ['usedPercent']);
+  if (usedPercent === undefined) return null;
+  const resetsAt = firstHistoryNumber(weekly, ['resetsAt']);
+  const reset = resetsAt === undefined ? '' : ` (${formatHistoryResetTime(resetsAt)})`;
+  return `7d: ${usedPercent}%${reset}`;
+}
+
+function formatHistoryResetTime(timestamp: number): string {
+  const date = new Date(timestamp < 100_000_000_000 ? timestamp * 1_000 : timestamp);
+  return date.toLocaleString('zh-CN', {
+    month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
+  });
 }
 
 function taskStatusFromTurn(turn: Turn): TaskStatus {
@@ -313,11 +572,43 @@ function promptFromTurn(turn: Turn): string | null {
 }
 
 function commentaryFromTurn(turn: Turn): string {
-  return turn.items
-    .filter((item) => isAgentMessage(item) && item.phase === 'commentary')
-    .map(textFromItem)
-    .filter(Boolean)
-    .join('\n\n');
+  let commentary = '';
+  let commandCount = 0;
+  for (const item of turn.items) {
+    if ((isAgentMessage(item) && item.phase === 'commentary') || item.type === 'reasoning') {
+      commentary += textFromItem(item);
+      continue;
+    }
+    if (!isToolItem(item)) {
+      continue;
+    }
+    commandCount += 1;
+    if (commandCount === 2) {
+      commentary += '\n\n---\n📎 *后续执行指令已自动折叠*';
+      continue;
+    }
+    if (commandCount > 2) {
+      continue;
+    }
+    const command = truncateOneLine(typeof item.command === 'string' ? item.command : '', 120);
+    const exitStatus = item.exitCode === 0
+      ? '成功'
+      : typeof item.exitCode === 'number' ? `失败 (Exit Code: ${item.exitCode})` : '完成';
+    const output = historyCommandOutput(item.aggregatedOutput);
+    commentary += `${commentary ? '\n\n---\n' : ''}🛠️ 运行命令: \`${command}\`\n`
+      + `📌 命令执行结束: ${exitStatus}${output}`;
+  }
+  return commentary;
+}
+
+function historyCommandOutput(value: string | null | undefined): string {
+  if (!value?.trim()) return '';
+  const output = value.trim();
+  const limit = 800;
+  const display = output.length <= limit
+    ? output
+    : `${output.slice(0, limit / 2)}\n... (truncated) ...\n${output.slice(-(limit / 2))}`;
+  return `\n\`\`\`text\n${display}\n\`\`\``;
 }
 
 function finalAnswerFromTurn(turn: Turn): string {
@@ -388,14 +679,36 @@ function firstCommand(text: string): string {
   return text.trim().split(/\s+/, 1)[0] ?? '';
 }
 
-function pickerCard(
+async function pickerCard(
   entries: readonly { readonly choice: ThreadChoice; readonly token: string }[],
   table: boolean,
-): CardKitJson {
-  const options = entries.map((entry) => ({
+  currentBoundThreadId?: string,
+  workspaceState: BindingWorkspaceState = emptyWorkspaceState(),
+): Promise<CardKitJson> {
+  const filteredEntries = entries.filter(({ choice }) => {
+    if (currentBoundThreadId && choice.id === currentBoundThreadId) return true;
+    if (workspaceState.projectlessThreadIds.includes(choice.id)) return true;
+    return Boolean(choice.cwd && workspaceState.savedWorkspaces.some((workspace) => (
+      pathWithinWorkspace(choice.cwd as string, workspace)
+    )));
+  });
+  const sortedEntries = [...filteredEntries].sort((left, right) => {
+    const leftGlobal = workspaceState.projectlessThreadIds.includes(left.choice.id);
+    const rightGlobal = workspaceState.projectlessThreadIds.includes(right.choice.id);
+    if (leftGlobal !== rightGlobal) return leftGlobal ? -1 : 1;
+    if (leftGlobal) {
+      return left.choice.title.localeCompare(right.choice.title, 'zh-CN', { numeric: true });
+    }
+    const projectOrder = projectName(left.choice, workspaceState)
+      .localeCompare(projectName(right.choice, workspaceState), 'zh-CN', { numeric: true });
+    return projectOrder !== 0
+      ? projectOrder
+      : left.choice.title.localeCompare(right.choice.title, 'zh-CN', { numeric: true });
+  });
+  const options = sortedEntries.map((entry, index) => ({
     text: {
       tag: 'plain_text',
-      content: pickerOptionLabel(entry.choice),
+      content: table ? tablePickerLabel(entry.choice, index) : pickerOptionLabel(entry.choice, workspaceState),
     },
     value: entry.token,
   }));
@@ -404,7 +717,7 @@ function pickerCard(
     text: {
       tag: 'lark_md',
       content: table
-        ? '请查看下方的活跃会话列表，并在底部下拉菜单中选择对应序号以绑定至当前聊天。'
+        ? '请查看下方的活跃会话列表，并在底部的下拉菜单中选择对应序号以绑定至当前聊天。'
         : '请从下方下拉菜单中选择一个 Codex 活跃会话绑定至当前聊天。选项已按本地项目分组：',
     },
   }];
@@ -418,9 +731,11 @@ function pickerCard(
         { name: 'col_name', display_name: '会话名称', data_type: 'text' },
         { name: 'col_project', display_name: '所属项目', data_type: 'text' },
       ],
-      rows: entries.map((entry, index) => ({
+      rows: sortedEntries.map((entry, index) => ({
         col_name: `[${index + 1}] ${entry.choice.title}`,
-        col_project: entry.choice.cwd?.split(/[\\/]/).filter(Boolean).at(-1) ?? '🌐 全局会话',
+        col_project: workspaceState.projectlessThreadIds.includes(entry.choice.id)
+          ? '🌐 全局会话'
+          : projectName(entry.choice, workspaceState),
       })),
     });
   }
@@ -439,6 +754,33 @@ function pickerCard(
       title: { tag: 'plain_text', content: table ? '📂 Codex 绑定会话 (Table 视图)' : '📂 Codex 绑定会话' },
     },
     body: { elements },
+  };
+}
+
+function disabledPickerCard(card: CardKitJson, selectedToken: string): CardKitJson {
+  const body = asRecord(card.body);
+  const elements = Array.isArray(body?.elements) ? body.elements : [];
+  return {
+    ...card,
+    body: {
+      ...body,
+      elements: elements.map((candidate) => {
+        const element = asRecord(candidate);
+        if (element?.tag !== 'select_static') {
+          return candidate;
+        }
+        const options = Array.isArray(element.options) ? element.options : [];
+        const selectedOption = options.find((option) => asRecord(option)?.value === selectedToken);
+        const selectedText = asRecord(asRecord(selectedOption)?.text)?.content;
+        return {
+          ...element,
+          element_id: 'bind_select_locked',
+          disabled: true,
+          initial_option: typeof selectedText === 'string' ? selectedText : '',
+          options: selectedOption ? [selectedOption] : options,
+        };
+      }),
+    },
   };
 }
 
@@ -513,11 +855,68 @@ function parseChoices(value: unknown): readonly ThreadChoice[] {
   });
 }
 
-function pickerOptionLabel(choice: ThreadChoice): string {
-  const name = sanitizeCardPlainText(choice.title, { maxLength: 80 });
-  const workspace = choice.cwd?.split(/[\\/]/).filter(Boolean).at(-1);
-  const label = workspace ? `💬 ${name} (📁 ${workspace})` : `💬 ${name}`;
+function pickerOptionLabel(choice: ThreadChoice, state: BindingWorkspaceState): string {
+  const global = state.projectlessThreadIds.includes(choice.id);
+  const label = global
+    ? `🌐 ${choice.title} (全局)`
+    : projectName(choice, state)
+      ? `💬 ${choice.title} (📁 ${projectName(choice, state)})`
+      : `💬 ${choice.title}`;
   return label.length > 100 ? `${label.slice(0, 97)}...` : label;
+}
+
+function tablePickerLabel(choice: ThreadChoice, index: number): string {
+  const label = `#${index + 1} ➜ ${choice.title}`;
+  return label.length > 100 ? `${label.slice(0, 97)}...` : label;
+}
+
+export interface BindingWorkspaceState {
+  readonly savedWorkspaces: readonly string[];
+  readonly workspaceLabels: Readonly<Record<string, string>>;
+  readonly projectlessThreadIds: readonly string[];
+}
+
+async function readWorkspaceState(): Promise<BindingWorkspaceState> {
+  const statePath = join(homedir(), '.codex', '.codex-global-state.json');
+  try {
+    if (!(await stat(statePath)).isFile()) return emptyWorkspaceState();
+    const state = asRecord(JSON.parse(await readFile(statePath, 'utf8')));
+    return {
+      savedWorkspaces: stringArray(state?.['electron-saved-workspace-roots'] ?? state?.['project-order']),
+      workspaceLabels: stringRecord(state?.['electron-workspace-root-labels']),
+      projectlessThreadIds: stringArray(state?.['projectless-thread-ids']),
+    };
+  } catch {
+    return emptyWorkspaceState();
+  }
+}
+
+function emptyWorkspaceState(): BindingWorkspaceState {
+  return { savedWorkspaces: [], workspaceLabels: {}, projectlessThreadIds: [] };
+}
+
+function projectName(choice: ThreadChoice, state: BindingWorkspaceState): string {
+  if (!choice.cwd) return '';
+  const workspace = state.savedWorkspaces.find((candidate) => pathWithinWorkspace(choice.cwd as string, candidate));
+  return workspace ? state.workspaceLabels[workspace] ?? basename(workspace) : basename(choice.cwd);
+}
+
+function pathWithinWorkspace(cwd: string, workspace: string): boolean {
+  const normalizedCwd = normalize(cwd).toLowerCase();
+  const normalizedWorkspace = normalize(workspace).toLowerCase();
+  return normalizedCwd === normalizedWorkspace || normalizedCwd.startsWith(`${normalizedWorkspace}${sep}`);
+}
+
+function stringArray(value: unknown): readonly string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+}
+
+function stringRecord(value: unknown): Readonly<Record<string, string>> {
+  const record = asRecord(value);
+  if (!record) return {};
+  return Object.fromEntries(Object.entries(record).filter((entry): entry is [string, string] => (
+    typeof entry[1] === 'string'
+  )));
 }
 
 function normalizeUpdatedAt(value: unknown): number | null {

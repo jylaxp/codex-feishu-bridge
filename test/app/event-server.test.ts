@@ -30,6 +30,14 @@ const config: BridgeConfig = {
   enableAutoFileUpload: false,
 };
 
+function emptyScopeConfig(): BridgeConfig {
+  return {
+    ...config,
+    larkTenantKey: '',
+    allowedChats: [],
+  };
+}
+
 test('normalizes a scoped card action without exposing arbitrary callback fields', () => {
   const action = normalizeCardAction({
     tenant_key: 'tenant-test',
@@ -126,6 +134,22 @@ test('reads the current Feishu select_static string option callback', () => {
   assert.equal(action?.token, 'selected-binding-token');
 });
 
+test('normalizes model and skill dropdown selections', () => {
+  for (const kind of ['model', 'skill'] as const) {
+    const action = normalizeCardAction({
+      tenant_key: 'tenant-test',
+      context: { open_chat_id: 'chat-test', open_message_id: 'message-card' },
+      operator: { open_id: 'user-test' },
+      action: {
+        value: { action: kind },
+        option: 'opaqueSelection123',
+      },
+    }, config);
+    assert.equal(action?.action, kind);
+    assert.equal(action?.token, 'opaqueSelection123');
+  }
+});
+
 test('rejects card actions from another chat or with malformed tokens', () => {
   const baseEvent = {
     tenant_key: 'tenant-test',
@@ -191,4 +215,231 @@ test('propagates message handler failures so the WebSocket delivery is retryable
   };
   await assert.rejects(handler(event), /durable inbox failed/);
   assert.equal(reportedErrors, 1);
+});
+
+test('auto-binds an empty scope from the first authorized private chat and accepts that message', async () => {
+  class FakeWebSocket implements LarkWebSocketClient {
+    public dispatcher: { readonly handles: Map<string, Function> } | undefined;
+
+    public async start(params: Parameters<LarkWebSocketClient['start']>[0]): Promise<void> {
+      this.dispatcher = params.eventDispatcher;
+    }
+
+    public close(): void {}
+  }
+
+  const websocket = new FakeWebSocket();
+  const savedScopes: Array<{ readonly tenantKey: string; readonly allowedChats: string }> = [];
+  const acceptedMessages: string[] = [];
+  const server = new LarkEventServer(websocket, emptyScopeConfig(), {
+    onMessage: async (message) => {
+      acceptedMessages.push(`${message.tenantKey}/${message.chatId}/${message.text}`);
+    },
+    onCardAction: async () => ({}),
+  }, {
+    save: (scope) => {
+      savedScopes.push(scope);
+    },
+  });
+  await server.start();
+  const handler = websocket.dispatcher?.handles.get('im.message.receive_v1');
+  assert.ok(handler);
+
+  await handler({
+    app_id: 'app-test',
+    event_id: 'event-bootstrap',
+    tenant_key: 'tenant-test',
+    sender: {
+      sender_type: 'user',
+      tenant_key: 'tenant-test',
+      sender_id: { open_id: 'user-test' },
+    },
+    message: {
+      message_id: 'message-bootstrap',
+      chat_id: 'chat-test',
+      chat_type: 'p2p',
+      create_time: '1783960000000',
+      message_type: 'text',
+      content: JSON.stringify({ text: 'hello' }),
+    },
+  } satisfies RawMessageEvent);
+
+  assert.deepEqual(savedScopes, [{
+    tenantKey: 'tenant-test',
+    allowedChats: 'chat-test',
+    authorizedUsers: 'user-test',
+    allowedApprovers: 'approver-test',
+  }]);
+  assert.deepEqual(acceptedMessages, ['tenant-test/chat-test/hello']);
+});
+
+test('auto-binds the first private-chat user as owner when no owner is configured', async () => {
+  class FakeWebSocket implements LarkWebSocketClient {
+    public dispatcher: { readonly handles: Map<string, Function> } | undefined;
+
+    public async start(params: Parameters<LarkWebSocketClient['start']>[0]): Promise<void> {
+      this.dispatcher = params.eventDispatcher;
+    }
+
+    public close(): void {}
+  }
+
+  const websocket = new FakeWebSocket();
+  const savedScopes: Array<{
+    readonly tenantKey: string;
+    readonly allowedChats: string;
+    readonly authorizedUsers?: string;
+    readonly allowedApprovers?: string;
+  }> = [];
+  const acceptedUsers: string[] = [];
+  const server = new LarkEventServer(websocket, {
+    ...config,
+    larkTenantKey: '',
+    allowedChats: [],
+    authorizedUsers: [],
+    allowedApprovers: [],
+  }, {
+    onMessage: async (message) => {
+      acceptedUsers.push(message.senderOpenId);
+    },
+    onCardAction: async () => ({}),
+  }, {
+    save: (scope) => {
+      savedScopes.push(scope);
+    },
+  });
+  await server.start();
+  const handler = websocket.dispatcher?.handles.get('im.message.receive_v1');
+  assert.ok(handler);
+
+  await handler({
+    app_id: 'app-test',
+    event_id: 'event-owner',
+    tenant_key: 'tenant-test',
+    sender: {
+      sender_type: 'user',
+      tenant_key: 'tenant-test',
+      sender_id: { open_id: 'first-user' },
+    },
+    message: {
+      message_id: 'message-owner',
+      chat_id: 'chat-test',
+      chat_type: 'p2p',
+      create_time: '1783960000000',
+      message_type: 'text',
+      content: JSON.stringify({ text: 'hello' }),
+    },
+  } satisfies RawMessageEvent);
+
+  assert.deepEqual(savedScopes, [{
+    tenantKey: 'tenant-test',
+    allowedChats: 'chat-test',
+    authorizedUsers: 'first-user',
+    allowedApprovers: 'first-user',
+  }]);
+  assert.deepEqual(acceptedUsers, ['first-user']);
+});
+
+test('fills missing owner fields from the first private message even when tenant and chat are configured', async () => {
+  class FakeWebSocket implements LarkWebSocketClient {
+    public dispatcher: { readonly handles: Map<string, Function> } | undefined;
+
+    public async start(params: Parameters<LarkWebSocketClient['start']>[0]): Promise<void> {
+      this.dispatcher = params.eventDispatcher;
+    }
+
+    public close(): void {}
+  }
+
+  const websocket = new FakeWebSocket();
+  const savedUsers: string[] = [];
+  const server = new LarkEventServer(websocket, {
+    ...config,
+    authorizedUsers: [],
+    allowedApprovers: [],
+  }, {
+    onMessage: async (message) => {
+      savedUsers.push(message.senderOpenId);
+    },
+    onCardAction: async () => ({}),
+  }, {
+    save: (scope) => {
+      savedUsers.push(`${scope.authorizedUsers}/${scope.allowedApprovers}`);
+    },
+  });
+  await server.start();
+  const handler = websocket.dispatcher?.handles.get('im.message.receive_v1');
+  assert.ok(handler);
+  await handler({
+    app_id: 'app-test',
+    event_id: 'event-owner-partial',
+    tenant_key: 'tenant-test',
+    sender: {
+      sender_type: 'user',
+      tenant_key: 'tenant-test',
+      sender_id: { open_id: 'first-user' },
+    },
+    message: {
+      message_id: 'message-owner-partial',
+      chat_id: 'chat-test',
+      chat_type: 'p2p',
+      create_time: '1783960000000',
+      message_type: 'text',
+      content: JSON.stringify({ text: 'hello' }),
+    },
+  } satisfies RawMessageEvent);
+
+  assert.deepEqual(savedUsers, ['first-user/first-user', 'first-user']);
+});
+
+test('does not auto-bind an empty scope from a group chat', async () => {
+  class FakeWebSocket implements LarkWebSocketClient {
+    public dispatcher: { readonly handles: Map<string, Function> } | undefined;
+
+    public async start(params: Parameters<LarkWebSocketClient['start']>[0]): Promise<void> {
+      this.dispatcher = params.eventDispatcher;
+    }
+
+    public close(): void {}
+  }
+
+  const websocket = new FakeWebSocket();
+  const savedScopes: Array<{ readonly tenantKey: string; readonly allowedChats: string }> = [];
+  const rejectedReasons: string[] = [];
+  const server = new LarkEventServer(websocket, emptyScopeConfig(), {
+    onMessage: async () => undefined,
+    onCardAction: async () => ({}),
+    onRejectedEvent: (reason) => {
+      rejectedReasons.push(reason);
+    },
+  }, {
+    save: (scope) => {
+      savedScopes.push(scope);
+    },
+  });
+  await server.start();
+  const handler = websocket.dispatcher?.handles.get('im.message.receive_v1');
+  assert.ok(handler);
+
+  await handler({
+    app_id: 'app-test',
+    event_id: 'event-group',
+    tenant_key: 'tenant-test',
+    sender: {
+      sender_type: 'user',
+      tenant_key: 'tenant-test',
+      sender_id: { open_id: 'user-test' },
+    },
+    message: {
+      message_id: 'message-group',
+      chat_id: 'chat-group',
+      chat_type: 'group',
+      create_time: '1783960000000',
+      message_type: 'text',
+      content: JSON.stringify({ text: 'hello group' }),
+    },
+  } satisfies RawMessageEvent);
+
+  assert.deepEqual(savedScopes, []);
+  assert.deepEqual(rejectedReasons, ['TENANT_MISMATCH']);
 });

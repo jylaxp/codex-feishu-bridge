@@ -210,7 +210,13 @@ function diffThreadState(
   const notifications: ServerNotification[] = [];
   const previousTurns = turnsById(previousState);
   const currentTurns = turnsById(currentState);
-  const usageTurn = latestTurn(currentTurns);
+  const currentEntries = [...currentTurns.entries()];
+  const entriesToDiff = previousState
+    ? currentEntries
+    : currentEntries.filter(([, turn]) => !isTerminalTurn(turn)).slice(-1);
+  const usageTurn = previousState
+    ? latestTurn(currentTurns)
+    : entriesToDiff.at(-1)?.[1];
   if (usageTurn && usageChanged(previousState, currentState)) {
     const tokenUsage = asRecord(currentState.latestTokenUsageInfo);
     if (tokenUsage) {
@@ -225,8 +231,6 @@ function diffThreadState(
       });
     }
   }
-  const currentEntries = [...currentTurns.entries()];
-  const entriesToDiff = previousState ? currentEntries : currentEntries.slice(-1);
   for (const [turnId, currentTurn] of entriesToDiff) {
     const previousTurn = previousTurns.get(turnId);
     if (!previousTurn) {

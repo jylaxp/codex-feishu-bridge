@@ -27,6 +27,129 @@ test('help documents the private configuration file and process overrides', asyn
   assert.match(output, /environment values override/);
   assert.doesNotMatch(output, /--env/);
   assert.match(output, /config reset/);
+  assert.match(output, /setup/);
+  assert.match(output, /rebind/);
+  assert.match(output, /\binit\b/);
+  assert.match(output, /\bstart\b/);
+  assert.match(output, /\brestart\b/);
+  assert.match(output, /\bstop\b/);
+  assert.match(output, /\bstatus\b/);
+  assert.match(output, /\bupdate\b/);
+});
+
+test('init creates the editable configuration skeleton without QR registration', async () => {
+  const calls: unknown[] = [];
+  await runCli(['init', '--config-home', '/tmp/bridge-init-cli'], {}, {
+    initializeSetupFiles: (configHome, env) => {
+      calls.push({ configHome, env });
+      return {
+        configHome: configHome ?? '',
+        envPath: '/tmp/bridge-init-cli/.env',
+        appId: '',
+        qrRegistered: false,
+        missingRequiredValues: ['LARK_APP_ID', 'LARK_APP_SECRET'],
+      };
+    },
+  });
+
+  assert.deepEqual(calls, [{
+    configHome: '/tmp/bridge-init-cli',
+    env: { BRIDGE_CONFIG_HOME: '/tmp/bridge-init-cli' },
+  }]);
+});
+
+test('setup delegates to the setup runner without loading runtime configuration', async () => {
+  const calls: unknown[] = [];
+  await runCli(['setup', '--config-home', '/tmp/bridge-setup-cli'], {}, {
+    runSetup: async (options, env) => {
+      calls.push({ options, env });
+      return {
+        configHome: options.configHome ?? '',
+        envPath: '/tmp/bridge-setup-cli/.env',
+        appId: 'cli_1111222233334444',
+        qrRegistered: true,
+        missingRequiredValues: [],
+      };
+    },
+  });
+
+  assert.deepEqual(calls, [{
+    options: {
+      configHome: '/tmp/bridge-setup-cli',
+      rebind: false,
+    },
+    env: { BRIDGE_CONFIG_HOME: '/tmp/bridge-setup-cli' },
+  }]);
+});
+
+test('start initializes credentials before starting the detached background service', async () => {
+  const calls: string[] = [];
+  await runCli(['start', '--config-home', '/tmp/bridge-start-cli'], {}, {
+    runSetup: async (options, env) => {
+      calls.push(`setup:${options.configHome}:${env.BRIDGE_CONFIG_HOME}`);
+      return {
+        configHome: options.configHome ?? '',
+        envPath: '/tmp/bridge-start-cli/.env',
+        appId: 'cli_1111222233334444',
+        qrRegistered: false,
+        missingRequiredValues: [],
+      };
+    },
+    runBackgroundCommand: async (command, options, env) => {
+      calls.push(`background:${command}:${options.configHome}:${env.BRIDGE_CONFIG_HOME}`);
+      return {
+        command,
+        running: true,
+        pid: 123,
+        stdoutLog: '/tmp/stdout.log',
+        stderrLog: '/tmp/stderr.log',
+      };
+    },
+  });
+
+  assert.deepEqual(calls, [
+    'setup:/tmp/bridge-start-cli:/tmp/bridge-start-cli',
+    'background:start:/tmp/bridge-start-cli:/tmp/bridge-start-cli',
+  ]);
+});
+
+test('status and forced update route to the background lifecycle without QR setup', async () => {
+  const calls: string[] = [];
+  const background = async (
+    command: 'start' | 'restart' | 'stop' | 'status' | 'update',
+    options: { readonly configHome?: string; readonly forceUpdate?: boolean },
+  ) => {
+    calls.push(`${command}:${options.forceUpdate === true}`);
+    return {
+      command,
+      running: false,
+      pid: null,
+      stdoutLog: '/tmp/stdout.log',
+      stderrLog: '/tmp/stderr.log',
+    };
+  };
+  await runCli(['status'], {}, { runBackgroundCommand: background });
+  await runCli(['update', '--force'], {}, { runBackgroundCommand: background });
+
+  assert.deepEqual(calls, ['status:false', 'update:true']);
+});
+
+test('rebind forces the setup runner to replace Feishu app credentials', async () => {
+  let rebind: boolean | undefined;
+  await runCli(['rebind', '--config-home', '/tmp/bridge-rebind-cli'], {}, {
+    runSetup: async (options) => {
+      rebind = options.rebind;
+      return {
+        configHome: options.configHome ?? '',
+        envPath: '/tmp/bridge-rebind-cli/.env',
+        appId: 'cli_1111222233334444',
+        qrRegistered: true,
+        missingRequiredValues: [],
+      };
+    },
+  });
+
+  assert.equal(rebind, true);
 });
 
 test('config reset defaults to a read-only dry run and requires explicit confirmation', async () => {

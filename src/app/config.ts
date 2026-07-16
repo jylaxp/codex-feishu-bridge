@@ -36,6 +36,17 @@ function requireValue(env: NodeJS.ProcessEnv, key: string): string {
   return value;
 }
 
+function optionalValue(env: NodeJS.ProcessEnv, key: string): string {
+  const value = env[key]?.trim();
+  if (!value || /^YOUR_/i.test(value)) {
+    return '';
+  }
+  if (value.includes('\0')) {
+    throw new ConfigurationError(`${key} contains an invalid null byte`);
+  }
+  return value;
+}
+
 function requireAbsolutePath(env: NodeJS.ProcessEnv, key: string): string {
   const value = requireValue(env, key);
   if (!path.isAbsolute(value)) {
@@ -95,6 +106,18 @@ function parseRequiredList(env: NodeJS.ProcessEnv, key: string): readonly string
     throw new ConfigurationError(`${key} must contain at least one value`);
   }
   return Object.freeze(uniqueValues);
+}
+
+function parseOptionalList(env: NodeJS.ProcessEnv, key: string): readonly string[] {
+  const raw = optionalValue(env, key);
+  if (!raw) {
+    return Object.freeze([]);
+  }
+  const values = raw
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return Object.freeze([...new Set(values)]);
 }
 
 function parseRequiredAbsolutePathList(env: NodeJS.ProcessEnv, key: string): readonly string[] {
@@ -176,10 +199,10 @@ export function parseEnvironment(env: NodeJS.ProcessEnv): BridgeConfig {
   const config: BridgeConfig = {
     larkAppId: requireLarkAppId(env),
     larkAppSecret: requireValue(env, 'LARK_APP_SECRET'),
-    larkTenantKey: requireValue(env, 'LARK_TENANT_KEY'),
-    allowedChats: parseRequiredList(env, 'ALLOWED_CHATS'),
-    authorizedUsers: parseRequiredList(env, 'AUTHORIZED_USERS'),
-    allowedApprovers: parseRequiredList(env, 'ALLOWED_APPROVERS'),
+    larkTenantKey: optionalValue(env, 'LARK_TENANT_KEY'),
+    allowedChats: parseOptionalList(env, 'ALLOWED_CHATS'),
+    authorizedUsers: parseOptionalList(env, 'AUTHORIZED_USERS'),
+    allowedApprovers: parseOptionalList(env, 'ALLOWED_APPROVERS'),
     allowedShellCommands: parseAllowedShellCommands(env),
     ...appServer,
     codexBin: requireAbsolutePath(env, 'CODEX_BIN'),

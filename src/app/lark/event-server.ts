@@ -6,11 +6,12 @@ import {
   normalizeInboundMessage,
   RawMessageEvent,
 } from './intake';
+import type { LarkScope } from './scope-config-store';
 
 const MAX_OPAQUE_ACTION_TOKEN_LENGTH = 256;
 const MAX_SIGNED_BINDING_TOKEN_LENGTH = 1024;
 
-export type CardActionKind = 'approval' | 'binding' | 'cancel' | 'open';
+export type CardActionKind = 'approval' | 'binding' | 'cancel' | 'open' | 'model' | 'skill';
 
 type CardActionOption = string | { readonly value?: unknown };
 
@@ -45,6 +46,11 @@ export interface LarkEventHandlers {
   readonly onCardAction: (action: InboundCardAction) => Promise<unknown>;
   readonly onRejectedEvent?: (reason: string) => void;
   readonly onHandlerError?: (kind: 'message' | 'card_action', error: Error) => void;
+  readonly onScopeBound?: (config: BridgeConfig) => void;
+}
+
+export interface LarkScopeAutoBindStore {
+  save(scope: LarkScope): void;
 }
 
 export interface LarkWebSocketClient {
@@ -94,7 +100,7 @@ export function normalizeCardAction(
 
   const action = nonBlank(value.action);
   const selectedOption = selectedOptionValue(event.action?.option);
-  const token = action === 'binding'
+  const token = action === 'binding' || action === 'model' || action === 'skill'
     ? selectedOption ?? nonBlank(value.token)
     : nonBlank(value.token);
   const tokenPattern = action === 'binding' || action === 'open'
@@ -104,7 +110,14 @@ export function normalizeCardAction(
     ? MAX_SIGNED_BINDING_TOKEN_LENGTH
     : MAX_OPAQUE_ACTION_TOKEN_LENGTH;
   if (
-    (action !== 'approval' && action !== 'binding' && action !== 'cancel' && action !== 'open')
+    (
+      action !== 'approval'
+      && action !== 'binding'
+      && action !== 'cancel'
+      && action !== 'open'
+      && action !== 'model'
+      && action !== 'skill'
+    )
     || !token
     || token.length > maxTokenLength
     || !tokenPattern.test(token)
@@ -128,9 +141,14 @@ export class LarkEventServer {
 
   public constructor(
     private readonly websocket: LarkWebSocketClient,
-    private readonly config: BridgeConfig,
+    config: BridgeConfig,
     private readonly handlers: LarkEventHandlers,
-  ) {}
+    private readonly scopeAutoBindStore?: LarkScopeAutoBindStore,
+  ) {
+    this.activeConfig = config;
+  }
+
+  private activeConfig: BridgeConfig;
 
   public async start(): Promise<void> {
     if (this.dispatcher) {
@@ -139,7 +157,15 @@ export class LarkEventServer {
 
     const dispatcher = new Lark.EventDispatcher({}).register({
       'im.message.receive_v1': async (event: RawMessageEvent) => {
-        const result = normalizeInboundMessage(event, this.config);
+        let scopedConfig: BridgeConfig;
+        try {
+          scopedConfig = this.resolveMessageScope(event);
+        } catch (error) {
+          const handlerError = toError(error);
+          this.handlers.onHandlerError?.('message', handlerError);
+          throw handlerError;
+        }
+        const result = normalizeInboundMessage(event, scopedConfig);
         if (!result.accepted) {
           this.handlers.onRejectedEvent?.(result.reason);
           return;
@@ -153,7 +179,7 @@ export class LarkEventServer {
         }
       },
       'card.action.trigger': async (event: RawCardActionEvent) => {
-        const action = normalizeCardAction(event, this.config);
+        const action = normalizeCardAction(event, this.activeConfig);
         if (!action) {
           this.handlers.onRejectedEvent?.('CARD_ACTION_INVALID');
           return toast('操作无效或已失效', 'warning');
@@ -180,6 +206,67 @@ export class LarkEventServer {
     this.dispatcher = undefined;
     this.websocket.close({ force: false });
   }
+
+  private resolveMessageScope(event: RawMessageEvent): BridgeConfig {
+    if (!scopeNeedsBootstrap(this.activeConfig)) {
+      return this.activeConfig;
+    }
+
+    const tenantKey = nonBlank(event.tenant_key);
+    const senderTenantKey = nonBlank(event.sender?.tenant_key);
+    const chatId = nonBlank(event.message?.chat_id);
+    const senderOpenId = nonBlank(event.sender?.sender_id?.open_id);
+    if (
+      event.app_id !== this.activeConfig.larkAppId
+      || event.sender?.sender_type !== 'user'
+      || !tenantKey
+      || !chatId
+      || event.message?.chat_type !== 'p2p'
+      || !senderOpenId
+      || (
+        this.activeConfig.authorizedUsers.length > 0
+        && !this.activeConfig.authorizedUsers.includes(senderOpenId)
+      )
+      || (senderTenantKey !== null && senderTenantKey !== tenantKey)
+      || (this.activeConfig.larkTenantKey && tenantKey !== this.activeConfig.larkTenantKey)
+      || (
+        this.activeConfig.allowedChats.length > 0
+        && !this.activeConfig.allowedChats.includes(chatId)
+      )
+    ) {
+      return this.activeConfig;
+    }
+
+    const nextConfig: BridgeConfig = Object.freeze({
+      ...this.activeConfig,
+      larkTenantKey: this.activeConfig.larkTenantKey || tenantKey,
+      allowedChats: this.activeConfig.allowedChats.length > 0
+        ? this.activeConfig.allowedChats
+        : Object.freeze([chatId]),
+      authorizedUsers: this.activeConfig.authorizedUsers.length > 0
+        ? this.activeConfig.authorizedUsers
+        : Object.freeze([senderOpenId]),
+      allowedApprovers: this.activeConfig.allowedApprovers.length > 0
+        ? this.activeConfig.allowedApprovers
+        : Object.freeze([senderOpenId]),
+    });
+    this.scopeAutoBindStore?.save({
+      tenantKey: nextConfig.larkTenantKey,
+      allowedChats: nextConfig.allowedChats.join(','),
+      authorizedUsers: nextConfig.authorizedUsers.join(','),
+      allowedApprovers: nextConfig.allowedApprovers.join(','),
+    });
+    this.activeConfig = nextConfig;
+    this.handlers.onScopeBound?.(nextConfig);
+    return this.activeConfig;
+  }
+}
+
+function scopeNeedsBootstrap(config: BridgeConfig): boolean {
+  return !config.larkTenantKey
+    || config.allowedChats.length === 0
+    || config.authorizedUsers.length === 0
+    || config.allowedApprovers.length === 0;
 }
 
 /** Card-action callback response understood by Feishu clients. */

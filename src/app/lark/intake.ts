@@ -15,6 +15,7 @@ export interface RawMessageEvent {
     readonly root_id?: string;
     readonly create_time?: string;
     readonly chat_id?: string;
+    readonly chat_type?: string;
     readonly message_type?: string;
     readonly content?: string;
     readonly mentions?: ReadonlyArray<{ readonly key?: string }>;
@@ -44,6 +45,7 @@ export type IntakeRejectionReason =
   | 'EVENT_ID_MISSING'
   | 'MESSAGE_ID_MISSING'
   | 'MESSAGE_TIME_INVALID'
+  | 'MESSAGE_TOO_OLD'
   | 'TEXT_INVALID'
   | 'TEXT_TOO_LONG';
 
@@ -103,6 +105,7 @@ function digestMessage(eventId: string, messageId: string, text: string): string
 export function normalizeInboundMessage(
   event: RawMessageEvent,
   config: BridgeConfig,
+  now: () => number = Date.now,
 ): IntakeResult {
   if (event.app_id !== config.larkAppId) {
     return { accepted: false, reason: 'APP_MISMATCH' };
@@ -148,6 +151,9 @@ export function normalizeInboundMessage(
   const createdAtMs = parseCreatedAt(event.message.create_time);
   if (createdAtMs === null) {
     return { accepted: false, reason: 'MESSAGE_TIME_INVALID' };
+  }
+  if (now() - createdAtMs > 30_000) {
+    return { accepted: false, reason: 'MESSAGE_TOO_OLD' };
   }
 
   const mentionKeys = (event.message.mentions ?? [])

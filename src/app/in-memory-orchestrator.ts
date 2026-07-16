@@ -16,8 +16,9 @@ import type {
   Turn,
   TurnStartParams,
   TurnSteerParams,
+  UserInput,
 } from './codex/protocol';
-import type { BridgeConfig, TaskStatus } from './domain';
+import type { BridgeConfig, CardToolGroup, TaskStatus } from './domain';
 import type { InboundTextMessage } from './lark/intake';
 
 export interface InMemoryCardClient {
@@ -50,6 +51,8 @@ export interface InMemoryOrchestratorOptions {
   readonly cardRetryDelayMs?: number;
   /** Resolves one unambiguous Feishu chat for a Desktop-originated turn. */
   readonly resolveBindingByThreadId?: (threadId: string) => ChatThreadBinding | undefined;
+  /** Reads the App Server skill catalog for the original inline @skill interaction. */
+  readonly readSkills?: (cwd: string) => Promise<unknown>;
 }
 
 export type InMemoryInboundOutcome = 'started' | 'queued' | 'steered' | 'duplicate';
@@ -58,6 +61,7 @@ export interface RuntimeApprovalContext {
   readonly taskId: string;
   readonly chatId: string;
   readonly rootMessageId: string;
+  readonly workspaceId?: string;
 }
 
 interface RuntimeTask {
@@ -91,11 +95,17 @@ interface RuntimeTask {
   terminalCleanupTimer: NodeJS.Timeout | undefined;
   updateTimer: NodeJS.Timeout | undefined;
   outputFilesUploaded: boolean;
+  nextToolGroupId: number;
+  lastActivityKind: 'none' | 'text' | 'tool';
 }
 
 interface ToolExecution {
   readonly itemId: string;
+  readonly groupId: number;
   readonly command: string;
+  readonly category: ActionCategory;
+  readonly name: string;
+  readonly actionCount: number;
   completed: boolean;
   failed: boolean;
 }
@@ -124,6 +134,7 @@ export class InMemoryOrchestrator {
   private readonly resolveBindingByThreadId:
     | ((threadId: string) => ChatThreadBinding | undefined)
     | undefined;
+  private readonly readSkills: ((cwd: string) => Promise<unknown>) | undefined;
   private readonly tasksById = new Map<string, RuntimeTask>();
   private readonly activeByThreadId = new Map<string, RuntimeTask>();
   private readonly terminalByTurnKey = new Map<string, RuntimeTask>();
@@ -149,6 +160,7 @@ export class InMemoryOrchestrator {
     this.uploadOutputFiles = options.uploadOutputFiles;
     this.navigation = options.navigation;
     this.resolveBindingByThreadId = options.resolveBindingByThreadId;
+    this.readSkills = options.readSkills;
     this.navigationRetryDelayMs = positiveDelay(
       options.navigationRetryDelayMs ?? DEFAULT_NAVIGATION_RETRY_DELAY_MS,
       'navigationRetryDelayMs',
@@ -172,6 +184,7 @@ export class InMemoryOrchestrator {
     if (this.processedMessageKeys.has(dedupeKey)) {
       return 'duplicate';
     }
+    ({ message, binding } = await this.resolveInlineSkill(message, binding));
     const active = this.activeByThreadId.get(binding.threadId);
     let outcome: InMemoryInboundOutcome;
     if (
@@ -180,7 +193,7 @@ export class InMemoryOrchestrator {
       && active.message.rootMessageId === message.rootMessageId
     ) {
       try {
-        await this.desktop.steerTurnTracked(buildSteer(active, message), () => undefined);
+        await this.desktop.steerTurnTracked(buildSteer(active, message, binding), () => undefined);
       } catch (error) {
         active.tools = deliveryFailureText(error, '补充消息');
         this.requestCardUpdate(active, true);
@@ -193,6 +206,32 @@ export class InMemoryOrchestrator {
     }
     this.processedMessageKeys.set(dedupeKey, this.now());
     return outcome;
+  }
+
+  private async resolveInlineSkill(
+    message: InboundTextMessage,
+    binding: ChatThreadBinding,
+  ): Promise<{ readonly message: InboundTextMessage; readonly binding: ChatThreadBinding }> {
+    if (binding.activeSkill || !message.text.includes('@') || !this.readSkills) {
+      return { message, binding };
+    }
+    try {
+      const catalog = await this.readSkills(binding.workspaceId);
+      const match = matchInlineSkill(message.text, catalog);
+      if (!match) {
+        return { message, binding };
+      }
+      return {
+        message: { ...message, text: match.cleanText },
+        binding: {
+          ...binding,
+          activeSkill: match.name,
+          activeSkillPath: match.path,
+        },
+      };
+    } catch {
+      return { message, binding };
+    }
   }
 
   public handleNotification(notification: ServerNotification): void {
@@ -302,6 +341,7 @@ export class InMemoryOrchestrator {
       taskId: task.id,
       chatId: task.message.chatId,
       rootMessageId: task.message.rootMessageId,
+      workspaceId: task.binding.workspaceId,
     });
   }
 
@@ -402,6 +442,8 @@ export class InMemoryOrchestrator {
       terminalCleanupTimer: undefined,
       updateTimer: undefined,
       outputFilesUploaded: false,
+      nextToolGroupId: 0,
+      lastActivityKind: 'none',
     };
     this.tasksById.set(id, task);
     this.activeByThreadId.set(binding.threadId, task);
@@ -528,6 +570,8 @@ export class InMemoryOrchestrator {
       terminalCleanupTimer: undefined,
       updateTimer: undefined,
       outputFilesUploaded: false,
+      nextToolGroupId: 0,
+      lastActivityKind: 'none',
     };
     this.tasksById.set(id, task);
     this.activeByThreadId.set(binding.threadId, task);
@@ -625,17 +669,22 @@ export class InMemoryOrchestrator {
     if (notification.method === 'thread/tokenUsage/updated') {
       applyUsage(task, params);
     } else if (notification.method === 'item/started') {
-      appendStartedCommand(task, params);
+      appendStartedTool(task, params);
     } else if (notification.method === 'item/completed') {
-      completeCommand(task, params);
+      completeTool(task, params);
     } else if (notification.method === 'item/agentMessage/delta') {
-      appendToTask(
+      const appended = appendToTask(
         task,
         stringField(params.phase) === 'commentary' ? 'commentary' : 'finalAnswer',
         stringField(params.delta),
       );
+      if (appended) {
+        task.lastActivityKind = 'text';
+      }
     } else if (notification.method === 'item/reasoning/summaryTextDelta') {
-      appendToTask(task, 'commentary', stringField(params.delta));
+      if (appendToTask(task, 'commentary', stringField(params.delta))) {
+        task.lastActivityKind = 'text';
+      }
     } else if (notification.method === 'item/commandExecution/outputDelta') {
       // Command stdout/stderr may be arbitrarily large and often contains
       // workspace data. The card keeps only a compact invocation summary.
@@ -828,7 +877,7 @@ function buildStart(task: RuntimeTask, config: BridgeConfig): TurnStartParams {
   return {
     threadId: task.binding.threadId,
     clientUserMessageId: task.message.messageId,
-    input: [{ type: 'text', text: task.message.text, text_elements: [] }],
+    input: taskInput(task.message.text, task.binding),
     cwd: task.binding.workspaceId,
     runtimeWorkspaceRoots: [...config.allowedWorkspaceRoots],
     approvalPolicy: 'on-request',
@@ -848,12 +897,16 @@ function buildStart(task: RuntimeTask, config: BridgeConfig): TurnStartParams {
   };
 }
 
-function buildSteer(task: RuntimeTask, message: InboundTextMessage): TurnSteerParams {
+function buildSteer(
+  task: RuntimeTask,
+  message: InboundTextMessage,
+  binding: ChatThreadBinding,
+): TurnSteerParams {
   return {
     threadId: task.binding.threadId,
     expectedTurnId: task.turnId as string,
     clientUserMessageId: message.messageId,
-    input: [{ type: 'text', text: message.text, text_elements: [] }],
+    input: taskInput(message.text, binding),
   };
 }
 
@@ -886,6 +939,7 @@ function taskCard(
       commentary: sanitizeCardMarkdown(commentary, { maxLength: 10_000 }),
       toolSummary: sanitizeCardPlainText(tools.text || '暂无', { maxLength: 10_000 }),
       toolCount: tools.count,
+      toolGroups: tools.groups,
       finalAnswer: sanitizeCardMarkdown(finalAnswer, { maxLength: 10_000 }),
       footer: sanitizeCardPlainText(formatFooter(status, startedAtMs, usage), { maxLength: 500 }),
       terminal,
@@ -896,7 +950,29 @@ function taskCard(
 function toolProjection(
   executions: readonly ToolExecution[],
   error: string,
-): { readonly text: string; readonly count: number } {
+): {
+  readonly text: string;
+  readonly count: number;
+  readonly groups: readonly CardToolGroup[];
+} {
+  const grouped = new Map<number, ToolExecution[]>();
+  for (const execution of executions) {
+    const group = grouped.get(execution.groupId) ?? [];
+    group.push(execution);
+    grouped.set(execution.groupId, group);
+  }
+  const groups: CardToolGroup[] = [...grouped.values()].map((group) => {
+    const actionCount = group.reduce((total, execution) => total + execution.actionCount, 0);
+    const content = group.map((execution) => `- \`${execution.command}\``).join('\n');
+    return Object.freeze({
+      title: sanitizeCardPlainText(`🛠️ 工具执行 · ${actionCount} 步`, { maxLength: 100 }),
+      content: sanitizeCardMarkdown(content, { maxLength: 2_000 }),
+      count: actionCount,
+      icon: 'api-app_outlined',
+      completed: group.every((execution) => execution.completed),
+      failed: group.some((execution) => execution.failed),
+    });
+  });
   const lines = executions.map((execution, index) => {
     const state = execution.completed ? (execution.failed ? '❌' : '✅') : '⏳';
     return `${state} ${index + 1}. ${summarizeCommand(execution.command)}`;
@@ -904,11 +980,47 @@ function toolProjection(
   if (error.trim()) {
     lines.push(`⚠️ ${oneLine(error, 500)}`);
   }
-  return { text: lines.join('\n'), count: executions.length };
+  if (error.trim() && groups.length === 0) {
+    groups.push(Object.freeze({
+      title: sanitizeCardPlainText('🛠️ 工具与命令', { maxLength: 100 }),
+      content: sanitizeCardPlainText(`⚠️ ${oneLine(error, 500)}`, { maxLength: 1_000 }),
+      count: 0,
+    }));
+  }
+  return { text: lines.join('\n'), count: executions.length, groups };
 }
 
 function summarizeCommand(command: string): string {
   return oneLine(command, 240);
+}
+
+type ActionCategory = keyof ActionCounts;
+
+interface ActionCounts {
+  searches: number;
+  reads: number;
+  edits: number;
+  skills: number;
+  runs: number;
+}
+
+function categorizeCommand(command: string): { readonly category: ActionCategory; readonly name: string } {
+  const normalized = command.trim();
+  if (normalized.startsWith('rg ') || normalized.startsWith('grep ') || normalized.startsWith('find ')) {
+    return { category: 'searches', name: normalized };
+  }
+  if (
+    normalized.startsWith('cat ')
+    || normalized.startsWith('head ')
+    || normalized.startsWith('less ')
+    || normalized.startsWith('tail ')
+  ) {
+    return { category: 'reads', name: normalized };
+  }
+  if (normalized.startsWith('sed ') || normalized.startsWith('awk ') || normalized.startsWith('echo ')) {
+    return { category: 'edits', name: normalized };
+  }
+  return { category: 'runs', name: normalized };
 }
 
 function oneLine(value: string, maxLength: number): string {
@@ -922,10 +1034,11 @@ function taskMetadataForBinding(binding: ChatThreadBinding): string {
     metadata.push('📝 **计划模式**: `开启`');
   }
   if (binding.personality && binding.personality !== 'none') {
-    metadata.push(`🎭 **回复风格**: \`${binding.personality}\``);
+    const labels: Readonly<Record<string, string>> = { friendly: '亲和', pragmatic: '务实' };
+    metadata.push(`🎭 **回复风格**: \`${labels[binding.personality] ?? binding.personality}\``);
   }
-  if (binding.model) {
-    metadata.push(`🤖 **模型**: \`${binding.model}\``);
+  if (binding.activeSkill) {
+    metadata.push(`✨ **调用的技能**: \`${binding.activeSkill}\``);
   }
   return metadata.join(' ｜ ');
 }
@@ -1082,39 +1195,44 @@ function appendToTask(
   task: RuntimeTask,
   field: 'commentary' | 'tools' | 'finalAnswer',
   delta: string | null,
-): void {
+): boolean {
   if (!delta) {
-    return;
+    return false;
   }
   const next = task[field] + delta;
   task[field] = next.length > TEXT_LIMIT ? next.slice(-TEXT_LIMIT) : next;
+  return true;
 }
 
-function appendStartedCommand(task: RuntimeTask, params: Record<string, unknown>): void {
+function appendStartedTool(task: RuntimeTask, params: Record<string, unknown>): void {
   const item = recordField(params.item);
   const itemId = stringField(item?.id) ?? stringField(params.itemId);
-  if (
-    item?.type !== 'commandExecution'
-    || !itemId
-    || typeof item.command !== 'string'
-    || !item.command.trim()
-  ) {
+  const descriptor = toolDescriptor(item);
+  if (!itemId || !descriptor) {
     return;
   }
   if (task.toolExecutions.some((execution) => execution.itemId === itemId)) {
     return;
   }
+  if (task.lastActivityKind !== 'tool') {
+    task.nextToolGroupId += 1;
+  }
+  task.lastActivityKind = 'tool';
   task.toolExecutions.push({
     itemId,
-    command: item.command.trim(),
+    groupId: task.nextToolGroupId,
+    command: descriptor.command,
+    category: descriptor.category,
+    name: descriptor.name,
+    actionCount: descriptor.count,
     completed: false,
     failed: false,
   });
 }
 
-function completeCommand(task: RuntimeTask, params: Record<string, unknown>): void {
+function completeTool(task: RuntimeTask, params: Record<string, unknown>): void {
   const item = recordField(params.item);
-  if (item?.type !== 'commandExecution') {
+  if (!item || !toolDescriptor(item)) {
     return;
   }
   const itemId = stringField(item.id) ?? stringField(params.itemId);
@@ -1126,7 +1244,66 @@ function completeCommand(task: RuntimeTask, params: Record<string, unknown>): vo
     return;
   }
   execution.completed = true;
-  execution.failed = numberField(item.exitCode) !== null && numberField(item.exitCode) !== 0;
+  const exitCode = numberField(item.exitCode);
+  execution.failed = (exitCode !== null && exitCode !== 0) || item.status === 'failed';
+}
+
+function toolDescriptor(item: Record<string, unknown> | null): {
+  readonly category: ActionCategory;
+  readonly name: string;
+  readonly command: string;
+  readonly count: number;
+} | null {
+  if (!item || typeof item.type !== 'string') return null;
+  if (item.type === 'fileChange') {
+    const count = Array.isArray(item.changes) && item.changes.length > 0 ? item.changes.length : 1;
+    return { category: 'edits', name: 'fileChange', command: 'fileChange', count };
+  }
+  if (item.type === 'mcpToolCall') {
+    const server = stringField(item.server) ?? '';
+    const tool = stringField(item.tool) ?? 'unknown_tool';
+    const name = server ? `${server}.${tool}` : tool;
+    return { category: 'skills', name, command: name, count: 1 };
+  }
+  if (item.type === 'toolCall') {
+    const name = stringField(item.toolName) ?? stringField(item.tool) ?? 'unknown_tool';
+    return { category: 'skills', name, command: name, count: 1 };
+  }
+  if (item.type === 'dynamicToolCall') {
+    const name = stringField(item.toolName) ?? stringField(item.tool) ?? 'dynamicToolCall';
+    return { category: 'skills', name, command: name, count: 1 };
+  }
+  if (item.type === 'collabAgentToolCall') {
+    const name = stringField(item.action) ?? stringField(item.tool) ?? stringField(item.toolName)
+      ?? 'collabAgentToolCall';
+    return { category: 'skills', name, command: name, count: 1 };
+  }
+  if (item.type === 'subAgentActivity') {
+    const name = stringField(item.description) ?? stringField(item.text) ?? 'subAgentActivity';
+    return { category: 'skills', name, command: oneLine(name, 240), count: 1 };
+  }
+  if (item.type === 'webSearch') {
+    const query = stringField(item.query) ?? stringField(item.text) ?? 'webSearch';
+    return { category: 'searches', name: query, command: `webSearch: ${oneLine(query, 220)}`, count: 1 };
+  }
+  if (item.type === 'imageView') {
+    const path = stringField(item.path) ?? stringField(item.imagePath) ?? 'imageView';
+    return { category: 'reads', name: path, command: `imageView: ${oneLine(path, 220)}`, count: 1 };
+  }
+  if (item.type === 'imageGeneration') {
+    const prompt = stringField(item.revisedPrompt) ?? stringField(item.prompt) ?? 'imageGeneration';
+    return { category: 'skills', name: prompt, command: `imageGeneration: ${oneLine(prompt, 210)}`, count: 1 };
+  }
+  if (item.type === 'sleep') {
+    return { category: 'runs', name: 'sleep', command: 'sleep', count: 1 };
+  }
+  if (item.type === 'commandExecution') {
+    const command = stringField(item.command);
+    if (!command) return null;
+    const action = categorizeCommand(command);
+    return { category: action.category, name: action.name, command, count: 1 };
+  }
+  return null;
 }
 
 function turnKey(threadId: string, turnId: string): string {
@@ -1160,7 +1337,7 @@ function desktopPrompt(turn: Turn): string | null {
       continue;
     }
     const prompt = item.content.map((content) => (
-      typeof content === 'string' ? content : content.text
+      typeof content === 'string' ? content : content.type === 'text' ? content.text : ''
     )).join('\n').trim();
     if (prompt) {
       return prompt;
@@ -1187,6 +1364,69 @@ function desktopMessage(
     payloadDigest: turn.id,
     createdAtMs,
   };
+}
+
+function taskInput(prompt: string, binding: ChatThreadBinding): UserInput[] {
+  const text = { type: 'text' as const, text: prompt, text_elements: [] };
+  if (!binding.activeSkill) {
+    return [text];
+  }
+  if (!binding.activeSkillPath) {
+    return [{ ...text, text: `@${binding.activeSkill} ${prompt}` }];
+  }
+  return [
+    { type: 'skill', name: binding.activeSkill, path: binding.activeSkillPath },
+    text,
+  ];
+}
+
+interface InlineSkillMatch {
+  readonly name: string;
+  readonly path: string;
+  readonly cleanText: string;
+}
+
+function matchInlineSkill(text: string, catalog: unknown): InlineSkillMatch | null {
+  const skills = flattenSkillCatalog(catalog).sort((left, right) => right.name.length - left.name.length);
+  for (const skill of skills) {
+    const mention = `@${skill.name}`;
+    const index = text.toLocaleLowerCase().indexOf(mention.toLocaleLowerCase());
+    if (index < 0) {
+      continue;
+    }
+    const before = index === 0 ? ' ' : text[index - 1] ?? ' ';
+    const afterIndex = index + mention.length;
+    const after = afterIndex >= text.length ? ' ' : text[afterIndex] ?? ' ';
+    if (!isMentionBoundary(before) || !isMentionBoundary(after)) {
+      continue;
+    }
+    const cleanText = `${text.slice(0, index)}${text.slice(afterIndex)}`.replace(/\s+/g, ' ').trim();
+    return { ...skill, cleanText };
+  }
+  return null;
+}
+
+function flattenSkillCatalog(value: unknown): Array<{ readonly name: string; readonly path: string }> {
+  const root = recordField(value);
+  const entries = Array.isArray(root?.data) ? root.data : [];
+  const skills: Array<{ readonly name: string; readonly path: string }> = [];
+  for (const entry of entries) {
+    const entryRecord = recordField(entry);
+    const entrySkills = Array.isArray(entryRecord?.skills) ? entryRecord.skills : [];
+    for (const candidate of entrySkills) {
+      const skill = recordField(candidate);
+      const name = stringField(skill?.name);
+      const path = stringField(skill?.path);
+      if (name && path) {
+        skills.push({ name, path });
+      }
+    }
+  }
+  return skills;
+}
+
+function isMentionBoundary(value: string): boolean {
+  return /[\s\p{P}]/u.test(value);
 }
 
 function terminalStatus(status: Turn['status']): TaskStatus {

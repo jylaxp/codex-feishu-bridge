@@ -157,6 +157,50 @@ test('sends a bound prompt only once through Desktop IPC and projects its termin
   assert.deepEqual(cards.operations.slice(-2), ['close', 'replace']);
 });
 
+test('sends a locked skill as the original structured skill plus text input', async () => {
+  const desktop = new FakeDesktop();
+  const orchestrator = new InMemoryOrchestrator(
+    config,
+    desktop as unknown as DesktopIpcClient,
+    new FakeCards(),
+  );
+  const skillBinding: ChatThreadBinding = {
+    ...binding,
+    activeSkill: 'ce-debug',
+    activeSkillPath: '/workspace/.agents/skills/ce-debug/SKILL.md',
+  };
+
+  await orchestrator.handleInbound(message('skill', '排查这个问题'), skillBinding);
+
+  assert.deepEqual(desktop.starts[0]?.input, [
+    { type: 'skill', name: 'ce-debug', path: '/workspace/.agents/skills/ce-debug/SKILL.md' },
+    { type: 'text', text: '排查这个问题', text_elements: [] },
+  ]);
+});
+
+test('resolves the original inline @skill mention and sends structured skill input', async () => {
+  const desktop = new FakeDesktop();
+  const cards = new FakeCards();
+  const orchestrator = new InMemoryOrchestrator(config, desktop as unknown as DesktopIpcClient, cards, {
+    readSkills: async () => ({
+      data: [{
+        skills: [{ name: 'ce-debug', path: '/workspace/.agents/skills/ce-debug/SKILL.md' }],
+      }],
+    }),
+  });
+
+  await orchestrator.handleInbound(message('inline-skill', '@ce-debug 排查这个问题'), binding);
+
+  assert.deepEqual(desktop.starts[0]?.input, [
+    { type: 'skill', name: 'ce-debug', path: '/workspace/.agents/skills/ce-debug/SKILL.md' },
+    { type: 'text', text: '排查这个问题', text_elements: [] },
+  ]);
+  const cardText = JSON.stringify(cards.created[0]);
+  assert.match(cardText, /排查这个问题/);
+  assert.match(cardText, /调用的技能/);
+  assert.doesNotMatch(cardText, /@ce-debug/);
+});
+
 test('mirrors a direct Desktop prompt into its uniquely bound Feishu chat and streams the same card', async () => {
   const desktop = new FakeDesktop();
   const cards = new FakeCards();
@@ -231,6 +275,46 @@ test('projects tool calls as collapsed steps and never projects command stdout',
     params: {
       threadId: 'thread-1',
       turnId: 'turn-1',
+      item: { id: 'mcp-1', type: 'mcpToolCall', server: 'openai-docs', tool: 'search' },
+    },
+  });
+  orchestrator.handleNotification({
+    method: 'item/completed',
+    params: {
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      item: { id: 'mcp-1', type: 'mcpToolCall', server: 'openai-docs', tool: 'search', status: 'completed' },
+    },
+  });
+  orchestrator.handleNotification({
+    method: 'item/started',
+    params: {
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      item: { id: 'agent-1', type: 'collabAgentToolCall', action: '创建智能体' },
+    },
+  });
+  orchestrator.handleNotification({
+    method: 'item/completed',
+    params: {
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      item: { id: 'agent-1', type: 'collabAgentToolCall', action: '创建智能体', status: 'completed' },
+    },
+  });
+  orchestrator.handleNotification({
+    method: 'item/started',
+    params: {
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      item: { id: 'search-1', type: 'webSearch', query: 'Codex App Server' },
+    },
+  });
+  orchestrator.handleNotification({
+    method: 'item/started',
+    params: {
+      threadId: 'thread-1',
+      turnId: 'turn-1',
       item: { id: 'command-1', type: 'commandExecution', command: 'rg --files src' },
     },
   });
@@ -251,11 +335,42 @@ test('projects tool calls as collapsed steps and never projects command stdout',
       item: { id: 'command-1', type: 'commandExecution', command: 'rg --files src', exitCode: 0 },
     },
   });
+  orchestrator.handleNotification({
+    method: 'item/reasoning/summaryTextDelta',
+    params: {
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      itemId: 'reasoning-1',
+      delta: 'Next tool group.',
+    },
+  });
+  orchestrator.handleNotification({
+    method: 'item/started',
+    params: {
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      item: { id: 'command-2', type: 'commandExecution', command: 'git diff -- src' },
+    },
+  });
+  orchestrator.handleNotification({
+    method: 'item/completed',
+    params: {
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      item: { id: 'command-2', type: 'commandExecution', command: 'git diff -- src', exitCode: 0 },
+    },
+  });
   await new Promise((resolve) => setTimeout(resolve, 10));
 
   const serialized = JSON.stringify(cards.replacements.at(-1));
-  assert.match(serialized, /工具执行 · 1 步/);
+  assert.match(serialized, /🛠️ 工具执行 · 4 步/);
+  assert.match(serialized, /🛠️ 工具执行 · 1 步/);
   assert.match(serialized, /rg --files src/);
+  assert.match(serialized, /git diff -- src/);
+  assert.match(serialized, /openai-docs\.search/);
+  assert.match(serialized, /创建智能体/);
+  assert.match(serialized, /webSearch: Codex App Server/);
+  assert.equal((serialized.match(/collapsible_panel/g) ?? []).length, 2);
   assert.doesNotMatch(serialized, /very-long-command-output-that-must-not-reach-the-card/);
   assert.match(serialized, /"expanded":false/);
 });

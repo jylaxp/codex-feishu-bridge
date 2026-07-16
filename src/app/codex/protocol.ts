@@ -75,7 +75,13 @@ export interface TextUserInput {
   text_elements: TextElement[];
 }
 
-export type UserInput = TextUserInput;
+export interface SkillUserInput {
+  type: 'skill';
+  name: string;
+  path: string;
+}
+
+export type UserInput = TextUserInput | SkillUserInput;
 
 export type ApprovalPolicy =
   | 'untrusted'

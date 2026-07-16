@@ -2,6 +2,7 @@ import { createOpaqueActionToken } from './action-tokens';
 import type { CardKitJson } from './cards/layouts';
 import { createApprovalCard, createApprovalDecisionCard } from './cards/layouts';
 import { sanitizeCardText } from './cards/sanitizer';
+import { redactApprovalSecrets } from './cards/approval-redaction';
 import type {
   DesktopApprovalRequest,
 } from './codex/desktop-approval-adapter';
@@ -27,6 +28,7 @@ interface ApprovalTaskLookup {
     readonly taskId: string;
     readonly chatId: string;
     readonly rootMessageId: string;
+    readonly workspaceId?: string;
   } | undefined;
   setAwaitingApproval(threadId: string, turnId: string | null, waiting: boolean): boolean;
   failForApprovalDelivery(threadId: string, turnId: string | null): void;
@@ -88,8 +90,9 @@ export class DesktopApprovalService {
       const cardId = await this.cards.createCard(createApprovalCard({
         title: sanitizeCardText('Codex 审批请求', { maxLength: 120 }),
         kind: approval.kind,
-        operationSummary: sanitizeCardText(approval.operationSummary, { maxLength: 4_000 }),
+        operationSummary: sanitizeCardText(redactApprovalSecrets(approval.operationSummary), { maxLength: 4_000 }),
         reason: sanitizeCardText(approval.reason, { maxLength: 4_000 }),
+        cwd: sanitizeCardText(context.workspaceId ?? 'Unknown', { maxLength: 1_000 }),
         actionTokens,
       }));
       const cardMessageId = await this.cards.replyCard(
@@ -156,8 +159,18 @@ export class DesktopApprovalService {
           pending.cardId,
           createApprovalDecisionCard({
             kind: pending.approval.kind,
-            operationSummary: sanitizeCardText(pending.approval.operationSummary, { maxLength: 4_000 }),
+            operationSummary: sanitizeCardText(
+              redactApprovalSecrets(pending.approval.operationSummary),
+              { maxLength: 4_000 },
+            ),
             reason: sanitizeCardText(pending.approval.reason, { maxLength: 4_000 }),
+            cwd: sanitizeCardText(
+              this.tasks.approvalContext(
+                pending.approval.threadId,
+                pending.approval.turnId,
+              )?.workspaceId ?? 'Unknown',
+              { maxLength: 1_000 },
+            ),
             decision,
             availableDecisions: pending.approval.availableDecisions,
           }),

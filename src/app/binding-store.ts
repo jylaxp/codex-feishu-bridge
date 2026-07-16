@@ -22,6 +22,9 @@ export interface BindingSettings {
   readonly personality?: string;
   readonly style?: string;
   readonly plan?: string;
+  /** One-shot skill selected from /skills and consumed by the next user turn. */
+  readonly activeSkill?: string;
+  readonly activeSkillPath?: string;
 }
 
 export interface ChatThreadBinding extends BindingSettings {
@@ -233,6 +236,8 @@ function parseBinding(value: unknown): ChatThreadBinding {
     'personality',
     'style',
     'plan',
+    'activeSkill',
+    'activeSkillPath',
     'revision',
     'updatedAtMs',
   ])) {
@@ -249,6 +254,12 @@ function parseBinding(value: unknown): ChatThreadBinding {
       : {}),
     ...(optionalText(value.style, 'style') ? { style: optionalText(value.style, 'style') } : {}),
     ...(optionalText(value.plan, 'plan') ? { plan: optionalText(value.plan, 'plan') } : {}),
+    ...(optionalText(value.activeSkill, 'activeSkill')
+      ? { activeSkill: optionalText(value.activeSkill, 'activeSkill') }
+      : {}),
+    ...(optionalText(value.activeSkillPath, 'activeSkillPath')
+      ? { activeSkillPath: optionalText(value.activeSkillPath, 'activeSkillPath') }
+      : {}),
   });
   const revision = value.revision;
   if (typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 1) {
@@ -279,6 +290,12 @@ function normalizeBindingInput(
       : {}),
     ...(optionalText(input.style, 'style') ? { style: optionalText(input.style, 'style') } : {}),
     ...(optionalText(input.plan, 'plan') ? { plan: optionalText(input.plan, 'plan') } : {}),
+    ...(optionalText(input.activeSkill, 'activeSkill')
+      ? { activeSkill: optionalText(input.activeSkill, 'activeSkill') }
+      : {}),
+    ...(optionalText(input.activeSkillPath, 'activeSkillPath')
+      ? { activeSkillPath: optionalText(input.activeSkillPath, 'activeSkillPath') }
+      : {}),
   });
 }
 

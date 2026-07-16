@@ -26,11 +26,13 @@ test('persists only static chat-to-thread bindings atomically', () => {
       threadId: 'thread-1',
       workspaceId: 'workspace-1',
       model: 'gpt-5.4',
+      activeSkill: 'ce-debug',
     });
 
     assert.equal(binding.revision, 1);
     const document = readFileSync(join(root, 'bindings.json'), 'utf8');
     assert.match(document, /thread-1/);
+    assert.match(document, /ce-debug/);
     assert.doesNotMatch(document, /prompt|approval|card|outbox|item/i);
 
     const reloaded = new BindingStore(root);

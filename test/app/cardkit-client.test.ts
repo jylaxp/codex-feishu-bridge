@@ -10,7 +10,11 @@ const tokenProvider: TenantTokenProvider = {
   getToken: async () => 'tenant-token',
 };
 
-function larkApi(replyCalls: unknown[], sentCalls: unknown[] = []): LarkReplyApi {
+function larkApi(
+  replyCalls: unknown[],
+  sentCalls: unknown[] = [],
+  patchCalls: unknown[] = [],
+): LarkReplyApi {
   return {
     im: {
       message: {
@@ -21,6 +25,10 @@ function larkApi(replyCalls: unknown[], sentCalls: unknown[] = []): LarkReplyApi
         create: async (payload) => {
           sentCalls.push(payload);
           return { code: 0, data: { message_id: 'om-sent-card-message' } };
+        },
+        patch: async (payload) => {
+          patchCalls.push(payload);
+          return { code: 0 };
         },
       },
     },
@@ -77,6 +85,79 @@ test('sends an independent CardKit reference to one bound chat', async () => {
   assert.match(JSON.stringify(sent[0]), /oc-bound-chat/);
   assert.match(JSON.stringify(sent[0]), /desktop-card-uuid/);
   assert.match(JSON.stringify(sent[0]), /receive_id_type/);
+});
+
+test('patches a picker message with the complete selected-state card', async () => {
+  const patches: unknown[] = [];
+  const client = new CardKitClient(tokenProvider, larkApi([], [], patches));
+
+  await client.patchMessage('om-picker-message', card());
+
+  assert.equal(patches.length, 1);
+  const payload = patches[0] as {
+    readonly path: { readonly message_id: string };
+    readonly data: { readonly content: string };
+  };
+  assert.equal(payload.path.message_id, 'om-picker-message');
+  assert.equal(JSON.parse(payload.data.content).schema, '2.0');
+});
+
+test('retries a newly-created card reference while Feishu is still propagating the card id', async () => {
+  let replyAttempts = 0;
+  const replies: unknown[] = [];
+  const api = larkApi(replies);
+  api.im.message.reply = async (payload) => {
+    replies.push(payload);
+    replyAttempts += 1;
+    return replyAttempts === 1
+      ? { code: 230099, msg: 'cardid is invalid' }
+      : { code: 0, data: { message_id: 'om-card-after-propagation' } };
+  };
+  const client = new CardKitClient(tokenProvider, api);
+
+  assert.equal(
+    await client.replyCard('om-root', 'card-new', 'stable-card-reference'),
+    'om-card-after-propagation',
+  );
+  assert.equal(replyAttempts, 2);
+  assert.equal(replies.length, 2);
+});
+
+test('retries an independent card send while Feishu is still propagating the card id', async () => {
+  let sendAttempts = 0;
+  const sent: unknown[] = [];
+  const api = larkApi([], sent);
+  api.im.message.create = async (payload) => {
+    sent.push(payload);
+    sendAttempts += 1;
+    return sendAttempts === 1
+      ? { code: 230099, msg: 'cardid is invalid' }
+      : { code: 0, data: { message_id: 'om-sent-after-propagation' } };
+  };
+  const client = new CardKitClient(tokenProvider, api);
+
+  assert.equal(
+    await client.sendCard('oc-bound-chat', 'card-new', 'stable-card-reference'),
+    'om-sent-after-propagation',
+  );
+  assert.equal(sendAttempts, 2);
+  assert.equal(sent.length, 2);
+});
+
+test('normalizes overlong message idempotency keys to the Feishu 50-character limit', async () => {
+  const replies: unknown[] = [];
+  const sent: unknown[] = [];
+  const client = new CardKitClient(tokenProvider, larkApi(replies, sent));
+  const operationId = `binding:${'event-id-segment-'.repeat(4)}:picker-table`;
+
+  await client.replyCard('om-root', 'card-1', operationId);
+  await client.sendCard('oc-bound-chat', 'card-2', operationId);
+
+  const replyUuid = (replies[0] as { data: { uuid: string } }).data.uuid;
+  const sendUuid = (sent[0] as { data: { uuid: string } }).data.uuid;
+  assert.ok(operationId.length > 50);
+  assert.equal(replyUuid.length, 43);
+  assert.equal(sendUuid, replyUuid);
 });
 
 test('advances sequence only after a successful replace', async () => {

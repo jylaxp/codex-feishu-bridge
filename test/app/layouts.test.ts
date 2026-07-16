@@ -46,8 +46,8 @@ test('task card preserves the original Remote Control streaming layout', () => {
   const body = card.body as { readonly elements: readonly Record<string, unknown>[] };
   const footer = body.elements.find((element) => element.element_id === 'codex_footer');
   assert.deepStrictEqual(footer, {
-    tag: 'div',
-    text: { tag: 'plain_text', content: '📊 task ref: abc' },
+    tag: 'markdown',
+    content: '📊 task ref: abc',
     element_id: 'codex_footer',
   });
 
@@ -58,13 +58,83 @@ test('task card preserves the original Remote Control streaming layout', () => {
     expanded: false,
     header: {
       title: { tag: 'plain_text', content: '🛠️ 工具执行 · 1 步' },
+      vertical_align: 'center',
+      icon: {
+        tag: 'standard_icon', token: 'api-app_outlined', color: 'grey', size: '16px 16px',
+      },
+      icon_position: 'left',
     },
+    border: { color: 'grey', corner_radius: '5px' },
+    vertical_spacing: '4px',
+    padding: '4px 8px 4px 8px',
     elements: [{
-      tag: 'div',
-      text: { tag: 'plain_text', content: '✅ 1. rg: completed' },
+      tag: 'markdown',
+      content: '✅ 1. rg: completed',
       element_id: 'codex_tools',
     }],
   });
+});
+
+test('task card renders tool groups as separate collapsed rows', () => {
+  const card = createTaskCard({
+    status: 'RUNNING',
+    payload: {
+      title: sanitizeCardText('Codex task'),
+      prompt: sanitizeCardMarkdown('review'),
+      commentary: sanitizeCardMarkdown('checking'),
+      toolSummary: sanitizeCardPlainText('legacy fallback'),
+      toolGroups: [
+        {
+          title: sanitizeCardPlainText('group 1'),
+          content: sanitizeCardPlainText('⏳ 1. rg --files\n✅ 2. sed -n 1,20p file'),
+          count: 2,
+        },
+        {
+          title: sanitizeCardPlainText('group 2'),
+          content: sanitizeCardPlainText('⏳ 1. git diff'),
+          count: 1,
+        },
+      ],
+      finalAnswer: sanitizeCardText(''),
+      footer: sanitizeCardPlainText('running'),
+      terminal: false,
+    },
+  });
+
+  const body = card.body as { readonly elements: readonly Record<string, unknown>[] };
+  const panels = body.elements.filter((element) => element.tag === 'collapsible_panel');
+
+  assert.equal(panels.length, 2);
+  assert.deepStrictEqual(
+    panels.map((panel) => (
+      (panel.header as { readonly title: { readonly content: string } }).title.content
+    )),
+    ['group 1', 'group 2'],
+  );
+  assert.match(JSON.stringify(card), /rg --files/);
+  assert.match(JSON.stringify(card), /git diff/);
+});
+
+test('task card keeps the legacy aggregate tool panel when no tool groups exist', () => {
+  const card = createTaskCard({
+    status: 'RUNNING',
+    payload: {
+      title: sanitizeCardText('Codex task'),
+      prompt: sanitizeCardMarkdown('review'),
+      commentary: sanitizeCardMarkdown('checking'),
+      toolSummary: sanitizeCardPlainText('✅ 1. rg --files'),
+      toolCount: 1,
+      finalAnswer: sanitizeCardText(''),
+      footer: sanitizeCardPlainText('running'),
+      terminal: false,
+    },
+  });
+
+  const body = card.body as { readonly elements: readonly Record<string, unknown>[] };
+  const panels = body.elements.filter((element) => element.tag === 'collapsible_panel');
+
+  assert.equal(panels.length, 1);
+  assert.match(JSON.stringify(card), /工具执行 · 1 步/);
 });
 
 test('terminal card omits an empty inference section like the original card renderer', () => {
@@ -92,7 +162,8 @@ test('terminal task card has no action token and closes streaming mode', () => {
       title: sanitizeCardText('done'),
       prompt: sanitizeCardText('prompt'),
       commentary: sanitizeCardText('complete'),
-      toolSummary: sanitizeCardText('none'),
+      toolSummary: sanitizeCardText('✅ 1. rg --files'),
+      toolCount: 1,
       finalAnswer: sanitizeCardText('result'),
       footer: sanitizeCardText('finished'),
       terminal: true,
@@ -102,6 +173,7 @@ test('terminal task card has no action token and closes streaming mode', () => {
   const serialized = JSON.stringify(card);
   assert.doesNotMatch(serialized, /must-not-render/);
   assert.doesNotMatch(serialized, /streaming_mode/);
+  assert.doesNotMatch(serialized, /collapsible_panel|codex_prompt|codex_reasoning|codex_output|codex_footer/);
   assert.match(serialized, /✅ Codex 执行成功/);
 });
 
@@ -120,7 +192,27 @@ test('historical terminal task card marks the restored history title only', () =
     },
   });
 
-  assert.match(JSON.stringify(card), /\[历史\] ✅ Codex 执行成功/);
+  assert.match(JSON.stringify(card), /📜 \[历史\] ✅ Codex 执行成功/);
+  assert.equal((card.header as { readonly template: string }).template, 'indigo');
+});
+
+test('terminal task card uses the original truncation copy for reasoning and output', () => {
+  const card = createTaskCard({
+    status: 'SUCCEEDED',
+    payload: {
+      title: sanitizeCardText('done'),
+      prompt: sanitizeCardText('prompt'),
+      commentary: sanitizeCardText('r'.repeat(10_001)),
+      toolSummary: sanitizeCardText('暂无'),
+      finalAnswer: sanitizeCardText('a'.repeat(10_001)),
+      footer: sanitizeCardText('finished'),
+      terminal: true,
+    },
+  });
+
+  const serialized = JSON.stringify(card);
+  assert.match(serialized, /由于长度限制，后续推理过程已被截断/);
+  assert.match(serialized, /由于长度限制，后续输出已被截断，请在 IDE 中查看完整内容/);
 });
 
 test('approval buttons carry decision-bound opaque tokens only', () => {
@@ -141,11 +233,11 @@ test('approval buttons carry decision-bound opaque tokens only', () => {
   assert.match(serialized, /token-accept/);
   assert.match(serialized, /token-accept-for-session/);
   assert.match(serialized, /token-decline/);
-  assert.match(serialized, /token-cancel/);
-  assert.match(serialized, /本会话批准/);
+  assert.doesNotMatch(serialized, /token-cancel/);
+  assert.match(serialized, /总是批准/);
   assert.match(serialized, /风险评估/);
   assert.match(serialized, /准备执行的操作指令/);
-  assert.doesNotMatch(serialized, /threadId|turnId|itemId|requestId|cwd/);
+  assert.doesNotMatch(serialized, /threadId|turnId|itemId|requestId/);
 });
 
 test('terminal approval card preserves operation context with disabled decisions', () => {

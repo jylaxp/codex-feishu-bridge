@@ -33,6 +33,15 @@ export type SanitizedCardText = string & {
 
 export type ApprovalDecision = 'accept' | 'acceptForSession' | 'decline' | 'cancel';
 
+export interface CardToolGroup {
+  readonly title: SanitizedCardText;
+  readonly content: SanitizedCardText;
+  readonly count: number;
+  readonly icon?: string;
+  readonly completed?: boolean;
+  readonly failed?: boolean;
+}
+
 export interface CardProjectionPayload {
   readonly title: SanitizedCardText;
   readonly prompt: SanitizedCardText;
@@ -41,6 +50,8 @@ export interface CardProjectionPayload {
   readonly toolSummary: SanitizedCardText;
   /** Number of tool calls represented by the collapsed tools panel. */
   readonly toolCount?: number;
+  /** Ordered collapsed tool rows. Preferred over the legacy aggregate summary. */
+  readonly toolGroups?: readonly CardToolGroup[];
   readonly finalAnswer: SanitizedCardText;
   readonly footer: SanitizedCardText;
   readonly terminal: boolean;

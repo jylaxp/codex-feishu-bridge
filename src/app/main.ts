@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import { BindingStore } from './binding-store';
 import { CardKitClient, type LarkReplyApi } from './cards/cardkit-client';
+import { CardImageRenderer, type LarkImageApi } from './cards/card-image-renderer';
 import { AppServerClient, type AppServerTransportOptions } from './codex/app-server-client';
 import { SUPPORTED_APP_SERVER_VERSION } from './codex/contract';
 import { DesktopIpcClient } from './codex/desktop-ipc-client';
@@ -24,6 +25,7 @@ import {
 import { OutputFileUploader, type FileUploadApi } from './lark/output-file-uploader';
 import { LarkEventServer, toast } from './lark/event-server';
 import type { InboundTextMessage } from './lark/intake';
+import { LarkScopeConfigStore } from './lark/scope-config-store';
 import { BridgeLogger } from './logger';
 import { runPreflight } from './preflight';
 import { BridgeProcessLock } from './process-lock';
@@ -62,7 +64,9 @@ export async function startBridge(
   } finally {
     resetExclusion.release();
   }
-  const config = preflight.config;
+  // Keep one shared runtime view so first-private-message scope bootstrap is
+  // immediately visible to command, approval and cancellation handlers.
+  const config = { ...preflight.config } as BridgeConfig;
 
   let resolveFailure!: (error: Error) => void;
   const failure = new Promise<Error>((resolve) => {
@@ -84,9 +88,16 @@ export async function startBridge(
     logSink: (level) => logger.warn(`lark_sdk_${level}`),
     onTerminalWebsocketError: resolveFailure,
   });
+  const cardImages = new CardImageRenderer(
+    config.allowedWorkspaceRoots,
+    lark.api as unknown as LarkImageApi,
+  );
   const cards = new CardKitClient(
     new CachedTenantTokenProvider(config.larkAppId, config.larkAppSecret),
     lark.api as unknown as LarkReplyApi,
+    fetch,
+    10_000,
+    (card) => cardImages.render(card),
   );
   const acknowledgements = new LarkMessageAcknowledgement(
     lark.api as unknown as LarkMessageAcknowledgementApi,
@@ -97,6 +108,7 @@ export async function startBridge(
     config.rateLimitQueryIntervalMs,
   );
   const outputFileUploader = new OutputFileUploader(config, lark.api as unknown as FileUploadApi);
+  const larkScopeConfig = new LarkScopeConfigStore(preflight.configHome);
   const navigation = new CodexAppNavigationAdapter();
   const orchestrator = new InMemoryOrchestrator(config, desktop, cards, {
     onCardError: (error) => logger.error('card_update_failed', error),
@@ -106,6 +118,7 @@ export async function startBridge(
     ),
     navigation,
     resolveBindingByThreadId: (threadId) => bindings.getUniqueByThreadId(threadId),
+    readSkills: (cwd) => appServer.request('skills/list', { cwds: [cwd] }),
   });
   const approvals = new DesktopApprovalService(config, desktop, cards, orchestrator);
   const conversationBindings = new ConversationBindingServiceV3(
@@ -116,6 +129,8 @@ export async function startBridge(
     undefined,
     navigation,
     logger,
+    undefined,
+    () => rateLimits.get(),
   );
   const commands = new BridgeCommandService(
     config,
@@ -152,7 +167,10 @@ export async function startBridge(
       await conversationBindings.ensureBoundOrPrompt(message);
       return;
     }
-    await orchestrator.handleInbound(message, binding);
+    const outcome = await orchestrator.handleInbound(message, binding);
+    if (binding.activeSkill && outcome !== 'duplicate') {
+      await commands.consumeActiveSkill(binding);
+    }
   };
   const eventServer = new LarkEventServer(lark.websocket, config, {
     onMessage: async (message) => {
@@ -171,6 +189,9 @@ export async function startBridge(
       if (action.action === 'open') {
         return conversationBindings.handleOpenAction(action);
       }
+      if (action.action === 'model' || action.action === 'skill') {
+        return commands.handleCardAction(action);
+      }
       if (action.action === 'cancel') {
         if (!config.authorizedUsers.includes(action.operatorOpenId)) {
           return toast('你没有取消任务的权限', 'warning');
@@ -182,7 +203,15 @@ export async function startBridge(
     },
     onRejectedEvent: (reason) => logger.warn('lark_event_rejected', { reason }),
     onHandlerError: (kind, error) => logger.error('lark_event_handler_failed', error, { kind }),
-  });
+    onScopeBound: (nextConfig) => {
+      Object.assign(config, {
+        larkTenantKey: nextConfig.larkTenantKey,
+        allowedChats: nextConfig.allowedChats,
+        authorizedUsers: nextConfig.authorizedUsers,
+        allowedApprovers: nextConfig.allowedApprovers,
+      });
+    },
+  }, larkScopeConfig);
   const unsubscribeDesktop = desktop.onThreadStreamStateChanged((message) => {
     for (const notification of normalizer.handle(message)) {
       orchestrator.handleNotification(notification);

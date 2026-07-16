@@ -67,10 +67,6 @@ async function run(): Promise<void> {
     const requiredKeys = [
       'LARK_APP_ID',
       'LARK_APP_SECRET',
-      'LARK_TENANT_KEY',
-      'ALLOWED_CHATS',
-      'AUTHORIZED_USERS',
-      'ALLOWED_APPROVERS',
       'CODEX_BIN',
       'CODEX_CWD',
       'ALLOWED_WORKSPACE_ROOTS',
@@ -81,10 +77,11 @@ async function run(): Promise<void> {
       expectThrows(() => parseEnvironment(missing), ConfigurationError);
     }
 
-    expectThrows(
-      () => parseEnvironment({ ...env, ALLOWED_CHATS: ' , ' }),
-      ConfigurationError,
-    );
+    assert.strictEqual(parseEnvironment({ ...env, LARK_TENANT_KEY: '' }).larkTenantKey, '');
+    assert.deepStrictEqual(parseEnvironment({ ...env, ALLOWED_CHATS: ' , ' }).allowedChats, []);
+    assert.deepStrictEqual(parseEnvironment({ ...env, ALLOWED_CHATS: '' }).allowedChats, []);
+    assert.deepStrictEqual(parseEnvironment({ ...env, AUTHORIZED_USERS: '' }).authorizedUsers, []);
+    assert.deepStrictEqual(parseEnvironment({ ...env, ALLOWED_APPROVERS: '' }).allowedApprovers, []);
     expectThrows(
       () => parseEnvironment({ ...env, LARK_APP_ID: 'cli_invalid' }),
       ConfigurationError,
