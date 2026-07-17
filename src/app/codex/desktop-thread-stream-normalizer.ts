@@ -395,7 +395,30 @@ function reasoningDeltas(
       });
     }
   }
+  if (currentSummary.length === 0) {
+    const delta = suffixDelta(reasoningContent(previousItem), reasoningContent(currentItem));
+    if (delta) {
+      notifications.push({
+        method: 'item/reasoning/textDelta',
+        params: {
+          threadId,
+          turnId,
+          itemId: currentItem.id,
+          delta,
+        },
+      });
+    }
+  }
   return notifications;
+}
+
+function reasoningContent(item: ThreadItem | undefined): string {
+  if (!item?.content) {
+    return item?.text ?? '';
+  }
+  return item.content.map((part) => (
+    typeof part === 'string' ? part : part.type === 'text' ? part.text : ''
+  )).join('');
 }
 
 function turnsById(state: UnknownRecord | undefined): ReadonlyMap<string, Turn> {

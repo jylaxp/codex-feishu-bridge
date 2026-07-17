@@ -13,6 +13,7 @@ export interface DoctorReport {
   readonly codexVersion: string;
   readonly codexBinary: string;
   readonly appServerMode: BridgeConfig['appServerMode'];
+  readonly approvalCardMode: BridgeConfig['approvalCardMode'];
   readonly schemaDigest: string;
   readonly bindingCount: number;
   readonly bindingsFileBytes: number;
@@ -47,6 +48,7 @@ export async function runDoctor(
     codexVersion: contract.codexVersion,
     codexBinary: preflight.config.codexBin,
     appServerMode: preflight.config.appServerMode,
+    approvalCardMode: preflight.config.approvalCardMode,
     schemaDigest: contract.schemaDigest,
     bindingCount: store.list().length,
     bindingsFileBytes,

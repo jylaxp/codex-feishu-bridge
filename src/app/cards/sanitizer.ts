@@ -11,23 +11,38 @@ export interface SanitizeCardTextOptions {
  */
 export function sanitizeCardText(
   input: string,
-  _options: SanitizeCardTextOptions = {},
+  options: SanitizeCardTextOptions = {},
 ): SanitizedCardText {
-  return String(input ?? '') as SanitizedCardText;
+  return boundCardText(input, options.maxLength);
 }
 
 /** Preserves plain text exactly as received. */
 export function sanitizeCardPlainText(
   input: string,
-  _options: SanitizeCardTextOptions = {},
+  options: SanitizeCardTextOptions = {},
 ): SanitizedCardText {
-  return String(input ?? '') as SanitizedCardText;
+  return boundCardText(input, options.maxLength);
 }
 
 /** Preserves Markdown exactly as received. */
 export function sanitizeCardMarkdown(
   input: string,
-  _options: SanitizeCardTextOptions = {},
+  options: SanitizeCardTextOptions = {},
 ): SanitizedCardText {
-  return String(input ?? '') as SanitizedCardText;
+  return boundCardText(input, options.maxLength);
+}
+
+/**
+ * Applies only a transport-size boundary. It deliberately does not escape,
+ * normalize, trim, or otherwise rewrite the original Markdown/text content.
+ */
+function boundCardText(input: string, maxLength: number | undefined): SanitizedCardText {
+  const text = String(input ?? '');
+  if (maxLength === undefined || maxLength < 1 || text.length <= maxLength) {
+    return text as SanitizedCardText;
+  }
+  if (maxLength === 1) {
+    return '…' as SanitizedCardText;
+  }
+  return `${text.slice(0, maxLength - 1)}…` as SanitizedCardText;
 }

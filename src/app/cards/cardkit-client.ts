@@ -9,6 +9,7 @@ const MAX_CARD_SEQUENCE = 2_147_483_647;
 const MAX_MESSAGE_UUID_LENGTH = 50;
 const CARD_REFERENCE_MAX_ATTEMPTS = 6;
 const CARD_REFERENCE_RETRY_BASE_DELAY_MS = 500;
+const CARD_SEQUENCE_RECOVERY_ATTEMPTS = 15;
 
 export type CardKitErrorKind =
   | 'HTTP_RETRYABLE'
@@ -222,17 +223,43 @@ export class CardKitClient {
     acknowledgedSequence: number,
     idempotencyKey?: string,
   ): Promise<number> {
-    const sequence = nextCardSequence(acknowledgedSequence);
     const renderedCard = await this.transformCard(card);
-    await this.request(`${CARDKIT_BASE_URL}/${encodeURIComponent(cardId)}`, {
-      method: 'PUT',
-      body: JSON.stringify({
-        card: { type: 'card_json', data: JSON.stringify(renderedCard) },
-        sequence,
-        ...(idempotencyKey ? { uuid: requireCardOperationId(idempotencyKey) } : {}),
-      }),
+    return this.updateCardSequence(acknowledgedSequence, async (sequence) => {
+      await this.request(`${CARDKIT_BASE_URL}/${encodeURIComponent(cardId)}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          card: { type: 'card_json', data: JSON.stringify(renderedCard) },
+          sequence,
+          ...(idempotencyKey ? { uuid: requireCardOperationId(idempotencyKey) } : {}),
+        }),
+      });
     });
-    return sequence;
+  }
+
+  /**
+   * Streams one existing Markdown element. CardKit animates this endpoint as a
+   * typewriter update; replacing the complete card does not.
+   */
+  public async streamElement(
+    cardId: string,
+    elementId: string,
+    content: string,
+    acknowledgedSequence: number,
+    idempotencyKey?: string,
+  ): Promise<number> {
+    return this.updateCardSequence(acknowledgedSequence, async (sequence) => {
+      await this.request(
+        `${CARDKIT_BASE_URL}/${encodeURIComponent(cardId)}/elements/${encodeURIComponent(elementId)}/content`,
+        {
+          method: 'PUT',
+          body: JSON.stringify({
+            content: content || ' ',
+            sequence,
+            ...(idempotencyKey ? { uuid: requireCardOperationId(idempotencyKey) } : {}),
+          }),
+        },
+      );
+    });
   }
 
   /** Closes CardKit streaming mode at one exact sequence. */
@@ -241,16 +268,43 @@ export class CardKitClient {
     acknowledgedSequence: number,
     idempotencyKey?: string,
   ): Promise<number> {
-    const sequence = nextCardSequence(acknowledgedSequence);
-    await this.request(`${CARDKIT_BASE_URL}/${encodeURIComponent(cardId)}/settings`, {
-      method: 'PATCH',
-      body: JSON.stringify({
-        settings: JSON.stringify({ config: { streaming_mode: false } }),
-        sequence,
-        ...(idempotencyKey ? { uuid: requireCardOperationId(idempotencyKey) } : {}),
-      }),
+    return this.updateCardSequence(acknowledgedSequence, async (sequence) => {
+      await this.request(`${CARDKIT_BASE_URL}/${encodeURIComponent(cardId)}/settings`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          settings: JSON.stringify({ streaming_mode: false }),
+          sequence,
+          ...(idempotencyKey ? { uuid: requireCardOperationId(idempotencyKey) } : {}),
+        }),
+      });
     });
-    return sequence;
+  }
+
+  /**
+   * CardKit can report an unknown sequence after a successful request response
+   * was lost or another update won the race. The legacy bridge advanced the
+   * sequence and retried; retain that recovery behavior here.
+   */
+  private async updateCardSequence(
+    acknowledgedSequence: number,
+    operation: (sequence: number) => Promise<void>,
+  ): Promise<number> {
+    let sequence = nextCardSequence(acknowledgedSequence);
+    for (let attempt = 1; attempt <= CARD_SEQUENCE_RECOVERY_ATTEMPTS; attempt += 1) {
+      try {
+        await operation(sequence);
+        return sequence;
+      } catch (error) {
+        if (!(error instanceof CardKitError) || error.kind !== 'SEQUENCE_UNKNOWN') {
+          throw error;
+        }
+        if (attempt === CARD_SEQUENCE_RECOVERY_ATTEMPTS) {
+          throw error;
+        }
+        sequence = nextCardSequence(sequence);
+      }
+    }
+    throw new CardKitError('SEQUENCE_UNKNOWN', 'CardKit sequence recovery exhausted');
   }
 
   private async request(url: string, init: RequestInit): Promise<CardKitResponse> {

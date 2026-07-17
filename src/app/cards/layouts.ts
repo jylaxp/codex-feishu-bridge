@@ -23,6 +23,7 @@ export interface ApprovalCardOptions {
   readonly reason: SanitizedCardText;
   readonly cwd?: SanitizedCardText;
   readonly actionTokens: Readonly<Partial<Record<ApprovalDecision, string>>>;
+  readonly availableDecisions: readonly ApprovalDecision[];
 }
 
 export interface ApprovalDecisionCardOptions {
@@ -32,6 +33,22 @@ export interface ApprovalDecisionCardOptions {
   readonly cwd?: SanitizedCardText;
   readonly decision: ApprovalDecision;
   readonly availableDecisions: readonly ApprovalDecision[];
+}
+
+export interface ApprovalSummaryEntryCardOptions {
+  readonly kind: 'command' | 'file' | 'permissions';
+  readonly operationSummary: SanitizedCardText;
+  readonly reason: SanitizedCardText;
+  readonly cwd?: SanitizedCardText;
+  readonly actionTokens: Readonly<Partial<Record<ApprovalDecision, string>>>;
+  readonly availableDecisions: readonly ApprovalDecision[];
+  readonly decision?: ApprovalDecision;
+  readonly decidedAt?: Date;
+  readonly unavailable?: boolean;
+}
+
+export interface ApprovalSummaryCardOptions {
+  readonly entries: readonly ApprovalSummaryEntryCardOptions[];
 }
 
 function markdown(content: SanitizedCardText | string, elementId?: string): Record<string, unknown> {
@@ -65,7 +82,7 @@ function approvalButton(
 
 function approvalDecisionButton(
   decision: ApprovalDecision,
-  selected: ApprovalDecision,
+  selected?: ApprovalDecision,
 ): Record<string, unknown> {
   const labels: Readonly<Record<ApprovalDecision, string>> = {
     accept: decision === selected ? '🟢 已批准 (Approved)' : '批准 (Approve)',
@@ -119,6 +136,57 @@ function approvalColumns(buttons: readonly Record<string, unknown>[]): Record<st
       elements: [button],
     })),
   };
+}
+
+function approvalDecisionStatus(decision: ApprovalDecision, decidedAt: Date): string {
+  const formatted = formatDateTime24h(decidedAt);
+  if (decision === 'accept') {
+    return `✅ **审批已批准** (已于 **${formatted}** 被批准执行一次)`;
+  }
+  if (decision === 'acceptForSession') {
+    return `🛡️ **已总是批准该操作** (已于 **${formatted}** 批准在本次会话中不再询问)`;
+  }
+  if (decision === 'cancel') {
+    return `🛑 **任务已取消** (已于 **${formatted}** 取消该任务。)`;
+  }
+  return `❌ **审批已拒绝** (已于 **${formatted}** 被拒绝执行。Codex 将停止该步骤的执行。)`;
+}
+
+function approvalActionElements(
+  actionTokens: Readonly<Partial<Record<ApprovalDecision, string>>>,
+  availableDecisions: readonly ApprovalDecision[],
+  decision?: ApprovalDecision,
+  unavailable = false,
+): Record<string, unknown> {
+  const decisions = availableDecisions;
+  const buttons = decision || unavailable
+    ? decisions.map((item) => approvalDecisionButton(item, decision))
+    : decisions.flatMap((item) => {
+      const token = actionTokens[item];
+      return token ? [approvalButton(item, token)] : [];
+    });
+  return approvalColumns(buttons);
+}
+
+function approvalDetailElements(options: ApprovalSummaryEntryCardOptions): Record<string, unknown>[] {
+  const operationLabel = options.decision || options.unavailable
+    ? '执行的操作指令'
+    : '准备执行的操作指令';
+  return [
+    markdown(approvalMetadata(options.kind, options.operationSummary, options.cwd)),
+    ...(options.reason && options.reason !== options.operationSummary
+      ? [{ tag: 'hr' }, markdown(`❓ **申请原因**:\n${options.reason}`)]
+      : []),
+    { tag: 'hr' },
+    markdown(`💻 **${operationLabel}**:\n\`\`\`text\n${options.operationSummary}\n\`\`\``),
+    { tag: 'hr' },
+    approvalActionElements(
+      options.actionTokens,
+      options.availableDecisions,
+      options.decision,
+      options.unavailable,
+    ),
+  ];
 }
 
 /** Creates the complete task card from a sanitized projection snapshot. */
@@ -223,7 +291,7 @@ function timelineElements(entries: readonly CardTimelineEntry[] | undefined): re
     if (entry.kind === 'reasoning' && entry.content) {
       return [markdown(
         `📎 **[${entry.time}] 模型推理**\n${entry.content}`,
-        `codex_timeline_reasoning_${index + 1}`,
+        timelineElementId('r', index),
       )];
     }
     if (entry.kind === 'tool' && entry.tool) {
@@ -231,8 +299,8 @@ function timelineElements(entries: readonly CardTimelineEntry[] | undefined): re
         `🛠️ [${entry.time}] 工具执行 · ${entry.tool.count} 步`,
         entry.tool.content,
         entry.tool.count,
-        `codex_timeline_tool_${index + 1}`,
-        `codex_timeline_tool_content_${index + 1}`,
+        timelineElementId('t', index),
+        timelineElementId('c', index),
         entry.tool.icon,
         entry.tool.completed,
         entry.tool.failed,
@@ -240,6 +308,11 @@ function timelineElements(entries: readonly CardTimelineEntry[] | undefined): re
     }
     return [];
   });
+}
+
+/** CardKit element ids must start with a letter and cannot exceed 20 characters. */
+function timelineElementId(kind: 'r' | 't' | 'c', index: number): string {
+  return `tl${kind}${index + 1}`;
 }
 
 function toolPanelElements(payload: CardProjectionPayload): readonly Record<string, unknown>[] {
@@ -350,16 +423,6 @@ function truncateText(text: string, limit: number, suffix: string): string {
 
 /** Creates an approval card whose buttons expose opaque tokens only. */
 export function createApprovalCard(options: ApprovalCardOptions): CardKitJson {
-  const decisions: ApprovalDecision[] = [
-    'accept',
-    'acceptForSession',
-    'decline',
-  ];
-  const buttons = decisions.flatMap((decision) => {
-    const token = options.actionTokens[decision];
-    return token ? [approvalButton(decision, token)] : [];
-  });
-
   return {
     schema: '2.0',
     config: { wide_screen_mode: true },
@@ -371,14 +434,7 @@ export function createApprovalCard(options: ApprovalCardOptions): CardKitJson {
       elements: [
         markdown('🚨 Codex 正在尝试在您的系统上执行以下敏感操作，需要您进行确认授权：'),
         { tag: 'hr' },
-        markdown(approvalMetadata(options.kind, options.operationSummary, options.cwd)),
-        ...(options.reason && options.reason !== options.operationSummary
-          ? [{ tag: 'hr' }, markdown(`❓ **申请原因**:\n${options.reason}`)]
-          : []),
-        { tag: 'hr' },
-        markdown(`💻 **准备执行的操作指令**:\n\`\`\`text\n${options.operationSummary}\n\`\`\``),
-        { tag: 'hr' },
-        approvalColumns(buttons),
+        ...approvalDetailElements(options),
       ],
     },
   };
@@ -391,13 +447,10 @@ export function createApprovalDecisionCard(options: ApprovalDecisionCardOptions)
     ? '✅ 审批已批准'
     : options.decision === 'acceptForSession'
       ? '🛡️ 审批已总是批准'
+      : options.decision === 'cancel'
+        ? '🛑 任务已取消'
       : '❌ 审批已拒绝';
-  const decidedAt = formatDateTime24h(new Date());
-  const status = options.decision === 'accept'
-    ? `✅ **审批已批准** (已于 **${decidedAt}** 被批准执行一次)`
-    : options.decision === 'acceptForSession'
-      ? `🛡️ **已总是批准该操作** (已于 **${decidedAt}** 批准在本次会话中不再询问)`
-      : `❌ **审批已拒绝** (已于 **${decidedAt}** 被拒绝执行。Codex 将停止该步骤的执行。)`;
+  const status = approvalDecisionStatus(options.decision, new Date());
   return {
     schema: '2.0',
     config: { wide_screen_mode: true },
@@ -409,17 +462,69 @@ export function createApprovalDecisionCard(options: ApprovalDecisionCardOptions)
       elements: [
         markdown(status),
         { tag: 'hr' },
-        markdown(approvalMetadata(options.kind, options.operationSummary, options.cwd)),
-        ...(options.reason && options.reason !== options.operationSummary
-          ? [{ tag: 'hr' }, markdown(`❓ **申请原因**:\n${options.reason}`)]
-          : []),
-        { tag: 'hr' },
-        markdown(`💻 **执行的操作指令**:\n\`\`\`text\n${options.operationSummary}\n\`\`\``),
-        { tag: 'hr' },
-        approvalColumns((['accept', 'acceptForSession', 'decline'] as const).map((decision) => (
-          approvalDecisionButton(decision, options.decision)
-        ))),
+        ...approvalDetailElements({
+          kind: options.kind,
+          operationSummary: options.operationSummary,
+          reason: options.reason,
+          cwd: options.cwd,
+          actionTokens: {},
+          availableDecisions: options.availableDecisions,
+          decision: options.decision,
+        }),
       ],
     },
+  };
+}
+
+/** Marks a card unavailable when its decision could not reach ChatGPT Desktop. */
+export function createApprovalUnavailableCard(options: ApprovalCardOptions): CardKitJson {
+  return {
+    schema: '2.0',
+    config: { wide_screen_mode: true },
+    header: {
+      template: 'carmine',
+      title: { tag: 'plain_text', content: '⚠️ 审批未能送达 Desktop' },
+    },
+    body: {
+      elements: [
+        markdown('该审批结果未能确认送达 ChatGPT Desktop。为避免重复或错误授权，全部操作按钮已禁用。'),
+        { tag: 'hr' },
+        ...approvalDetailElements({ ...options, unavailable: true }),
+      ],
+    },
+  };
+}
+
+/** Creates one updatable approval tray for all approvals raised by a task. */
+export function createApprovalSummaryCard(options: ApprovalSummaryCardOptions): CardKitJson {
+  const waitingCount = options.entries.filter((entry) => !entry.decision && !entry.unavailable).length;
+  const elements: Record<string, unknown>[] = [
+    markdown(
+      waitingCount > 0
+        ? `🚨 此任务有 **${waitingCount}** 项待确认的敏感操作。请逐项作出决定。`
+        : '✅ 此任务的全部安全审批都已处理。',
+    ),
+  ];
+  for (const [index, entry] of options.entries.entries()) {
+    const state = entry.decision
+      ? approvalDecisionStatus(entry.decision, entry.decidedAt ?? new Date())
+      : entry.unavailable
+        ? '⚠️ **审批结果未能送达 Desktop，按钮已禁用**'
+      : '⏳ **等待审批决定**';
+    elements.push(
+      { tag: 'hr' },
+      markdown(`**审批 ${index + 1}**\n${state}`),
+      { tag: 'hr' },
+      ...approvalDetailElements(entry),
+    );
+  }
+  return {
+    schema: '2.0',
+    config: { wide_screen_mode: true },
+    header: {
+      template: waitingCount > 0 ? 'violet' : 'green',
+      title: { tag: 'plain_text', content: '⚡️ Codex 安全审批申请' },
+    },
+    body: { elements },
   };
 }

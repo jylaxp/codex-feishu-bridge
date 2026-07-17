@@ -35,6 +35,13 @@ export interface InMemoryCardClient {
     acknowledgedSequence: number,
     idempotencyKey?: string,
   ): Promise<number>;
+  streamElement(
+    cardId: string,
+    elementId: string,
+    content: string,
+    acknowledgedSequence: number,
+    idempotencyKey?: string,
+  ): Promise<number>;
   closeStreaming(
     cardId: string,
     acknowledgedSequence: number,
@@ -75,10 +82,12 @@ interface RuntimeTask {
   status: TaskStatus;
   commentary: string;
   lastProcessItemId: string | null;
+  readonly processItemTextById: Map<string, string>;
   tools: string;
   readonly toolExecutions: ToolExecution[];
   readonly timeline: TimelineEntry[];
   finalAnswer: string;
+  lastStreamedAnswer: string;
   readonly startedAtMs: number;
   model: string | null;
   inputTokens: number | null;
@@ -108,6 +117,7 @@ interface ToolExecution {
   readonly category: ActionCategory;
   readonly name: string;
   readonly actionCount: number;
+  outputTail: string;
   completed: boolean;
   failed: boolean;
 }
@@ -126,6 +136,11 @@ const TERMINAL_CARD_RETENTION_MS = 5 * 60_000;
 const TEXT_LIMIT = 128 * 1024;
 const MAX_CARD_RETRY_ATTEMPTS = 3;
 const CARD_RETRY_BASE_DELAY_MS = 250;
+const MAX_PENDING_NOTIFICATIONS = 512;
+const MAX_TOOL_OUTPUT_CHARS = 1_000;
+const MAX_TIMELINE_CARD_ENTRIES = 36;
+const MAX_TIMELINE_CARD_CHARS = 30_000;
+const MAX_TIMELINE_REASONING_CHARS = 4_000;
 
 /**
  * Current-process task state. It deliberately never serializes a task, queue,
@@ -248,10 +263,8 @@ export class InMemoryOrchestrator {
     }
     if (!task.turnId) {
       const pending = this.pendingByThreadId.get(identity.threadId) ?? [];
-      if (pending.length < 64) {
-        pending.push(notification);
-        this.pendingByThreadId.set(identity.threadId, pending);
-      }
+      appendPendingNotification(pending, notification);
+      this.pendingByThreadId.set(identity.threadId, pending);
       return;
     }
     if (task.turnId !== identity.turnId) {
@@ -411,7 +424,7 @@ export class InMemoryOrchestrator {
       binding,
     );
     const cardId = await this.cards.createCard(initialCard);
-    const cardMessageId = await this.cards.replyCard(message.rootMessageId, cardId, `task:${id}`);
+    const cardMessageId = await this.cards.sendCard(message.chatId, cardId, `task:${id}`);
     const task: RuntimeTask = {
       id,
       message,
@@ -423,10 +436,12 @@ export class InMemoryOrchestrator {
       status: 'STARTING',
       commentary: '',
       lastProcessItemId: null,
+      processItemTextById: new Map(),
       tools: '',
       toolExecutions: [],
       timeline: [],
       finalAnswer: '',
+      lastStreamedAnswer: '',
       startedAtMs,
       model: null,
       inputTokens: null,
@@ -496,10 +511,8 @@ export class InMemoryOrchestrator {
     }
     const key = turnKey(identity.threadId, identity.turnId);
     const pending = this.pendingDesktopByTurnKey.get(key) ?? [];
-    if (pending.length < 64) {
-      pending.push(notification);
-      this.pendingDesktopByTurnKey.set(key, pending);
-    }
+    appendPendingNotification(pending, notification);
+    this.pendingDesktopByTurnKey.set(key, pending);
     if (notification.method !== 'turn/started' || this.startingDesktopTurnKeys.has(key)) {
       return;
     }
@@ -553,10 +566,12 @@ export class InMemoryOrchestrator {
       status: 'RUNNING',
       commentary: '',
       lastProcessItemId: null,
+      processItemTextById: new Map(),
       tools: '',
       toolExecutions: [],
       timeline: [],
       finalAnswer: '',
+      lastStreamedAnswer: '',
       startedAtMs,
       model: null,
       inputTokens: null,
@@ -643,29 +658,40 @@ export class InMemoryOrchestrator {
       appendStartedTool(task, params, this.now());
     } else if (notification.method === 'item/completed') {
       completeTool(task, params);
+      completeAgentMessage(task, params, this.now());
     } else if (notification.method === 'item/agentMessage/delta') {
       const phase = stringField(params.phase);
       const delta = stringField(params.delta);
-      const appended = phase === 'commentary'
+      const commentary = phase === 'commentary';
+      const appended = commentary
         ? appendProcessDelta(task, params, delta, this.now())
         : appendToTask(task, 'finalAnswer', delta);
       if (appended) {
         task.lastActivityKind = 'text';
       }
+      if (appended && !commentary) {
+        this.requestAnswerStream(task);
+        return;
+      }
     } else if (notification.method === 'item/reasoning/summaryTextDelta') {
       if (appendProcessDelta(task, params, stringField(params.delta), this.now())) {
         task.lastActivityKind = 'text';
       }
+    } else if (notification.method === 'item/reasoning/textDelta') {
+      if (appendProcessDelta(task, params, stringField(params.delta), this.now())) {
+        task.lastActivityKind = 'text';
+      }
     } else if (notification.method === 'item/commandExecution/outputDelta') {
-      // Command stdout/stderr may be arbitrarily large and often contains
-      // workspace data. The card keeps only a compact invocation summary.
-      return;
+      appendToolOutput(task, params, stringField(params.delta));
     } else if (notification.method === 'error') {
       appendToTask(task, 'tools', stringField((params.error as Record<string, unknown> | undefined)?.message));
     } else if (notification.method === 'turn/completed') {
       const turn = params.turn as Turn;
       task.status = terminalStatus(turn.status);
-      task.finalAnswer = finalAnswerFromTurn(turn);
+      const terminalAnswer = finalAnswerFromTurn(turn);
+      if (terminalAnswer) {
+        task.finalAnswer = terminalAnswer;
+      }
       task.completedAtMs = this.now();
       void this.refreshRateLimits(task);
       void this.uploadFilesForSuccessfulTask(task);
@@ -689,6 +715,43 @@ export class InMemoryOrchestrator {
       void this.flushCard(task, TERMINAL.has(task.status));
     }, this.config.cardUpdateIntervalMs);
     task.updateTimer.unref();
+  }
+
+  private requestAnswerStream(task: RuntimeTask): void {
+    const write = task.cardWrite.then(
+      () => this.writeAnswerStream(task),
+      () => this.writeAnswerStream(task),
+    );
+    task.cardWrite = write;
+    void write;
+  }
+
+  private async writeAnswerStream(task: RuntimeTask): Promise<void> {
+    if (!this.tasksById.has(task.id) || task.streamingClosed || !task.finalAnswer) {
+      return;
+    }
+    const content = `${task.finalAnswer} ▍`;
+    if (content === task.lastStreamedAnswer) {
+      return;
+    }
+    try {
+      task.cardSequence = await this.cards.streamElement(
+        task.cardId,
+        'codex_output',
+        content,
+        task.cardSequence,
+        `task:${task.id}:output:${task.cardSequence + 1}`,
+      );
+      task.lastStreamedAnswer = content;
+      task.cardRetryCount = 0;
+    } catch (error) {
+      const cardError = toError(error);
+      if (error instanceof CardKitError && error.retryable && task.cardRetryCount < MAX_CARD_RETRY_ATTEMPTS) {
+        this.scheduleCardRetry(task);
+        return;
+      }
+      this.onCardError(cardError);
+    }
   }
 
   private async flushCard(task: RuntimeTask, terminal: boolean): Promise<void> {
@@ -900,7 +963,10 @@ function taskCard(
       title: sanitizeCardText('Codex 任务', { maxLength: 200 }),
       prompt: sanitizeCardMarkdown(prompt, { maxLength: 10_000 }),
       metadata: metadata ? sanitizeCardMarkdown(metadata, { maxLength: 1_000 }) : null,
-      commentary: sanitizeCardMarkdown(commentary, { maxLength: 10_000 }),
+      commentary: sanitizeCardMarkdown(
+        removeDesktopInternalProgress(commentary) ?? '',
+        { maxLength: 10_000 },
+      ),
       toolSummary: sanitizeCardPlainText(tools.text || '暂无', { maxLength: 10_000 }),
       toolCount: tools.count,
       toolGroups: tools.groups,
@@ -913,34 +979,93 @@ function taskCard(
 }
 
 function timelineProjection(entries: readonly TimelineEntry[]): readonly CardTimelineEntry[] {
-  return entries.flatMap<CardTimelineEntry>((entry): readonly CardTimelineEntry[] => {
-    const time = sanitizeCardPlainText(formatTimelineTime(entry.occurredAtMs), { maxLength: 16 });
-    if (entry.kind === 'reasoning' && entry.text) {
-      return [Object.freeze({
-        kind: 'reasoning' as const,
-        time,
-        content: sanitizeCardMarkdown(entry.text, { maxLength: 10_000 }),
-      })];
+  const projected: CardTimelineEntry[] = [];
+  let toolEntries: TimelineEntry[] = [];
+  let projectedCharacters = 0;
+  let truncated = false;
+
+  const append = (entry: CardTimelineEntry, size: number): boolean => {
+    if (
+      projected.length >= MAX_TIMELINE_CARD_ENTRIES
+      || projectedCharacters + size > MAX_TIMELINE_CARD_CHARS
+    ) {
+      truncated = true;
+      return false;
     }
+    projected.push(entry);
+    projectedCharacters += size;
+    return true;
+  };
+  const flushTools = (): boolean => {
+    if (toolEntries.length === 0) {
+      return true;
+    }
+    const executions = toolEntries.flatMap((entry) => entry.execution ? [entry.execution] : []);
+    const first = toolEntries[0];
+    toolEntries = [];
+    if (!first || executions.length === 0) {
+      return true;
+    }
+    const tool = toolGroupForExecutions(executions);
+    return append(Object.freeze({
+      kind: 'tool',
+      time: sanitizeCardPlainText(formatTimelineTime(first.occurredAtMs), { maxLength: 16 }),
+      tool,
+    }), tool.content.length + tool.title.length);
+  };
+
+  for (const entry of entries) {
     if (entry.kind === 'tool' && entry.execution) {
-      return [Object.freeze({
-        kind: 'tool' as const,
-        time,
-        tool: toolGroupForExecution(entry.execution),
-      })];
+      const prior = toolEntries.at(-1)?.execution;
+      if (prior && prior.groupId !== entry.execution.groupId) {
+        if (!flushTools()) break;
+      }
+      toolEntries.push(entry);
+      continue;
     }
-    return [];
-  });
+    if (!flushTools()) break;
+    if (entry.kind !== 'reasoning' || !entry.text) {
+      continue;
+    }
+    const visibleText = removeDesktopInternalProgress(entry.text) ?? '';
+    if (!visibleText) {
+      continue;
+    }
+    const content = sanitizeCardMarkdown(visibleText, { maxLength: MAX_TIMELINE_REASONING_CHARS });
+    if (!append(Object.freeze({
+      kind: 'reasoning',
+      time: sanitizeCardPlainText(formatTimelineTime(entry.occurredAtMs), { maxLength: 16 }),
+      content,
+    }), content.length)) break;
+  }
+  if (!truncated && !flushTools()) {
+    truncated = true;
+  }
+  if (truncated) {
+    const lastTime = entries.at(-1)?.occurredAtMs ?? Date.now();
+    const marker = Object.freeze({
+      kind: 'reasoning' as const,
+      time: sanitizeCardPlainText(formatTimelineTime(lastTime), { maxLength: 16 }),
+      content: sanitizeCardMarkdown('… 后续执行过程因卡片长度限制未在飞书展示。', { maxLength: 100 }),
+    });
+    if (projected.length >= MAX_TIMELINE_CARD_ENTRIES) {
+      projected.splice(projected.length - 1, 1, marker);
+    } else {
+      projected.push(marker);
+    }
+  }
+  return Object.freeze(projected);
 }
 
-function toolGroupForExecution(execution: ToolExecution): CardToolGroup {
+function toolGroupForExecutions(executions: readonly ToolExecution[]): CardToolGroup {
+  const count = executions.reduce((total, execution) => total + execution.actionCount, 0);
   return Object.freeze({
-    title: sanitizeCardPlainText(`🛠️ 工具执行 · ${execution.actionCount} 步`, { maxLength: 100 }),
-    content: sanitizeCardMarkdown(`- \`${execution.command}\``, { maxLength: 2_000 }),
-    count: execution.actionCount,
+    title: sanitizeCardPlainText(`🛠️ 工具执行 · ${count} 步`, { maxLength: 100 }),
+    content: sanitizeCardMarkdown(toolExecutionContent(executions), { maxLength: 4_000 }),
+    count,
     icon: 'api-app_outlined',
-    completed: execution.completed,
-    failed: execution.failed,
+    completed: executions.every((execution) => execution.completed),
+    failed: executions.some((execution) => execution.failed),
   });
 }
 
@@ -965,16 +1090,7 @@ function toolProjection(
     grouped.set(execution.groupId, group);
   }
   const groups: CardToolGroup[] = [...grouped.values()].map((group) => {
-    const actionCount = group.reduce((total, execution) => total + execution.actionCount, 0);
-    const content = group.map((execution) => `- \`${execution.command}\``).join('\n');
-    return Object.freeze({
-      title: sanitizeCardPlainText(`🛠️ 工具执行 · ${actionCount} 步`, { maxLength: 100 }),
-      content: sanitizeCardMarkdown(content, { maxLength: 2_000 }),
-      count: actionCount,
-      icon: 'api-app_outlined',
-      completed: group.every((execution) => execution.completed),
-      failed: group.some((execution) => execution.failed),
-    });
+    return toolGroupForExecutions(group);
   });
   const lines = executions.map((execution, index) => {
     const state = execution.completed ? (execution.failed ? '❌' : '✅') : '⏳';
@@ -995,6 +1111,15 @@ function toolProjection(
 
 function summarizeCommand(command: string): string {
   return oneLine(command, 240);
+}
+
+function toolExecutionContent(executions: readonly ToolExecution[]): string {
+  return executions.map((execution) => {
+    const output = execution.outputTail.trim();
+    return output
+      ? `- \`${execution.command}\`\n\`\`\`text\n${output}\n\`\`\``
+      : `- \`${execution.command}\``;
+  }).join('\n');
 }
 
 type ActionCategory = keyof ActionCounts;
@@ -1197,8 +1322,9 @@ function appendProcessDelta(
   params: Record<string, unknown>,
   delta: string | null,
   nowMs: number,
+  includeTimeline = true,
 ): boolean {
-  if (!delta || isDesktopInternalProgressLabel(delta)) {
+  if (!delta) {
     return false;
   }
   const itemId = stringField(params.itemId);
@@ -1206,29 +1332,102 @@ function appendProcessDelta(
     ? '\n\n'
     : '';
   const appended = appendToTask(task, 'commentary', `${separator}${delta}`);
-  if (appended && itemId) {
+  if (appended && itemId && includeTimeline) {
     task.lastProcessItemId = itemId;
-    const latest = task.timeline.at(-1);
-    if (latest?.kind === 'reasoning' && latest.itemId === itemId) {
-      latest.text = `${latest.text ?? ''}${delta}`;
-    } else {
-      task.timeline.push({
-        kind: 'reasoning',
-        itemId,
-        occurredAtMs: numberField(params.startedAtMs) ?? nowMs,
-        text: delta,
-      });
-    }
+    const currentText = `${task.processItemTextById.get(itemId) ?? ''}${delta}`;
+    task.processItemTextById.set(itemId, currentText);
+    const visibleText = removeDesktopInternalProgress(currentText) ?? '';
+    replaceReasoningTimelineEntry(
+      task,
+      itemId,
+      visibleText,
+      numberField(params.startedAtMs) ?? nowMs,
+    );
   }
   return appended;
 }
 
-function isDesktopInternalProgressLabel(value: string): boolean {
-  if (/[^\x00-\x7F]/.test(value)) {
+function completeAgentMessage(
+  task: RuntimeTask,
+  params: Record<string, unknown>,
+  nowMs: number,
+): void {
+  const item = recordField(params.item);
+  const itemId = stringField(item?.id) ?? stringField(params.itemId);
+  if (!item || !itemId || item.type !== 'agentMessage' || item.phase !== 'commentary') {
+    return;
+  }
+  const text = threadItemText(item as Turn['items'][number]);
+  task.processItemTextById.set(itemId, text);
+  replaceReasoningTimelineEntry(
+    task,
+    itemId,
+    removeDesktopInternalProgress(text) ?? '',
+    numberField(params.completedAtMs) ?? nowMs,
+  );
+}
+
+function replaceReasoningTimelineEntry(
+  task: RuntimeTask,
+  itemId: string,
+  text: string,
+  occurredAtMs: number,
+): void {
+  for (let index = task.timeline.length - 1; index >= 0; index -= 1) {
+    const entry = task.timeline[index];
+    if (!entry) {
+      continue;
+    }
+    if (entry.kind === 'reasoning' && entry.itemId === itemId) {
+      if (text) {
+        entry.text = text;
+      } else {
+        task.timeline.splice(index, 1);
+      }
+      return;
+    }
+  }
+  if (text) {
+    task.timeline.push({
+      kind: 'reasoning',
+      itemId,
+      occurredAtMs,
+      text,
+    });
+  }
+}
+
+/** Drops Desktop-only English progress labels while keeping the model's visible text unchanged. */
+function removeDesktopInternalProgress(value: string | null): string | null {
+  if (!value) {
+    return null;
+  }
+  const lines = value.split(/\n+/)
+    .map((line) => line.trim())
+    .filter((line) => line && !isDesktopInternalProgressLine(line));
+  const text = lines.join('\n');
+  return text
+    .replace(desktopInternalProgressPattern(), '')
+    .replace(/\*{2,}/g, '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+}
+
+function isDesktopInternalProgressLine(value: string): boolean {
+  const line = value.trim();
+  if (!line || /[\u3400-\u9fff]/.test(line)) {
     return false;
   }
-  return /^\s*(?:planning|designing|implementing|finalizing|reviewing|inspecting|assessing|fixing|analyzing|searching|reading|loading|validating)\b/i
-    .test(value);
+  const normalized = line.replace(/[`*_]/g, '').trim();
+  if (!normalized) {
+    return true;
+  }
+  return desktopInternalProgressPattern().test(normalized)
+    || /^[a-z]+(?:[\s-]+[a-z0-9./]+){0,8}$/i.test(normalized);
+}
+
+function desktopInternalProgressPattern(): RegExp {
+  return /(?:\*+\s*)?\b(?:preparing|planning|designing|implementing|finalizing|inspecting|assessing|fixing|analyzing|searching|reading|loading|validating|identifying|verifying|evaluating)\b[^\u3400-\u9fff\n]*/gi;
 }
 
 function appendStartedTool(task: RuntimeTask, params: Record<string, unknown>, nowMs: number): void {
@@ -1252,6 +1451,7 @@ function appendStartedTool(task: RuntimeTask, params: Record<string, unknown>, n
     category: descriptor.category,
     name: descriptor.name,
     actionCount: descriptor.count,
+    outputTail: '',
     completed: false,
     failed: false,
   };
@@ -1262,6 +1462,25 @@ function appendStartedTool(task: RuntimeTask, params: Record<string, unknown>, n
     occurredAtMs: numberField(params.startedAtMs) ?? nowMs,
     execution,
   });
+}
+
+function appendToolOutput(
+  task: RuntimeTask,
+  params: Record<string, unknown>,
+  delta: string | null,
+): void {
+  const itemId = stringField(params.itemId);
+  if (!itemId || !delta) {
+    return;
+  }
+  const execution = task.toolExecutions.find((entry) => entry.itemId === itemId);
+  if (!execution) {
+    return;
+  }
+  const output = `${execution.outputTail}${delta}`;
+  execution.outputTail = output.length <= MAX_TOOL_OUTPUT_CHARS
+    ? output
+    : output.slice(-MAX_TOOL_OUTPUT_CHARS);
 }
 
 function completeTool(task: RuntimeTask, params: Record<string, unknown>): void {
@@ -1344,11 +1563,36 @@ function turnKey(threadId: string, turnId: string): string {
   return `${threadId.length}:${threadId}${turnId.length}:${turnId}`;
 }
 
+function appendPendingNotification(
+  pending: ServerNotification[],
+  notification: ServerNotification,
+): void {
+  if (pending.length >= MAX_PENDING_NOTIFICATIONS) {
+    pending.shift();
+  }
+  pending.push(notification);
+}
+
 function finalAnswerFromTurn(turn: Turn): string {
   return turn.items
-    .filter((item) => item.type === 'agentMessage' && item.phase === 'final_answer')
-    .map((item) => item.text ?? '')
+    .filter((item) => item.type === 'agentMessage' && (
+      item.phase === 'final_answer' || !item.phase
+    ))
+    .map(threadItemText)
+    .filter(Boolean)
     .join('');
+}
+
+function threadItemText(item: Turn['items'][number]): string {
+  if (item.text?.trim()) {
+    return item.text;
+  }
+  if (!Array.isArray(item.content)) {
+    return '';
+  }
+  return item.content.map((content) => (
+    typeof content === 'string' ? content : content.type === 'text' ? content.text : ''
+  )).join('');
 }
 
 function desktopPrompt(turn: Turn): string | null {

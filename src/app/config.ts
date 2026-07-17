@@ -165,6 +165,14 @@ function parseLogFilePath(env: NodeJS.ProcessEnv): string | null {
   return value;
 }
 
+function parseApprovalCardMode(env: NodeJS.ProcessEnv): BridgeConfig['approvalCardMode'] {
+  const value = env.APPROVAL_SUMMARY_MODE?.trim() || '0';
+  if (value !== '0' && value !== '1') {
+    throw new ConfigurationError('APPROVAL_SUMMARY_MODE must be 0 or 1');
+  }
+  return value === '1' ? 'summary' : 'individual';
+}
+
 /**
  * Parses environment values without touching the filesystem or mutating the
  * supplied environment object. Filesystem and runtime checks belong to
@@ -184,6 +192,7 @@ export function parseEnvironment(env: NodeJS.ProcessEnv): BridgeConfig {
     allowedChats: parseOptionalList(env, 'ALLOWED_CHATS'),
     authorizedUsers: parseOptionalList(env, 'AUTHORIZED_USERS'),
     allowedApprovers: parseOptionalList(env, 'ALLOWED_APPROVERS'),
+    approvalCardMode: parseApprovalCardMode(env),
     allowedShellCommands: parseAllowedShellCommands(env),
     ...appServer,
     codexBin: requireAbsolutePath(env, 'CODEX_BIN'),

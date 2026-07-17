@@ -90,6 +90,12 @@ function errorIdentity(error: unknown): LogFields {
     return { errorType: 'UnknownError' };
   }
   const fields: Record<string, string> = { errorType: error.name || 'Error' };
+  // CardKit returns the actionable failure reason only in Error.message. Keeping a
+  // bounded, single-line copy is necessary to distinguish sequence, payload, and
+  // transport failures without ever serializing a request body or token.
+  if (error.message) {
+    fields.errorMessage = error.message.replace(/\s+/g, ' ').slice(0, 500);
+  }
   const errorWithCode = error as Error & { readonly code?: unknown };
   if (
     typeof errorWithCode.code === 'string'

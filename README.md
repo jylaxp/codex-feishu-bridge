@@ -101,6 +101,8 @@ LARK_TENANT_KEY=
 ALLOWED_CHATS=
 AUTHORIZED_USERS=
 ALLOWED_APPROVERS=
+# 是否按任务汇总审批卡：0 = 默认，每项审批各发一张卡；1 = 同一任务的全部审批汇总为一张卡。
+APPROVAL_SUMMARY_MODE=0
 
 CODEX_BIN=/absolute/path/to/codex
 # 可省略；默认使用 ~/.codex-feishu-bridge
@@ -115,6 +117,8 @@ ALLOWED_SHELL_COMMANDS=ls,pwd,git,find,cd
 ```
 
 `CODEX_CWD` 只决定未单独绑定目录时的默认启动目录；省略时使用 `BRIDGE_CONFIG_HOME`（通常是 `~/.codex-feishu-bridge`）。每个 Codex 任务以 `dangerFullAccess` 启动，可以读取和修改本机任意路径，不再使用 `ALLOWED_WORKSPACE_ROOTS` 白名单。
+
+`APPROVAL_SUMMARY_MODE=0`（或留空）时，保持原应用的审批投递方式：每次审批都会发出一张独立审批卡。设为 `1` 时，同一个任务只保留一张审批汇总卡；后续审批会更新到该卡中，每个审批区块仍独立显示命令、原因和三个操作按钮。无论哪种模式，任一审批作出选择后，该审批区块的全部按钮都会禁用。
 
 `LOG_TO_FILE=true` 时，Bridge 写脱敏、轮转的运行日志；相对 `LOG_FILE_PATH` 位于 config-home 的 `logs/`，绝对路径按用户显式配置处理。日志不会记录 prompt、回复或 CardKit payload。`ENABLE_AUTO_FILE_UPLOAD=true` 时，最终回复中指向绝对本地路径的非图片 Markdown 文件会作为同一飞书话题的文件回复上传；文件数量、类型和大小校验仍然保留，该信息不会保存到 Bridge 文件。
 

@@ -18,7 +18,7 @@
   "scripts": {
     "prepare": "npm run build",
     "build": "npm run build:app",
-    "build:app": "npm run clean:app && tsc -p tsconfig.app.json",
+    "build:app": "npm run clean:app && tsc -p tsconfig.app.json && node scripts/mark-cli-executable.mjs",
     "clean:app": "node scripts/clean-app-build.mjs",
     "start": "node dist/app/cli.js run",
     "doctor": "node dist/app/cli.js doctor",

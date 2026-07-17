@@ -33,6 +33,9 @@ export type SanitizedCardText = string & {
 
 export type ApprovalDecision = 'accept' | 'acceptForSession' | 'decline' | 'cancel';
 
+/** Controls whether approvals are posted one-per-card or aggregated per task. */
+export type ApprovalCardMode = 'individual' | 'summary';
+
 export interface CardToolGroup {
   readonly title: SanitizedCardText;
   readonly content: SanitizedCardText;
@@ -74,6 +77,8 @@ export interface BridgeConfig {
   readonly allowedChats: readonly string[];
   readonly authorizedUsers: readonly string[];
   readonly allowedApprovers: readonly string[];
+  /** Defaults to individual cards to preserve the established Feishu workflow. */
+  readonly approvalCardMode: ApprovalCardMode;
   /** Explicitly trusted local executables for /cmd, /run and /shell. */
   readonly allowedShellCommands?: readonly string[];
   readonly appServerMode: 'owned_stdio' | 'managed_proxy';

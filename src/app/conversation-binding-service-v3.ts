@@ -8,7 +8,14 @@ import { createTaskCard, type CardKitJson } from './cards/layouts';
 import { sanitizeCardMarkdown, sanitizeCardPlainText, sanitizeCardText } from './cards/sanitizer';
 import { type ThreadNavigation } from './codex/app-navigation-adapter';
 import type { Thread, ThreadItem, ThreadResumeResponse, Turn } from './codex/protocol';
-import type { BridgeConfig, CardProjectionPayload, SanitizedCardText, TaskStatus } from './domain';
+import type {
+  BridgeConfig,
+  CardProjectionPayload,
+  CardTimelineEntry,
+  CardToolGroup,
+  SanitizedCardText,
+  TaskStatus,
+} from './domain';
 import type { InboundTextMessage } from './lark/intake';
 import { toast } from './lark/event-server';
 
@@ -127,20 +134,23 @@ export class ConversationBindingServiceV3 {
     }
     this.prunePendingBindingCards();
     const pending = this.pendingBindingCards.get(action.token);
-    if (!pending || pending.messageId !== action.messageId) {
+    if (pending && pending.messageId !== action.messageId) {
       return toast('选择卡已过期，请重新 /bind', 'warning');
     }
-    const workspaceId = pending.choice.cwd ?? this.config.codexCwd;
-    const selectedCard = disabledPickerCard(pending.card, action.token);
+    const choice = pending?.choice ?? await this.readThreadChoice(payload.threadId);
+    const workspaceId = choice.cwd ?? this.config.codexCwd;
+    const selectedCard = pending ? disabledPickerCard(pending.card, action.token) : undefined;
     const binding = this.store.bind({
       tenantKey: action.tenantKey,
       chatId: action.chatId,
       threadId: payload.threadId,
       workspaceId,
     });
-    for (const [token, context] of this.pendingBindingCards) {
-      if (context.cardId === pending.cardId) {
-        this.pendingBindingCards.delete(token);
+    if (pending) {
+      for (const [token, context] of this.pendingBindingCards) {
+        if (context.cardId === pending.cardId) {
+          this.pendingBindingCards.delete(token);
+        }
       }
     }
     this.logger?.info('binding_action_accepted', {
@@ -149,13 +159,12 @@ export class ConversationBindingServiceV3 {
       revision: binding.revision,
     });
     void this.completeBindingSideEffects(binding, action.messageId);
-    return {
-      ...toast('成功绑定到 Codex 会话', 'success'),
-      card: {
-        type: 'raw',
-        data: selectedCard,
-      },
-    };
+    return selectedCard
+      ? {
+          ...toast('成功绑定到 Codex 会话', 'success'),
+          card: { type: 'raw', data: selectedCard },
+        }
+      : toast('成功绑定到 Codex 会话', 'success');
   }
 
   public async handleOpenAction(action: BindingActionV3): Promise<object> {
@@ -191,8 +200,8 @@ export class ConversationBindingServiceV3 {
     }));
     const card = await pickerCard(entries, table, binding?.threadId, await this.workspaceStateReader());
     const cardId = await this.cards.createCard(card);
-    const messageId = await this.cards.replyCard(
-      message.rootMessageId,
+    const messageId = await this.cards.sendCard(
+      message.chatId,
       cardId,
       `binding:${message.eventId}:${table ? 'picker-table' : 'picker'}`,
     );
@@ -258,6 +267,9 @@ export class ConversationBindingServiceV3 {
     binding: ChatThreadBinding,
     messageId: string,
   ): Promise<void> {
+    if (this.getBinding(binding.tenantKey, binding.chatId)?.revision !== binding.revision) {
+      return;
+    }
     try {
       if (await this.projectActiveDesktopTurn?.(binding)) {
         this.logger?.info('binding_active_turn_projected', {
@@ -310,6 +322,16 @@ export class ConversationBindingServiceV3 {
         threadId: binding.threadId,
         excludeTurns: false,
       });
+      const newestTurn = response.thread.turns.at(-1);
+      if (newestTurn?.status === 'inProgress') {
+        this.logger?.info('history_push_skipped_active_turn', {
+          source,
+          chatId: binding.chatId,
+          threadId: binding.threadId,
+          turnId: newestTurn.id,
+        });
+        return;
+      }
       const turn = latestTerminalTurn(response.thread);
       if (!turn) {
         this.logger?.warn('history_push_no_terminal_turn', {
@@ -348,7 +370,24 @@ export class ConversationBindingServiceV3 {
 
   private async reply(message: InboundTextMessage, card: CardKitJson, operation: string): Promise<void> {
     const cardId = await this.cards.createCard(card);
-    await this.cards.replyCard(message.rootMessageId, cardId, `binding:${message.eventId}:${operation}`);
+    await this.cards.sendCard(message.chatId, cardId, `binding:${message.eventId}:${operation}`);
+  }
+
+  private async readThreadChoice(threadId: string): Promise<ThreadChoice> {
+    const response = asRecord(await this.catalog.request<unknown>('thread/read', {
+      threadId,
+      includeTurns: false,
+    }));
+    const thread = asRecord(response?.thread) ?? response;
+    if (!thread) {
+      throw new Error('Selected thread is no longer available');
+    }
+    return Object.freeze({
+      id: threadId,
+      title: typeof thread.name === 'string' && thread.name.trim() ? thread.name.trim() : '未命名会话',
+      cwd: typeof thread.cwd === 'string' && thread.cwd.trim() ? thread.cwd : null,
+      updatedAt: normalizeUpdatedAt(thread.updatedAt),
+    });
   }
 
   private pruneConsumedOpenTokens(): void {
@@ -373,7 +412,7 @@ export class ConversationBindingServiceV3 {
 function latestTerminalTurn(thread: Thread): Turn | null {
   for (let index = thread.turns.length - 1; index >= 0; index -= 1) {
     const turn = thread.turns[index];
-    if (turn && (turn.status === 'completed' || turn.status === 'failed')) {
+    if (turn && (turn.status === 'completed' || turn.status === 'failed' || turn.status === 'interrupted')) {
       return turn;
     }
   }
@@ -397,6 +436,7 @@ function createHistoryTaskCard(
     commentary: sanitizeCardMarkdown(commentaryFromTurn(turn), { maxLength: 10_000 }),
     toolSummary: sanitizeCardPlainText(toolSummaryFromTurn(turn), { maxLength: 10_000 }),
     toolCount: toolCountFromTurn(turn),
+    timeline: historyTimelineFromTurn(turn),
     finalAnswer: sanitizeCardMarkdown(finalAnswerFromTurn(turn) || failureTextFromTurn(turn), { maxLength: 10_000 }),
     footer: sanitizeCardPlainText(historyFooter(turn, status, stats, rateLimitText), { maxLength: 1_000 }),
     terminal: true,
@@ -592,42 +632,15 @@ function promptFromTurn(turn: Turn): string | null {
 
 function commentaryFromTurn(turn: Turn): string {
   let commentary = '';
-  let commandCount = 0;
   for (const item of turn.items) {
     if ((isAgentMessage(item) && item.phase === 'commentary') || item.type === 'reasoning') {
-      commentary += textFromItem(item);
-      continue;
+      const text = visibleHistoryReasoning(item);
+      if (text) {
+        commentary += `${commentary ? '\n\n' : ''}${text}`;
+      }
     }
-    if (!isToolItem(item)) {
-      continue;
-    }
-    commandCount += 1;
-    if (commandCount === 2) {
-      commentary += '\n\n---\n📎 *后续执行指令已自动折叠*';
-      continue;
-    }
-    if (commandCount > 2) {
-      continue;
-    }
-    const command = truncateOneLine(typeof item.command === 'string' ? item.command : '', 120);
-    const exitStatus = item.exitCode === 0
-      ? '成功'
-      : typeof item.exitCode === 'number' ? `失败 (Exit Code: ${item.exitCode})` : '完成';
-    const output = historyCommandOutput(item.aggregatedOutput);
-    commentary += `${commentary ? '\n\n---\n' : ''}🛠️ 运行命令: \`${command}\`\n`
-      + `📌 命令执行结束: ${exitStatus}${output}`;
   }
   return commentary;
-}
-
-function historyCommandOutput(value: string | null | undefined): string {
-  if (!value?.trim()) return '';
-  const output = value.trim();
-  const limit = 800;
-  const display = output.length <= limit
-    ? output
-    : `${output.slice(0, limit / 2)}\n... (truncated) ...\n${output.slice(-(limit / 2))}`;
-  return `\n\`\`\`text\n${display}\n\`\`\``;
 }
 
 function finalAnswerFromTurn(turn: Turn): string {
@@ -671,7 +684,19 @@ function isAgentMessage(item: ThreadItem): boolean {
 }
 
 function isToolItem(item: ThreadItem): boolean {
-  return item.type === 'commandExecution' || item.type === 'command_execution';
+  return [
+    'commandExecution',
+    'command_execution',
+    'mcpToolCall',
+    'fileChange',
+    'toolCall',
+    'dynamicToolCall',
+    'collabAgentToolCall',
+    'subAgentActivity',
+    'webSearch',
+    'imageView',
+    'imageGeneration',
+  ].includes(item.type);
 }
 
 function textFromItem(item: ThreadItem): string {
@@ -687,6 +712,147 @@ function textFromItem(item: ThreadItem): string {
     }
     return content.type === 'text' ? content.text : '';
   }).join('\n').trim();
+}
+
+function historyTimelineFromTurn(turn: Turn): readonly CardTimelineEntry[] {
+  const timeline: CardTimelineEntry[] = [];
+  let group: ThreadItem[] = [];
+  const time = sanitizeCardPlainText(historyTimelineTime(turn.startedAt), { maxLength: 16 });
+  const flushTools = (): void => {
+    if (group.length === 0) {
+      return;
+    }
+    timeline.push(Object.freeze({
+      kind: 'tool',
+      time,
+      tool: historyToolGroup(group),
+    }));
+    group = [];
+  };
+  for (const item of turn.items) {
+    if (isToolItem(item)) {
+      group.push(item);
+      continue;
+    }
+    flushTools();
+    if (!((isAgentMessage(item) && item.phase === 'commentary') || item.type === 'reasoning')) {
+      continue;
+    }
+    const text = visibleHistoryReasoning(item);
+    if (text) {
+      timeline.push(Object.freeze({
+        kind: 'reasoning',
+        time,
+        content: sanitizeCardMarkdown(text, { maxLength: 4_000 }),
+      }));
+    }
+  }
+  flushTools();
+  return boundedHistoryTimeline(timeline);
+}
+
+function boundedHistoryTimeline(entries: readonly CardTimelineEntry[]): readonly CardTimelineEntry[] {
+  const maxEntries = 20;
+  const maxCharacters = 24_000;
+  const result: CardTimelineEntry[] = [];
+  let characters = 0;
+  for (const entry of entries) {
+    const size = entry.kind === 'reasoning'
+      ? entry.content?.length ?? 0
+      : (entry.tool?.title.length ?? 0) + (entry.tool?.content.length ?? 0);
+    if (result.length >= maxEntries || characters + size > maxCharacters) {
+      const time = entries.at(-1)?.time
+        ?? sanitizeCardPlainText(historyTimelineTime(null), { maxLength: 16 });
+      const marker = Object.freeze({
+        kind: 'reasoning' as const,
+        time,
+        content: sanitizeCardMarkdown('… 更早的历史过程因卡片长度限制未在飞书展示。', { maxLength: 100 }),
+      });
+      if (result.length >= maxEntries) {
+        result.splice(result.length - 1, 1, marker);
+      } else {
+        result.push(marker);
+      }
+      break;
+    }
+    result.push(entry);
+    characters += size;
+  }
+  return Object.freeze(result);
+}
+
+function historyToolGroup(items: readonly ThreadItem[]): CardToolGroup {
+  const content = items.map((item) => {
+    const command = historyToolCommand(item);
+    const output = boundedHistoryOutput(item.aggregatedOutput);
+    return output ? `- \`${command}\`\n\`\`\`text\n${output}\n\`\`\`` : `- \`${command}\``;
+  }).join('\n');
+  return Object.freeze({
+    title: sanitizeCardPlainText(`🛠️ 工具执行 · ${items.length} 步`, { maxLength: 100 }),
+    content: sanitizeCardMarkdown(content, { maxLength: 4_000 }),
+    count: items.length,
+    icon: 'api-app_outlined',
+    completed: items.every((item) => item.status === 'completed' || item.exitCode === 0),
+    failed: items.some((item) => (
+      item.status === 'failed' || (typeof item.exitCode === 'number' && item.exitCode !== 0)
+    )),
+  });
+}
+
+function historyToolCommand(item: ThreadItem): string {
+  if (typeof item.command === 'string' && item.command.trim()) {
+    return item.command.trim();
+  }
+  const candidate = [item.toolName, item.tool, item.description, item.query, item.path]
+    .find((value) => typeof value === 'string' && value.trim());
+  return typeof candidate === 'string' ? candidate : item.type;
+}
+
+function boundedHistoryOutput(value: string | null | undefined): string {
+  const text = value?.trim() ?? '';
+  return text.length <= 1_000 ? text : text.slice(-1_000);
+}
+
+function visibleHistoryReasoning(item: ThreadItem): string {
+  const text = item.type === 'reasoning' && Array.isArray(item.summary)
+    ? item.summary.join('\n')
+    : textFromItem(item);
+  return removeHistoryInternalProgress(text);
+}
+
+function removeHistoryInternalProgress(value: string): string {
+  const lines = value.split(/\n+/)
+    .map((line) => line.trim())
+    .filter((line) => line && !isDesktopInternalProgressLine(line));
+  const text = lines.join('\n');
+  return text
+    .replace(desktopInternalProgressPattern(), '')
+    .replace(/\*{2,}/g, '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+}
+
+function isDesktopInternalProgressLine(value: string): boolean {
+  const line = value.trim();
+  if (!line || /[\u3400-\u9fff]/.test(line)) {
+    return false;
+  }
+  const normalized = line.replace(/[`*_]/g, '').trim();
+  if (!normalized) {
+    return true;
+  }
+  return desktopInternalProgressPattern().test(normalized)
+    || /^[a-z]+(?:[\s-]+[a-z0-9./]+){0,8}$/i.test(normalized);
+}
+
+function desktopInternalProgressPattern(): RegExp {
+  return /(?:\*+\s*)?\b(?:preparing|planning|designing|implementing|finalizing|inspecting|assessing|fixing|analyzing|searching|reading|loading|validating|identifying|verifying|evaluating)\b[^\u3400-\u9fff\n]*/gi;
+}
+
+function historyTimelineTime(timestamp: number | null): string {
+  const raw = timestamp ?? Date.now();
+  const date = new Date(raw < 100_000_000_000 ? raw * 1_000 : raw);
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}:${String(date.getSeconds()).padStart(2, '0')}`;
 }
 
 function truncateOneLine(value: string, maxLength: number): string {
