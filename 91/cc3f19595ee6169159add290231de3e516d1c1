@@ -1,0 +1,39 @@
+src/app/cards/layouts.ts
+  s_4672ec237d452e::t_5f0328c4ef4f23 258-264
+  s_4672ec237d452e::t_a3b649816817b5 210
+src/app/conversation-binding-service-v3.ts
+  s_4672ec237d452e::t_f1ae64427c5594 147
+  s_4672ec237d452e::t_b339e91fae8722 457,459,465-483
+  s_4672ec237d452e::t_9fcef15bfa5d92 449-456,458,460-464,484-485
+  s_4672ec237d452e::t_aac0c17012724b 353,424,435
+src/app/command-service.ts
+  s_4672ec237d452e::t_a454b590b05e3b 499
+src/app/main.ts
+  s_4672ec237d452e::t_79f3102c67b0d0 115,293-304,346-355
+src/app/binding-store.ts
+  s_4672ec237d452e::t_81bd03a5944fd9 34,235,252-254,291-293
+src/app/in-memory-orchestrator.ts
+  s_4672ec237d452e::t_6103013d495c30 63-64,429,442,449
+  s_4672ec237d452e::t_84496eb5f34ded 561,574,576,579-580
+  s_4672ec237d452e::t_b234898fbe684b 982,1000-1009,1011-1019
+  s_4672ec237d452e::t_6e109045e970b2 1010,1020-1035
+  s_4672ec237d452e::t_567b332a45c95e 161,187
+  s_4672ec237d452e::t_92eae279b775d5 412-424
+  s_4672ec237d452e::t_82561492299245 1036
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "91cc3f19595ee6169159add290231de3e516d1c1",
+  "prompts": {},
+  "sessions": {
+    "s_4672ec237d452e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5be6-2b87-7190-8898-ae985cbeb51e",
+        "model": "gpt-5.5"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    }
+  }
+}
