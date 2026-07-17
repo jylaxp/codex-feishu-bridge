@@ -60,6 +60,8 @@ export interface InMemoryOrchestratorOptions {
   readonly resolveBindingByThreadId?: (threadId: string) => ChatThreadBinding | undefined;
   /** Reads the App Server skill catalog for the original inline @skill interaction. */
   readonly readSkills?: (cwd: string) => Promise<unknown>;
+  /** Reads a ChatGPT thread title for existing bindings that predate stored titles. */
+  readonly readThreadTitle?: (threadId: string) => Promise<string | null>;
 }
 
 export type InMemoryInboundOutcome = 'started' | 'queued' | 'steered' | 'duplicate';
@@ -156,6 +158,7 @@ export class InMemoryOrchestrator {
     | ((threadId: string) => ChatThreadBinding | undefined)
     | undefined;
   private readonly readSkills: ((cwd: string) => Promise<unknown>) | undefined;
+  private readonly readThreadTitle: ((threadId: string) => Promise<string | null>) | undefined;
   private readonly tasksById = new Map<string, RuntimeTask>();
   private readonly activeByThreadId = new Map<string, RuntimeTask>();
   private readonly terminalByTurnKey = new Map<string, RuntimeTask>();
@@ -181,6 +184,7 @@ export class InMemoryOrchestrator {
     this.uploadOutputFiles = options.uploadOutputFiles;
     this.resolveBindingByThreadId = options.resolveBindingByThreadId;
     this.readSkills = options.readSkills;
+    this.readThreadTitle = options.readThreadTitle;
     this.cardRetryDelayMs = options.cardRetryDelayMs ?? CARD_RETRY_BASE_DELAY_MS;
   }
 
@@ -405,10 +409,24 @@ export class InMemoryOrchestrator {
     this.inboundLocks.clear();
   }
 
+  private async bindingWithTitle(binding: ChatThreadBinding): Promise<ChatThreadBinding> {
+    if (binding.threadTitle?.trim() || !this.readThreadTitle) {
+      return binding;
+    }
+    try {
+      const title = (await this.readThreadTitle(binding.threadId))?.trim();
+      return title ? { ...binding, threadTitle: title } : binding;
+    } catch (error) {
+      this.onCardError(toError(error));
+      return binding;
+    }
+  }
+
   private async start(
     message: InboundTextMessage,
     binding: ChatThreadBinding,
   ): Promise<InMemoryInboundOutcome> {
+    const taskBinding = await this.bindingWithTitle(binding);
     const id = randomUUID();
     const startedAtMs = this.now();
     const initialCard = taskCard(
@@ -421,14 +439,14 @@ export class InMemoryOrchestrator {
       startedAtMs,
       undefined,
       undefined,
-      binding,
+      taskBinding,
     );
     const cardId = await this.cards.createCard(initialCard);
     const cardMessageId = await this.cards.sendCard(message.chatId, cardId, `task:${id}`);
     const task: RuntimeTask = {
       id,
       message,
-      binding,
+      binding: taskBinding,
       cardId,
       cardMessageId,
       cancelToken: deriveTaskCancelToken(this.config.larkAppSecret, id),
@@ -540,6 +558,7 @@ export class InMemoryOrchestrator {
     turn: Turn,
     prompt: string,
   ): Promise<void> {
+    const taskBinding = await this.bindingWithTitle(binding);
     const id = randomUUID();
     const startedAtMs = this.now();
     const cardId = await this.cards.createCard(taskCard(
@@ -552,13 +571,13 @@ export class InMemoryOrchestrator {
       startedAtMs,
       undefined,
       undefined,
-      binding,
+      taskBinding,
     ));
-    const cardMessageId = await this.cards.sendCard(binding.chatId, cardId, `desktop:${id}`);
+    const cardMessageId = await this.cards.sendCard(taskBinding.chatId, cardId, `desktop:${id}`);
     const task: RuntimeTask = {
       id,
-      message: desktopMessage(binding, turn, prompt, cardMessageId, startedAtMs),
-      binding,
+      message: desktopMessage(taskBinding, turn, prompt, cardMessageId, startedAtMs),
+      binding: taskBinding,
       cardId,
       cardMessageId,
       cancelToken: deriveTaskCancelToken(this.config.larkAppSecret, id),
@@ -960,7 +979,7 @@ function taskCard(
     status,
     cancelToken,
     payload: Object.freeze({
-      title: sanitizeCardText('Codex 任务', { maxLength: 200 }),
+      title: sanitizeCardText(taskCardTitle(usage?.binding ?? binding), { maxLength: 80 }),
       prompt: sanitizeCardMarkdown(prompt, { maxLength: 10_000 }),
       metadata: metadata ? sanitizeCardMarkdown(metadata, { maxLength: 1_000 }) : null,
       commentary: sanitizeCardMarkdown(
@@ -976,6 +995,43 @@ function taskCard(
       terminal,
     }),
   });
+}
+
+function taskCardTitle(binding: ChatThreadBinding | undefined): string {
+  return truncateDisplayWidth(binding?.threadTitle?.trim() || 'Codex 任务', 24);
+}
+
+function truncateDisplayWidth(value: string, maxWidth: number): string {
+  let width = 0;
+  let result = '';
+  for (const character of value) {
+    const characterWidth = displayWidth(character);
+    if (width + characterWidth > maxWidth) {
+      return appendEllipsisWithinWidth(result, width, maxWidth);
+    }
+    width += characterWidth;
+    result += character;
+  }
+  return result;
+}
+
+function displayWidth(character: string): number {
+  return /[^\x00-\xff]/.test(character) ? 2 : 1;
+}
+
+function appendEllipsisWithinWidth(value: string, width: number, maxWidth: number): string {
+  const ellipsis = '…';
+  const ellipsisWidth = displayWidth(ellipsis);
+  const characters = [...value];
+  let nextWidth = width;
+  while (characters.length > 0 && nextWidth + ellipsisWidth > maxWidth) {
+    const character = characters.pop();
+    if (!character) {
+      break;
+    }
+    nextWidth -= displayWidth(character);
+  }
+  return `${characters.join('')}${ellipsis}`;
 }
 
 function timelineProjection(entries: readonly TimelineEntry[]): readonly CardTimelineEntry[] {

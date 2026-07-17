@@ -144,6 +144,7 @@ export class ConversationBindingServiceV3 {
       tenantKey: action.tenantKey,
       chatId: action.chatId,
       threadId: payload.threadId,
+      threadTitle: choice.title,
       workspaceId,
     });
     if (pending) {
@@ -349,7 +350,7 @@ export class ConversationBindingServiceV3 {
       const rateLimitText = this.readRateLimits
         ? formatHistoryRateLimits(await this.readRateLimits().catch(() => null))
         : null;
-      const card = createHistoryTaskCard(turn, response.model, rateLimitText);
+      const card = createHistoryTaskCard(binding, turn, response.model, rateLimitText);
       const cardId = await this.cards.createCard(card);
       await this.cards.sendCard(binding.chatId, cardId, `${idempotencyPrefix}:${turn.id}`);
       this.pushedHistoryTurns.add(historyKey);
@@ -420,6 +421,7 @@ function latestTerminalTurn(thread: Thread): Turn | null {
 }
 
 function createHistoryTaskCard(
+  binding: ChatThreadBinding,
   turn: Turn,
   model: string | null | undefined,
   rateLimitText: string | null,
@@ -430,7 +432,7 @@ function createHistoryTaskCard(
     stats.model = model;
   }
   const payload: CardProjectionPayload = {
-    title: sanitizeCardText('Codex 历史任务', { maxLength: 200 }),
+    title: sanitizeCardText(taskCardTitle(binding), { maxLength: 80 }),
     prompt: sanitizeCardMarkdown(promptFromTurn(turn) ?? '无输入文本', { maxLength: 10_000 }),
     metadata: sanitizeCardMarkdown(historyMetadata(turn), { maxLength: 1_000 }) || null,
     commentary: sanitizeCardMarkdown(commentaryFromTurn(turn), { maxLength: 10_000 }),
@@ -442,6 +444,43 @@ function createHistoryTaskCard(
     terminal: true,
   };
   return createTaskCard({ status, payload, historical: true });
+}
+
+function taskCardTitle(binding: ChatThreadBinding): string {
+  return truncateDisplayWidth(binding.threadTitle?.trim() || 'Codex 历史任务', 24);
+}
+
+function truncateDisplayWidth(value: string, maxWidth: number): string {
+  let width = 0;
+  let result = '';
+  for (const character of value) {
+    const characterWidth = displayWidth(character);
+    if (width + characterWidth > maxWidth) {
+      return appendEllipsisWithinWidth(result, width, maxWidth);
+    }
+    width += characterWidth;
+    result += character;
+  }
+  return result;
+}
+
+function displayWidth(character: string): number {
+  return /[^\x00-\xff]/.test(character) ? 2 : 1;
+}
+
+function appendEllipsisWithinWidth(value: string, width: number, maxWidth: number): string {
+  const ellipsis = '…';
+  const ellipsisWidth = displayWidth(ellipsis);
+  const characters = [...value];
+  let nextWidth = width;
+  while (characters.length > 0 && nextWidth + ellipsisWidth > maxWidth) {
+    const character = characters.pop();
+    if (!character) {
+      break;
+    }
+    nextWidth -= displayWidth(character);
+  }
+  return `${characters.join('')}${ellipsis}`;
 }
 
 interface HistoryStats {

@@ -112,6 +112,7 @@ export async function startBridge(
       outputFileUploader.uploadMarkdownFiles(answer, rootMessageId, taskId)
     ),
     resolveBindingByThreadId: (threadId) => bindings.getUniqueByThreadId(threadId),
+    readThreadTitle: (threadId) => readThreadTitle(appServer, threadId),
     readSkills: (cwd) => appServer.request('skills/list', { cwds: [cwd] }),
   });
   const approvals = new DesktopApprovalService(config, desktop, cards, orchestrator);
@@ -289,6 +290,18 @@ function appServerTransport(
   return { mode: 'owned_stdio', codexBin: config.codexBin, spawnCwd: config.codexCwd, env };
 }
 
+async function readThreadTitle(
+  appServer: AppServerClient,
+  threadId: string,
+): Promise<string | null> {
+  const response = asRecord(await appServer.request('thread/read', { threadId }));
+  const thread = asRecord(response?.thread) ?? response;
+  return textField(thread?.title)
+    ?? textField(thread?.name)
+    ?? textField(thread?.summary)
+    ?? textField(thread?.preview);
+}
+
 async function stopResources(
   eventServer: LarkEventServer,
   desktopSupervisor: DesktopIpcSupervisor,
@@ -329,4 +342,14 @@ async function stopResources(
 
 function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error('Bridge cleanup failed');
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function textField(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value : null;
 }

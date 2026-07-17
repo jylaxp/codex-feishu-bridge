@@ -31,6 +31,7 @@ export interface ChatThreadBinding extends BindingSettings {
   readonly tenantKey: string;
   readonly chatId: string;
   readonly threadId: string;
+  readonly threadTitle?: string;
   readonly workspaceId: string;
   readonly revision: number;
   readonly updatedAtMs: number;
@@ -231,6 +232,7 @@ function parseBinding(value: unknown): ChatThreadBinding {
     'tenantKey',
     'chatId',
     'threadId',
+    'threadTitle',
     'workspaceId',
     'model',
     'personality',
@@ -247,6 +249,9 @@ function parseBinding(value: unknown): ChatThreadBinding {
     tenantKey: requiredText(value.tenantKey, 'tenantKey'),
     chatId: requiredText(value.chatId, 'chatId'),
     threadId: requiredText(value.threadId, 'threadId'),
+    ...(optionalText(value.threadTitle, 'threadTitle')
+      ? { threadTitle: optionalText(value.threadTitle, 'threadTitle') }
+      : {}),
     workspaceId: requiredText(value.workspaceId, 'workspaceId'),
     ...(optionalText(value.model, 'model') ? { model: optionalText(value.model, 'model') } : {}),
     ...(optionalText(value.personality, 'personality')
@@ -283,6 +288,9 @@ function normalizeBindingInput(
     tenantKey: requiredText(input.tenantKey, 'tenantKey'),
     chatId: requiredText(input.chatId, 'chatId'),
     threadId: requiredText(input.threadId, 'threadId'),
+    ...(optionalText(input.threadTitle, 'threadTitle')
+      ? { threadTitle: optionalText(input.threadTitle, 'threadTitle') }
+      : {}),
     workspaceId: requiredText(input.workspaceId, 'workspaceId'),
     ...(optionalText(input.model, 'model') ? { model: optionalText(input.model, 'model') } : {}),
     ...(optionalText(input.personality, 'personality')

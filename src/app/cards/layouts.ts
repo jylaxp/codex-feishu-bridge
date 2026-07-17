@@ -207,7 +207,7 @@ export function createTaskCard(options: TaskCardOptions): CardKitJson {
         10_000,
         '\n\n... (由于长度限制，后续输出已被截断，请在 IDE 中查看完整内容) ...',
       );
-  const title = running ? '🌌 Codex Remote Control' : terminalTitle(status, options.historical);
+  const title = payload.title || (running ? '🌌 Codex Remote Control' : terminalTitle(status, options.historical));
   const elements: Record<string, unknown>[] = [
     markdown(`**📥 输入 Prompt**\n> ${payload.prompt}`, running ? 'codex_prompt' : undefined),
   ];
@@ -255,6 +255,13 @@ export function createTaskCard(options: TaskCardOptions): CardKitJson {
         text: { tag: 'plain_text', content: '🛑 停止任务' },
         value: { action: 'cancel', token: options.cancelToken },
         element_id: 'codex_cancel',
+        confirm: {
+          title: { tag: 'plain_text', content: '确认停止任务？' },
+          text: {
+            tag: 'plain_text',
+            content: '停止后当前 Codex 任务会被中断，已执行的操作不会自动回滚。',
+          },
+        },
       },
     );
   }

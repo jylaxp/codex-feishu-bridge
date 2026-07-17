@@ -496,7 +496,7 @@ export class BridgeCommandService {
       const threadId = threadIdFrom(response);
       if (!threadId) throw new Error('App Server 未返回派生会话标识');
       await this.catalog.request('thread/name/set', { threadId, name: forkName });
-      this.store.bind({ ...binding, threadId });
+      this.store.bind({ ...binding, threadId, threadTitle: forkName });
       await this.tryOpenThread(threadId);
       await this.reply(
         message,
