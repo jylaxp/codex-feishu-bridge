@@ -358,13 +358,13 @@ function toolPanel(
   elementId: string,
   contentElementId: string,
   icon = 'api-app_outlined',
-  completed = true,
+  _completed = true,
   failed = false,
 ): Record<string, unknown> {
   return {
     tag: 'collapsible_panel',
     element_id: elementId,
-    expanded: !completed,
+    expanded: false,
     header: {
       title: { tag: 'plain_text', content: title },
       vertical_align: 'center',
