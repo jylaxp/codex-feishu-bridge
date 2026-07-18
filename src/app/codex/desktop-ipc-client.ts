@@ -140,9 +140,11 @@ interface SendRequestOptions {
   readonly beforeSend?: (identity: TrackedRequestIdentity) => void;
 }
 
-type ThreadStreamListener = (message: DesktopThreadStreamBroadcast) => void;
+type ThreadStreamListener = (message: DesktopThreadStreamBroadcast, epoch: number) => void;
 type ConnectionLossListener = (epoch: number) => void;
 
+const DESKTOP_THREAD_FOLLOWING_PROTOCOL_VERSION = 1;
+const DESKTOP_HOST_ID = 'local';
 const DEFAULT_CONNECT_TIMEOUT_MS = 5_000;
 const DEFAULT_INITIALIZE_TIMEOUT_MS = 5_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
@@ -173,6 +175,7 @@ export class DesktopIpcClient {
   private readonly pendingRequests = new Map<string, PendingRequest>();
   private readonly threadStreamListeners = new Set<ThreadStreamListener>();
   private readonly connectionLossListeners = new Set<ConnectionLossListener>();
+  private readonly followedThreadIds = new Set<string>();
   private socket: Socket | undefined;
   private startPromise: Promise<DesktopIpcHandshake> | undefined;
   private handshake: DesktopIpcHandshake | undefined;
@@ -276,6 +279,51 @@ export class DesktopIpcClient {
     return () => this.connectionLossListeners.delete(listener);
   }
 
+  /** Registers this IPC client as a state-stream follower for one Desktop thread. */
+  public async followThread(threadId: string): Promise<void> {
+    const normalizedThreadId = requireThreadId(threadId);
+    this.followedThreadIds.add(normalizedThreadId);
+    if (this.currentState === 'READY') {
+      await this.sendThreadFollowing(normalizedThreadId, true);
+    }
+  }
+
+  /** Stops state-stream delivery for a thread while preserving other subscriptions. */
+  public async unfollowThread(threadId: string): Promise<void> {
+    const normalizedThreadId = requireThreadId(threadId);
+    if (!this.followedThreadIds.delete(normalizedThreadId)) {
+      return;
+    }
+    if (this.currentState === 'READY') {
+      await this.sendThreadFollowing(normalizedThreadId, false);
+    }
+  }
+
+  /** Reconciles the desired Desktop thread subscriptions as one logical set. */
+  public async syncFollowedThreads(threadIds: Iterable<string>): Promise<void> {
+    const desiredThreadIds = new Set<string>();
+    for (const threadId of threadIds) {
+      desiredThreadIds.add(requireThreadId(threadId));
+    }
+    const removedThreadIds = [...this.followedThreadIds]
+      .filter((threadId) => !desiredThreadIds.has(threadId));
+    const addedThreadIds = [...desiredThreadIds]
+      .filter((threadId) => !this.followedThreadIds.has(threadId));
+    this.followedThreadIds.clear();
+    for (const threadId of desiredThreadIds) {
+      this.followedThreadIds.add(threadId);
+    }
+    if (this.currentState !== 'READY') {
+      return;
+    }
+    for (const threadId of removedThreadIds) {
+      await this.sendThreadFollowing(threadId, false);
+    }
+    for (const threadId of addedThreadIds) {
+      await this.sendThreadFollowing(threadId, true);
+    }
+  }
+
   /** Implements the tracked execution contract consumed by TaskOrchestrator. */
   public async requestTracked<TResult>(
     method: string,
@@ -321,6 +369,7 @@ export class DesktopIpcClient {
     beforeSend: (identity: TrackedRequestIdentity) => void,
     timeoutMs = this.requestTimeoutMs,
   ): Promise<Turn> {
+    await this.followThread(params.threadId);
     const response = await this.sendRequest({
       method: 'thread-follower-start-turn',
       params: {
@@ -464,6 +513,7 @@ export class DesktopIpcClient {
       });
       this.handshake = handshake;
       this.currentState = 'READY';
+      await this.restoreThreadFollowing();
       return handshake;
     } catch (error) {
       if (this.socket === socket) {
@@ -568,7 +618,7 @@ export class DesktopIpcClient {
       }
       try {
         for (const listener of this.threadStreamListeners) {
-          listener(record);
+          listener(record, epoch);
         }
       } catch {
         this.failProtocol(epoch);
@@ -697,6 +747,57 @@ export class DesktopIpcClient {
               { cause: error },
             ));
       }
+    });
+  }
+
+  private async restoreThreadFollowing(): Promise<void> {
+    for (const threadId of this.followedThreadIds) {
+      await this.sendThreadFollowing(threadId, true);
+    }
+  }
+
+  private sendThreadFollowing(threadId: string, following: boolean): Promise<void> {
+    const socket = this.socket;
+    if (
+      !socket
+      || socket.destroyed
+      || this.currentState !== 'READY'
+      || !this.handshake
+    ) {
+      return Promise.reject(new DesktopIpcRequestError(
+        'DESKTOP_IPC_NOT_READY',
+        'PROVABLY_UNSENT',
+        this.epoch,
+        'thread-stream-following-changed',
+      ));
+    }
+    const epoch = this.epoch;
+    const envelope: Record<string, unknown> = {
+      type: 'broadcast',
+      sourceClientId: this.handshake.clientId,
+      version: DESKTOP_THREAD_FOLLOWING_PROTOCOL_VERSION,
+      method: 'thread-stream-following-changed',
+      params: {
+        conversationId: threadId,
+        hostId: DESKTOP_HOST_ID,
+        following,
+      },
+    };
+    return new Promise<void>((resolve, reject) => {
+      socket.write(encodeFrame(envelope), (error) => {
+        if (!error) {
+          resolve();
+          return;
+        }
+        reject(new DesktopIpcRequestError(
+          'DESKTOP_IPC_CONNECTION_LOST',
+          'OUTCOME_UNKNOWN',
+          epoch,
+          'thread-stream-following-changed',
+          null,
+          { cause: error },
+        ));
+      });
     });
   }
 
@@ -860,6 +961,14 @@ function requireTurnParamsRecord(
     throw invalidTrackedParams(epoch, method);
   }
   return record;
+}
+
+function requireThreadId(value: string): string {
+  const threadId = value.trim();
+  if (!threadId) {
+    throw new RangeError('Desktop thread ID must not be blank');
+  }
+  return threadId;
 }
 
 function invalidTrackedParams(epoch: number, method: string): DesktopIpcRequestError {

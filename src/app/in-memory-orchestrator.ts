@@ -68,6 +68,8 @@ export interface InMemoryOrchestratorOptions {
   readonly readSkills?: (cwd: string) => Promise<unknown>;
   /** Reads a ChatGPT thread title for existing bindings that predate stored titles. */
   readonly readThreadTitle?: (threadId: string) => Promise<string | null>;
+  /** Reconciles Desktop state subscriptions when the live task set changes. */
+  readonly onActiveThreadsChanged?: () => void;
 }
 
 export type InMemoryInboundOutcome = 'started' | 'queued' | 'steered' | 'duplicate';
@@ -165,6 +167,7 @@ export class InMemoryOrchestrator {
     | undefined;
   private readonly readSkills: ((cwd: string) => Promise<unknown>) | undefined;
   private readonly readThreadTitle: ((threadId: string) => Promise<string | null>) | undefined;
+  private readonly onActiveThreadsChanged: () => void;
   private readonly tasksById = new Map<string, RuntimeTask>();
   private readonly activeByThreadId = new Map<string, RuntimeTask>();
   private readonly terminalByTurnKey = new Map<string, RuntimeTask>();
@@ -191,7 +194,13 @@ export class InMemoryOrchestrator {
     this.resolveBindingByThreadId = options.resolveBindingByThreadId;
     this.readSkills = options.readSkills;
     this.readThreadTitle = options.readThreadTitle;
+    this.onActiveThreadsChanged = options.onActiveThreadsChanged ?? (() => undefined);
     this.cardRetryDelayMs = options.cardRetryDelayMs ?? CARD_RETRY_BASE_DELAY_MS;
+  }
+
+  /** Returns the threads whose live cards still depend on Desktop state events. */
+  public activeThreadIds(): readonly string[] {
+    return Object.freeze([...this.activeByThreadId.keys()]);
   }
 
   public async handleInbound(
@@ -405,7 +414,11 @@ export class InMemoryOrchestrator {
       }
     }
     this.tasksById.clear();
+    const hadActiveThreads = this.activeByThreadId.size > 0;
     this.activeByThreadId.clear();
+    if (hadActiveThreads) {
+      this.onActiveThreadsChanged();
+    }
     this.terminalByTurnKey.clear();
     this.queuesByThreadId.clear();
     this.pendingByThreadId.clear();
@@ -488,7 +501,7 @@ export class InMemoryOrchestrator {
       lastActivityKind: 'none',
     };
     this.tasksById.set(id, task);
-    this.activeByThreadId.set(binding.threadId, task);
+    this.activateTask(task);
     void this.refreshRateLimits(task);
     try {
       const turn = await this.desktop.startTurnTracked(buildStart(task), () => undefined);
@@ -619,7 +632,7 @@ export class InMemoryOrchestrator {
       lastActivityKind: 'none',
     };
     this.tasksById.set(id, task);
-    this.activeByThreadId.set(binding.threadId, task);
+    this.activateTask(task);
     void this.refreshRateLimits(task);
     this.replayDesktopPending(task);
     if (!TERMINAL.has(task.status)) {
@@ -849,8 +862,10 @@ export class InMemoryOrchestrator {
     if (task.updateTimer) {
       clearTimeout(task.updateTimer);
     }
+    let activeTaskRemoved = false;
     if (this.activeByThreadId.get(task.binding.threadId) === task) {
       this.activeByThreadId.delete(task.binding.threadId);
+      activeTaskRemoved = true;
     }
     if (task.turnId) {
       const key = turnKey(task.binding.threadId, task.turnId);
@@ -871,10 +886,21 @@ export class InMemoryOrchestrator {
     }
     const next = this.queuesByThreadId.get(task.binding.threadId)?.shift();
     if (!next) {
+      if (activeTaskRemoved) {
+        this.onActiveThreadsChanged();
+      }
       return;
     }
+    // Keep the Desktop follower subscription stable while ownership passes to
+    // the next queued task for the same thread. Its activation will publish the
+    // refreshed active-thread snapshot after the new turn starts.
     void this.runExclusive(next.binding.threadId, () => this.start(next.message, next.binding))
       .catch((error: unknown) => this.onCardError(toError(error)));
+  }
+
+  private activateTask(task: RuntimeTask): void {
+    this.activeByThreadId.set(task.binding.threadId, task);
+    this.onActiveThreadsChanged();
   }
 
   private async refreshRateLimits(task: RuntimeTask): Promise<void> {

@@ -141,7 +141,7 @@ validated_baseline: 6183db5
 
 - App Server-style event model 继续作为 Bridge 内部 canonical contract；实际执行状态必须来自 Desktop owner broadcast，独立 App Server runtime 不能保证刷新已打开的 Desktop renderer。
 - Desktop follower 方法必须发送给 owner runtime；这样 ChatGPT UI 不需要额外刷新动作。
-- Desktop `thread-stream-state-changed` 是全局 broadcast，必须按 thread 和真实 turn identity 过滤，不能按“最近事件”猜测归属。
+- Desktop `thread-stream-state-changed` 只定向发送给已通过 `thread-stream-following-changed` 注册的 follower；Bridge 必须先声明 following，再按 thread 和真实 turn identity 过滤，不能按“最近事件”猜测归属。
 - 当前 Desktop state 使用 canonical `turnHistory`，历史 turn 位于 `history.entitiesByKey`，不能只读取顶层 `turns`。
 - 请求写入 socket 后的 timeout/close 不能回退调用普通 `turn/start`，否则可能重复执行用户任务。
 - agent message 在 terminal snapshot 中可能没有 item status；turn terminal 必须能够推动 item terminal convergence。
@@ -204,6 +204,7 @@ validated_baseline: 6183db5
 | Start | `thread-follower-start-turn` | v1 |
 | Steer | `thread-follower-steer-turn` | v1，必须带 expected turn identity |
 | Interrupt | `thread-follower-interrupt-turn` | v2 |
+| Follow | `thread-stream-following-changed` | v1，绑定时注册、解绑时撤销，IPC 重连后恢复当前订阅集合 |
 | State | `thread-stream-state-changed` | v11 snapshot/patch |
 | Approval | Desktop follower approval methods | 实施时从当前 ChatGPT build 重新提取并钉住版本 |
 | Page navigation | `codex_app__navigate_to_codex_page({ threadId })` 等价的 App host capability | 目标是最近聚焦的 Codex 主窗口；只接受持久化 binding 的准确 thread ID；可用性必须探测，不能假定独立 Node 进程可直接调用 |

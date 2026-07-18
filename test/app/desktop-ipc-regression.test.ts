@@ -16,7 +16,11 @@ import type {
   TurnStartParams,
   TurnSteerParams,
 } from '../../src/app/codex/protocol';
-import { DESKTOP_THREAD_STREAM_PROTOCOL_VERSION } from '../../src/app/codex/desktop-thread-stream-normalizer';
+import { DesktopIpcSupervisor } from '../../src/app/codex/desktop-ipc-supervisor';
+import {
+  DESKTOP_THREAD_STREAM_PROTOCOL_VERSION,
+  DesktopThreadStreamNormalizer,
+} from '../../src/app/codex/desktop-thread-stream-normalizer';
 import type { DesktopIpcEndpoint, PlatformAdapter } from '../../src/app/platform/platform-adapter';
 import {
   DesktopApprovalService,
@@ -63,6 +67,7 @@ const binding: ChatThreadBinding = {
 };
 
 test('Desktop IPC owns start, steer, interrupt, approval, and live protocol v11 events', async () => {
+  const followedThreads = new Set<string>();
   const broadcast: DesktopThreadStreamBroadcast = {
     type: 'broadcast',
     method: 'thread-stream-state-changed',
@@ -83,8 +88,20 @@ test('Desktop IPC owns start, steer, interrupt, approval, and live protocol v11 
       respond(socket, message, { clientId: 'bridge-client' });
       return;
     }
+    if (message.method === 'thread-stream-following-changed') {
+      const threadId = nestedString(message, 'params', 'conversationId');
+      const following = nestedBoolean(message, 'params', 'following');
+      if (threadId && following === true) {
+        followedThreads.add(threadId);
+      } else if (threadId && following === false) {
+        followedThreads.delete(threadId);
+      }
+      return;
+    }
     if (message.method === 'thread-follower-start-turn') {
-      socket.sendToClient(broadcast);
+      if (followedThreads.has('thread-bound')) {
+        socket.sendToClient(broadcast);
+      }
       respond(socket, message, {
         result: { turn: { id: 'turn-desktop', items: [], status: 'inProgress' } },
       }, 'desktop-owner');
@@ -123,18 +140,137 @@ test('Desktop IPC owns start, steer, interrupt, approval, and live protocol v11 
     assert.deepEqual(broadcasts, [broadcast]);
     assert.deepEqual(mock.messages.map((message) => message.method), [
       'initialize',
+      'thread-stream-following-changed',
       'thread-follower-start-turn',
       'thread-follower-steer-turn',
       'thread-follower-interrupt-turn',
       'thread-follower-command-approval-decision',
     ]);
     assert.equal(nestedString(mock.messages[1], 'params', 'conversationId'), 'thread-bound');
-    assert.equal(nestedString(mock.messages[2], 'params', 'expectedTurnId'), 'turn-desktop');
-    assert.equal(nestedString(mock.messages[3], 'params', 'turnId'), 'turn-desktop');
-    assert.equal(nestedString(mock.messages[4], 'params', 'requestId'), 'approval-1');
+    assert.equal(nestedBoolean(mock.messages[1], 'params', 'following'), true);
+    assert.equal(nestedString(mock.messages[1], 'params', 'hostId'), 'local');
+    assert.equal(nestedString(mock.messages[2], 'params', 'conversationId'), 'thread-bound');
+    assert.equal(nestedString(mock.messages[3], 'params', 'expectedTurnId'), 'turn-desktop');
+    assert.equal(nestedString(mock.messages[4], 'params', 'turnId'), 'turn-desktop');
+    assert.equal(nestedString(mock.messages[5], 'params', 'requestId'), 'approval-1');
   } finally {
     unsubscribe();
     await client.stop();
+    await mock.close();
+  }
+});
+
+test('Desktop IPC initializes the epoch before handling an immediate restored snapshot', async () => {
+  const restoredSnapshot = threadSnapshotBroadcast(
+    'thread-bound',
+    'turn-restored',
+    'Restored Desktop state',
+  );
+  const mock = createMockTransport((message, socket) => {
+    if (message.method === 'initialize') {
+      respond(socket, message, { clientId: 'bridge-client' });
+      return;
+    }
+    if (
+      message.method === 'thread-stream-following-changed'
+      && nestedBoolean(message, 'params', 'following') === true
+    ) {
+      socket.sendToClient(restoredSnapshot);
+    }
+  });
+  const endpoint: DesktopIpcEndpoint = { transport: 'unix_socket', address: 'mock-desktop' };
+  const client = new DesktopIpcClient({
+    endpoint,
+    platformAdapter: trustedTestPlatform(endpoint),
+    connectSocket: mock.connect,
+  });
+  const normalizer = new DesktopThreadStreamNormalizer(() => 100);
+  const notifications: ServerNotification[] = [];
+  let supervisorReady = false;
+  let snapshotArrivedBeforeReady = false;
+  const unsubscribe = client.onThreadStreamStateChanged((message, epoch) => {
+    snapshotArrivedBeforeReady ||= !supervisorReady;
+    normalizer.beginEpoch(epoch);
+    notifications.push(...normalizer.handle(message));
+  });
+  const supervisor = new DesktopIpcSupervisor(client, {
+    reconnectInitialDelayMs: 1,
+    reconnectMaximumDelayMs: 1,
+    onDisconnected: () => undefined,
+    onReady: (handshake) => {
+      normalizer.beginEpoch(handshake.epoch);
+      supervisorReady = true;
+    },
+  });
+
+  try {
+    await client.syncFollowedThreads(['thread-bound']);
+    const handshake = await supervisor.start();
+
+    assert.equal(snapshotArrivedBeforeReady, true);
+    assert.equal(normalizer.connectionEpoch, handshake.epoch);
+    assert.equal(normalizer.activeTurnSnapshot('thread-bound').length > 0, true);
+    assert.equal(
+      notifications.some((notification) => notification.method === 'turn/started'),
+      true,
+    );
+  } finally {
+    unsubscribe();
+    await supervisor.stop();
+    await mock.close();
+  }
+});
+
+test('Desktop supervisor restores followers after an actual socket loss', async () => {
+  const mock = createMockTransport((message, socket) => {
+    if (message.method === 'initialize') {
+      respond(socket, message, { clientId: 'bridge-client' });
+    }
+  });
+  const endpoint: DesktopIpcEndpoint = { transport: 'unix_socket', address: 'mock-desktop' };
+  const client = new DesktopIpcClient({
+    endpoint,
+    platformAdapter: trustedTestPlatform(endpoint),
+    connectSocket: mock.connect,
+  });
+  const lifecycleEvents: string[] = [];
+  const supervisor = new DesktopIpcSupervisor(client, {
+    reconnectInitialDelayMs: 1,
+    reconnectMaximumDelayMs: 1,
+    onDisconnected: (epoch) => {
+      lifecycleEvents.push(`disconnected:${epoch}`);
+    },
+    onReady: (handshake) => {
+      lifecycleEvents.push(`ready:${handshake.epoch}`);
+    },
+  });
+
+  try {
+    await client.syncFollowedThreads(['thread-a', 'thread-b']);
+    await supervisor.start();
+    await client.syncFollowedThreads(['thread-b', 'thread-c']);
+    mock.disconnect();
+    await waitFor(() => lifecycleEvents.includes('ready:2'));
+
+    assert.deepEqual(lifecycleEvents, ['ready:1', 'disconnected:1', 'ready:2']);
+    assert.deepEqual(
+      mock.messages
+        .filter((message) => message.method === 'thread-stream-following-changed')
+        .map((message) => ({
+          threadId: nestedString(message, 'params', 'conversationId'),
+          following: nestedBoolean(message, 'params', 'following'),
+        })),
+      [
+        { threadId: 'thread-a', following: true },
+        { threadId: 'thread-b', following: true },
+        { threadId: 'thread-a', following: false },
+        { threadId: 'thread-c', following: true },
+        { threadId: 'thread-b', following: true },
+        { threadId: 'thread-c', following: true },
+      ],
+    );
+  } finally {
+    await supervisor.stop();
     await mock.close();
   }
 });
@@ -143,14 +279,20 @@ test('orchestrator uses App Server callbacks only for metadata and never replays
   const desktop = new RecordingDesktopTurnClient();
   const cards = new RecordingCards();
   const metadataReads: string[] = [];
-  const orchestrator = new InMemoryOrchestrator(config, desktop, cards, {
+  const activeThreadSnapshots: string[][] = [];
+  let orchestrator: InMemoryOrchestrator;
+  orchestrator = new InMemoryOrchestrator(config, desktop, cards, {
     readThreadTitle: async (threadId) => {
       metadataReads.push(threadId);
       return 'Metadata title';
     },
+    onActiveThreadsChanged: () => {
+      activeThreadSnapshots.push([...orchestrator.activeThreadIds()]);
+    },
   });
 
   assert.equal(await orchestrator.handleInbound(inbound('1', 'start'), binding), 'started');
+  assert.deepEqual(activeThreadSnapshots.at(-1), ['thread-bound']);
   assert.equal(
     await orchestrator.handleInbound(inbound('2', 'follow up', 'root-1'), binding),
     'steered',
@@ -169,6 +311,65 @@ test('orchestrator uses App Server callbacks only for metadata and never replays
   orchestrator.handleNotification(completedNotification('turn-2', 'Desktop final answer'));
   await new Promise((resolve) => setImmediate(resolve));
   assert.match(JSON.stringify(cards.replacements.at(-1)), /Desktop final answer/);
+  assert.deepEqual(activeThreadSnapshots.at(-1), []);
+  orchestrator.abandonAll();
+});
+
+test('orchestrator keeps a thread active while handing off to its next queued task', async () => {
+  const desktop = new RecordingDesktopTurnClient();
+  const activeThreadSnapshots: string[][] = [];
+  let orchestrator: InMemoryOrchestrator;
+  orchestrator = new InMemoryOrchestrator(config, desktop, new RecordingCards(), {
+    onActiveThreadsChanged: () => {
+      activeThreadSnapshots.push([...orchestrator.activeThreadIds()]);
+    },
+  });
+
+  assert.equal(await orchestrator.handleInbound(inbound('queue-1', 'first'), binding), 'started');
+  assert.equal(await orchestrator.handleInbound(inbound('queue-2', 'second'), binding), 'queued');
+  orchestrator.handleNotification(completedNotification('turn-1', 'first result'));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(desktop.starts.length, 2);
+  assert.deepEqual(activeThreadSnapshots, [['thread-bound'], ['thread-bound']]);
+
+  orchestrator.handleNotification(completedNotification('turn-2', 'second result'));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(activeThreadSnapshots.at(-1), []);
+  orchestrator.abandonAll();
+});
+
+test('unrelated Desktop thread broadcasts do not update the bound task card', async () => {
+  const desktop = new RecordingDesktopTurnClient();
+  const cards = new RecordingCards();
+  const orchestrator = new InMemoryOrchestrator(config, desktop, cards);
+  const normalizer = new DesktopThreadStreamNormalizer(() => 100);
+  normalizer.beginEpoch(1);
+
+  assert.equal(await orchestrator.handleInbound(inbound('isolated', 'bound task'), binding), 'started');
+  await waitFor(() => cards.replacements.length > 0);
+  const replacementsBeforeUnrelatedBroadcast = cards.replacements.length;
+
+  for (const notification of normalizer.handle(threadSnapshotBroadcast(
+    'thread-unrelated',
+    'turn-unrelated',
+    'Unrelated Desktop output',
+  ))) {
+    orchestrator.handleNotification(notification);
+  }
+  await new Promise((resolve) => setTimeout(resolve, 5));
+
+  assert.equal(cards.replacements.length, replacementsBeforeUnrelatedBroadcast);
+  assert.doesNotMatch(JSON.stringify(cards.replacements), /Unrelated Desktop output/);
+
+  for (const notification of normalizer.handle(threadSnapshotBroadcast(
+    'thread-bound',
+    'turn-1',
+    'Bound Desktop output',
+  ))) {
+    orchestrator.handleNotification(notification);
+  }
+  await waitFor(() => /Bound Desktop output/.test(JSON.stringify(cards.replacements)));
   orchestrator.abandonAll();
 });
 
@@ -315,6 +516,7 @@ class ApprovalTasks {
 interface MockServer {
   readonly messages: WireMessage[];
   connect(): Socket;
+  disconnect(): void;
   close(): Promise<void>;
 }
 
@@ -334,8 +536,15 @@ function createMockTransport(
       socket.once('close', () => sockets.delete(socket));
       return socket as unknown as Socket;
     },
+    disconnect: () => {
+      for (const socket of sockets) {
+        socket.destroy();
+      }
+    },
     close: async () => {
-      for (const socket of sockets) socket.destroy();
+      for (const socket of sockets) {
+        socket.destroy();
+      }
     },
   };
 }
@@ -467,13 +676,67 @@ function completedNotification(turnId: string, answer: string): ServerNotificati
   };
 }
 
+function threadSnapshotBroadcast(
+  threadId: string,
+  turnId: string,
+  answer: string,
+): DesktopThreadStreamBroadcast {
+  return {
+    type: 'broadcast',
+    method: 'thread-stream-state-changed',
+    sourceClientId: 'desktop-owner',
+    version: DESKTOP_THREAD_STREAM_PROTOCOL_VERSION,
+    params: {
+      conversationId: threadId,
+      change: {
+        type: 'snapshot',
+        conversationState: {
+          turns: [{
+            id: turnId,
+            status: 'inProgress',
+            items: [{
+              id: 'answer',
+              type: 'agentMessage',
+              phase: 'final_answer',
+              text: answer,
+            }],
+          }],
+        },
+      },
+    },
+  };
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs = 500): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) {
+      assert.fail(`Condition was not met within ${timeoutMs}ms`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+}
+
 function nestedString(value: unknown, ...path: string[]): string | null {
   let current = value;
   for (const key of path) {
-    if (typeof current !== 'object' || current === null || Array.isArray(current)) return null;
+    if (typeof current !== 'object' || current === null || Array.isArray(current)) {
+      return null;
+    }
     current = (current as Record<string, unknown>)[key];
   }
   return typeof current === 'string' ? current : null;
+}
+
+function nestedBoolean(value: unknown, ...path: string[]): boolean | null {
+  let current = value;
+  for (const key of path) {
+    if (typeof current !== 'object' || current === null || Array.isArray(current)) {
+      return null;
+    }
+    current = (current as Record<string, unknown>)[key];
+  }
+  return typeof current === 'boolean' ? current : null;
 }
 
 function approvalToken(card: CardKitJson | undefined): string {

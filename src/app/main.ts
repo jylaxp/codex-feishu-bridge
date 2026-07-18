@@ -102,6 +102,22 @@ export async function startBridge(
   });
   const appServerControlPlane = new AppServerControlPlane(appServer, protocolAdapter);
   const desktop = new DesktopIpcClient();
+  await desktop.syncFollowedThreads(bindings.list().map((binding) => binding.threadId));
+  let orchestrator: InMemoryOrchestrator | undefined;
+  let desktopThreadFollowingWrite = Promise.resolve();
+  const syncDesktopThreadFollowing = async (): Promise<void> => {
+    const threadIds = new Set(bindings.list().map((binding) => binding.threadId));
+    for (const threadId of orchestrator?.activeThreadIds() ?? []) {
+      threadIds.add(threadId);
+    }
+    const write = desktopThreadFollowingWrite.then(() => desktop.syncFollowedThreads(threadIds));
+    desktopThreadFollowingWrite = write.catch(() => undefined);
+    try {
+      await write;
+    } catch (error) {
+      logger.error('desktop_thread_following_sync_failed', error);
+    }
+  };
   const normalizer = new DesktopThreadStreamNormalizer();
   const lark = createLarkRuntimeClients(config, {
     logSink: (level) => logger.warn(`lark_sdk_${level}`),
@@ -126,7 +142,7 @@ export async function startBridge(
   const outputFileUploader = new OutputFileUploader(config, lark.api as unknown as FileUploadApi);
   const larkScopeConfig = new LarkScopeConfigStore(preflight.configHome);
   const navigation = new CodexAppNavigationAdapter();
-  const orchestrator = new InMemoryOrchestrator(config, desktop, cards, {
+  orchestrator = new InMemoryOrchestrator(config, desktop, cards, {
     onCardError: (error) => logger.error('card_update_failed', error),
     readRateLimits: () => rateLimits.get(),
     uploadOutputFiles: (answer, rootMessageId, taskId) => (
@@ -135,6 +151,9 @@ export async function startBridge(
     resolveBindingByThreadId: (threadId) => bindings.getUniqueByThreadId(threadId),
     readThreadTitle: (threadId) => readThreadTitle(appServerControlPlane, threadId),
     readSkills: (cwd) => appServerControlPlane.request('skills/list', { cwds: [cwd] }),
+    onActiveThreadsChanged: () => {
+      void syncDesktopThreadFollowing();
+    },
   });
   const approvals = new DesktopApprovalService(config, desktop, cards, orchestrator);
   const conversationBindings = new ConversationBindingServiceV3(
@@ -183,9 +202,11 @@ export async function startBridge(
   });
   const processInboundMessage = async (message: InboundTextMessage): Promise<void> => {
     if (await commands.handle(message)) {
+      await syncDesktopThreadFollowing();
       return;
     }
     if (await conversationBindings.handleCommand(message)) {
+      await syncDesktopThreadFollowing();
       return;
     }
     const binding = conversationBindings.getBinding(message.tenantKey, message.chatId);
@@ -193,6 +214,7 @@ export async function startBridge(
       await conversationBindings.ensureBoundOrPrompt(message);
       return;
     }
+    await syncDesktopThreadFollowing();
     const outcome = await orchestrator.handleInbound(message, binding);
     if (binding.activeSkill && outcome !== 'duplicate') {
       await commands.consumeActiveSkill(binding);
@@ -210,7 +232,9 @@ export async function startBridge(
     },
     onCardAction: async (action) => {
       if (action.action === 'binding') {
-        return conversationBindings.handleCardAction(action);
+        const response = await conversationBindings.handleCardAction(action);
+        await syncDesktopThreadFollowing();
+        return response;
       }
       if (action.action === 'open') {
         return conversationBindings.handleOpenAction(action);
@@ -238,7 +262,8 @@ export async function startBridge(
       });
     },
   }, larkScopeConfig);
-  const unsubscribeDesktop = desktop.onThreadStreamStateChanged((message) => {
+  const unsubscribeDesktop = desktop.onThreadStreamStateChanged((message, epoch) => {
+    normalizer.beginEpoch(epoch);
     for (const notification of normalizer.handle(message)) {
       orchestrator.handleNotification(notification);
     }
