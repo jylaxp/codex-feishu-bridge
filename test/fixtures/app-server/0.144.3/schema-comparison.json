@@ -1,0 +1,39 @@
+{
+  "baseline": {
+    "profileId": "app-server-0.144.3",
+    "schemaDigest": "3b1af113954376a68d0d2382190f4bde6ca58c02a5c9a5cfebcd01f1747e79e7",
+    "schemaFileCount": 337
+  },
+  "target": {
+    "profileId": "app-server-0.145.0-alpha.18",
+    "schemaDigest": "7a5aaea66a649faae713d43313289ddd79b4883086c10875f9031a56ec00bd5c",
+    "schemaFileCount": 341
+  },
+  "result": {
+    "consumedResponseFieldsChanged": [],
+    "sharedResponseValidatorSafe": true
+  },
+  "methods": {
+    "thread/list": { "params": "identical", "response": "unconsumedDefinitionsChanged" },
+    "thread/read": { "params": "identical", "response": "unconsumedDefinitionsChanged" },
+    "thread/resume": { "params": "identical", "response": "unconsumedDefinitionsChanged" },
+    "thread/start": { "params": "additiveRuntimeWorkspaceRoots", "response": "unconsumedDefinitionsChanged" },
+    "thread/fork": { "params": "additiveForkControls", "response": "unconsumedDefinitionsChanged" },
+    "thread/name/set": { "params": "identical", "response": "identical" },
+    "thread/archive": { "params": "identical", "response": "identical" },
+    "thread/goal/get": { "params": "identical", "response": "identical" },
+    "thread/goal/set": { "params": "identical", "response": "identical" },
+    "thread/goal/clear": { "params": "identical", "response": "identical" },
+    "thread/compact/start": { "params": "identical", "response": "identical" },
+    "skills/list": { "params": "identical", "response": "identical" },
+    "mcpServerStatus/list": { "params": "identical", "response": "identical" },
+    "account/rateLimits/read": { "params": "identical", "response": "additiveSpendControlReached" },
+    "turn/start": { "params": "additiveRuntimeWorkspaceRoots", "response": "unconsumedDefinitionsChanged" }
+  },
+  "reviewedDeltas": [
+    "0.145 adds optional runtimeWorkspaceRoots to thread/start and turn/start parameters",
+    "0.145 adds optional beforeTurnId and deferGoalContinuation to thread/fork parameters",
+    "0.145 adds optional spendControlReached to rate-limit snapshots",
+    "thread and turn response definitions changed only in fields not consumed by the Bridge adapter"
+  ]
+}

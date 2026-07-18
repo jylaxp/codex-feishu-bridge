@@ -25,6 +25,12 @@ import type {
 } from './domain';
 import type { InboundTextMessage } from './lark/intake';
 
+/** Desktop-owned execution capabilities; App Server clients cannot satisfy this boundary. */
+export type DesktopTurnClient = Pick<
+  DesktopIpcClient,
+  'startTurnTracked' | 'steerTurnTracked' | 'interruptTurnTracked'
+>;
+
 export interface InMemoryCardClient {
   createCard(card: CardKitJson): Promise<string>;
   replyCard(rootMessageId: string, cardId: string, idempotencyKey: string): Promise<string>;
@@ -174,7 +180,7 @@ export class InMemoryOrchestrator {
 
   public constructor(
     private readonly config: BridgeConfig,
-    private readonly desktop: DesktopIpcClient,
+    private readonly desktop: DesktopTurnClient,
     private readonly cards: InMemoryCardClient,
     options: InMemoryOrchestratorOptions = {},
   ) {

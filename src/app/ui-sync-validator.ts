@@ -1,6 +1,14 @@
 import { randomUUID } from 'node:crypto';
 
-import { AppServerClient } from './codex/app-server-client';
+import {
+  AppServerClient,
+  type AppServerClientOptions,
+} from './codex/app-server-client';
+import {
+  AppServerControlPlane,
+  adapterForAppServerProfile,
+  type AppServerRequestClient,
+} from './codex/app-server-control-plane';
 import { verifyCodexRuntimeContract } from './codex/runtime-contract';
 import {
   ServerNotification,
@@ -40,6 +48,17 @@ export type UiSyncValidationResult =
   | { readonly mode: 'thread_list'; readonly threads: readonly UiSyncThreadCandidate[] }
   | { readonly mode: 'validation'; readonly evidence: UiSyncEvidence };
 
+export interface UiSyncAppServerClient extends AppServerRequestClient {
+  start(): Promise<unknown>;
+  stop(): Promise<void>;
+  onNotification(listener: (notification: ServerNotification, epoch: number) => void): () => void;
+}
+
+export interface UiSyncValidatorDependencies {
+  readonly verifyRuntimeContract?: typeof verifyCodexRuntimeContract;
+  readonly createClient?: (options: AppServerClientOptions) => UiSyncAppServerClient;
+}
+
 /**
  * Runs an isolated managed-proxy experiment. It never touches the production
  * bridge database and never claims Desktop rendering without human evidence.
@@ -48,6 +67,7 @@ export async function runUiSyncValidator(
   env: NodeJS.ProcessEnv,
   threadId?: string,
   timeoutMs = DEFAULT_VALIDATION_TIMEOUT_MS,
+  dependencies: UiSyncValidatorDependencies = {},
 ): Promise<UiSyncValidationResult> {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 10 * 60_000) {
     throw new RangeError('UI sync validation timeout must be between 1s and 10m');
@@ -55,8 +75,13 @@ export async function runUiSyncValidator(
   const effectiveEnv = loadBridgeEnvironment(env);
   const preflight = runPreflight(parseEnvironment(effectiveEnv));
   const config = preflight.config;
-  await verifyCodexRuntimeContract(config, effectiveEnv, preflight.runtimeDirectory.temporaryDir);
-  const client = new AppServerClient({
+  const contract = await (dependencies.verifyRuntimeContract ?? verifyCodexRuntimeContract)(
+    config,
+    effectiveEnv,
+    preflight.runtimeDirectory.temporaryDir,
+  );
+  const protocolAdapter = adapterForAppServerProfile(contract.protocolProfile);
+  const clientOptions: AppServerClientOptions = {
     transport: {
       mode: 'managed_proxy',
       codexBin: config.codexBin,
@@ -64,12 +89,15 @@ export async function runUiSyncValidator(
       env: effectiveEnv,
       ...(config.appServerSocketPath ? { socketPath: config.appServerSocketPath } : {}),
     },
+    protocolProfile: contract.protocolProfile,
     clientInfo: {
       name: 'lark_codex_ui_sync_validator',
       title: 'Lark Codex UI Sync Validator',
       version: '2.0.0',
     },
-  });
+  };
+  const client = dependencies.createClient?.(clientOptions) ?? new AppServerClient(clientOptions);
+  const controlPlane = new AppServerControlPlane(client, protocolAdapter);
 
   await client.start();
   try {
@@ -81,7 +109,7 @@ export async function runUiSyncValidator(
         archived: false,
         cwd: config.codexCwd,
       };
-      const response = await client.request<ThreadListResponse>('thread/list', params);
+      const response = await controlPlane.request<ThreadListResponse>('thread/list', params);
       return {
         mode: 'thread_list',
         threads: response.data.map(createUiSyncThreadCandidate),
@@ -97,7 +125,7 @@ export async function runUiSyncValidator(
       sandbox: 'read-only',
       excludeTurns: false,
     };
-    const resumed = await client.request<ThreadResumeResponse>('thread/resume', resumeParams);
+    const resumed = await controlPlane.request<ThreadResumeResponse>('thread/resume', resumeParams);
     if (resumed.thread.id !== threadId) {
       throw new Error('UI sync validator resumed a different thread');
     }
@@ -121,7 +149,7 @@ export async function runUiSyncValidator(
     let response: TurnStartResponse;
     let observation: { readonly methods: string[]; readonly completed: boolean };
     try {
-      response = await client.request<TurnStartResponse>('turn/start', turnParams);
+      response = await controlPlane.request<TurnStartResponse>('turn/start', turnParams);
       observation = await observer.waitFor(response.turn.id);
     } finally {
       observer.stop();
@@ -171,7 +199,7 @@ interface TurnObserver {
 }
 
 function observeValidationTurn(
-  client: AppServerClient,
+  client: UiSyncAppServerClient,
   threadId: string,
   timeoutMs: number,
 ): TurnObserver {

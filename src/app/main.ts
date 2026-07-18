@@ -4,6 +4,11 @@ import { BindingStore } from './binding-store';
 import { CardKitClient, type LarkReplyApi } from './cards/cardkit-client';
 import { CardImageRenderer, type LarkImageApi } from './cards/card-image-renderer';
 import { AppServerClient, type AppServerTransportOptions } from './codex/app-server-client';
+import {
+  AppServerControlPlane,
+  adapterForAppServerProfile,
+  type AppServerRequestClient,
+} from './codex/app-server-control-plane';
 import { DesktopIpcClient } from './codex/desktop-ipc-client';
 import { DesktopIpcSupervisor } from './codex/desktop-ipc-supervisor';
 import { DesktopThreadStreamNormalizer } from './codex/desktop-thread-stream-normalizer';
@@ -72,14 +77,30 @@ export async function startBridge(
     resolveFailure = resolve;
   });
   const bindings = new BindingStore(preflight.configHome);
+  let runtimeContract: Awaited<ReturnType<typeof verifyCodexRuntimeContract>>;
+  let protocolAdapter: ReturnType<typeof adapterForAppServerProfile>;
+  try {
+    bindings.load();
+    runtimeContract = await verifyCodexRuntimeContract(
+      config,
+      effectiveEnv,
+      preflight.runtimeDirectory.temporaryDir,
+    );
+    protocolAdapter = adapterForAppServerProfile(runtimeContract.protocolProfile);
+  } catch (error) {
+    processLock.release();
+    throw error;
+  }
   const appServer = new AppServerClient({
     transport: appServerTransport(config, effectiveEnv),
+    protocolProfile: runtimeContract.protocolProfile,
     clientInfo: {
       name: 'lark_codex_gateway',
       title: 'Lark Codex Gateway',
       version: '3.0.0',
     },
   });
+  const appServerControlPlane = new AppServerControlPlane(appServer, protocolAdapter);
   const desktop = new DesktopIpcClient();
   const normalizer = new DesktopThreadStreamNormalizer();
   const lark = createLarkRuntimeClients(config, {
@@ -99,7 +120,7 @@ export async function startBridge(
     logger,
   );
   const rateLimits = new RateLimitCache(
-    () => appServer.request('account/rateLimits/read', {}),
+    () => appServerControlPlane.request('account/rateLimits/read', {}),
     config.rateLimitQueryIntervalMs,
   );
   const outputFileUploader = new OutputFileUploader(config, lark.api as unknown as FileUploadApi);
@@ -112,14 +133,14 @@ export async function startBridge(
       outputFileUploader.uploadMarkdownFiles(answer, rootMessageId, taskId)
     ),
     resolveBindingByThreadId: (threadId) => bindings.getUniqueByThreadId(threadId),
-    readThreadTitle: (threadId) => readThreadTitle(appServer, threadId),
-    readSkills: (cwd) => appServer.request('skills/list', { cwds: [cwd] }),
+    readThreadTitle: (threadId) => readThreadTitle(appServerControlPlane, threadId),
+    readSkills: (cwd) => appServerControlPlane.request('skills/list', { cwds: [cwd] }),
   });
   const approvals = new DesktopApprovalService(config, desktop, cards, orchestrator);
   const conversationBindings = new ConversationBindingServiceV3(
     config,
     bindings,
-    appServer,
+    appServerControlPlane,
     cards,
     undefined,
     navigation,
@@ -140,7 +161,7 @@ export async function startBridge(
   const commands = new BridgeCommandService(
     config,
     bindings,
-    appServer,
+    appServerControlPlane,
     cards,
     orchestrator,
     navigation,
@@ -230,13 +251,15 @@ export async function startBridge(
 
   let stopped = false;
   try {
-    bindings.load();
-    await verifyCodexRuntimeContract(config, effectiveEnv, preflight.runtimeDirectory.temporaryDir);
-    await desktopSupervisor.start();
     await appServer.start();
+    await desktopSupervisor.start();
     await eventServer.start();
     logger.info('bridge_started', {
       executionMode: 'desktop_follower',
+      codexVersion: runtimeContract.codexVersion,
+      appServerProtocolProfile: runtimeContract.protocolProfile.id,
+      appServerProtocolSupported: true,
+      appServerSchemaDigest: runtimeContract.schemaDigest,
       runtimeInstance: randomUUID().slice(0, 8),
     });
   } catch (error) {
@@ -291,7 +314,7 @@ function appServerTransport(
 }
 
 async function readThreadTitle(
-  appServer: AppServerClient,
+  appServer: AppServerRequestClient,
   threadId: string,
 ): Promise<string | null> {
   const response = asRecord(await appServer.request('thread/read', { threadId }));

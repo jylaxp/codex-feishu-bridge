@@ -13,6 +13,10 @@ import type {
   ServerRequest,
 } from './protocol';
 import { buildCodexEnvironment } from './environment';
+import {
+  parseAppServerUserAgentVersion,
+  type AppServerProtocolProfile,
+} from './app-server-protocol-registry';
 
 export type AppServerConnectionState =
   | 'DISCONNECTED'
@@ -67,14 +71,18 @@ export type AppServerSpawn = (
 
 export interface AppServerClientOptions {
   transport: AppServerTransportOptions;
+  protocolProfile: AppServerProtocolProfile;
   clientInfo?: InitializeParams['clientInfo'];
   initializeCapabilities?: NonNullable<InitializeParams['capabilities']>;
   requestTimeoutMs?: number;
   terminationGraceMs?: number;
   maxLineBytes?: number;
-  expectedServerVersion?: string;
   spawnProcess?: AppServerSpawn;
 }
+
+export type AppServerIdentityAssurance =
+  | 'owned_binary_exact_profile'
+  | 'operator_trusted_managed_proxy';
 
 export interface TrackedRequestIdentity {
   id: RequestId;
@@ -129,26 +137,34 @@ interface ReaderContext {
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_TERMINATION_GRACE_MS = 5_000;
 const DEFAULT_MAX_LINE_BYTES = 8 * 1024 * 1024;
-const STABLE_SEMVER_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
-const APP_SERVER_USER_AGENT_PATTERN = new RegExp(
-  '^(?:[A-Za-z][A-Za-z0-9._-]*|Codex Desktop)/'
-    + '((?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*))'
-    + '(?: \\([^()\\r\\n]*\\)(?: [A-Za-z0-9._-]+ \\([^()\\r\\n]*\\))?)?$',
-);
 
 /** Error returned by an App Server JSON-RPC error response. */
 export class AppServerRpcError extends Error {
   readonly code: number;
-  readonly data: unknown;
   readonly method: string;
 
   constructor(method: string, rpcError: RpcError) {
-    super(`App Server RPC failed for ${method}: ${rpcError.message}`);
+    super('App Server RPC request failed');
     this.name = 'AppServerRpcError';
     this.code = rpcError.code;
-    this.data = rpcError.data;
     this.method = method;
   }
+}
+
+/**
+ * Describes what an initialize identity can prove for the configured mode.
+ *
+ * An owned process is the same configured binary whose complete schema was
+ * hashed during preflight. A managed proxy can only corroborate its reported
+ * version; the operator is responsible for pinning that daemon to the selected
+ * profile. The bridge never invents a remote schema digest.
+ */
+export function appServerIdentityAssurance(
+  mode: AppServerTransportOptions['mode'],
+): AppServerIdentityAssurance {
+  return mode === 'owned_stdio'
+    ? 'owned_binary_exact_profile'
+    : 'operator_trusted_managed_proxy';
 }
 
 /** Error returned when the active child connection cannot complete an operation. */
@@ -426,14 +442,13 @@ export class AppServerClient {
     ) {
       throw new AppServerConnectionError('App Server initialize response is invalid', epoch);
     }
-    const expectedVersion = this.options.expectedServerVersion;
-    if (
-      expectedVersion
-      && (
-        !STABLE_SEMVER_PATTERN.test(expectedVersion)
-        || parseAppServerVersion(result.userAgent) !== expectedVersion
-      )
-    ) {
+    let actualVersion: string;
+    try {
+      actualVersion = parseAppServerUserAgentVersion(result.userAgent).version;
+    } catch {
+      throw new AppServerConnectionError('App Server runtime identity is unsupported', epoch);
+    }
+    if (actualVersion !== this.options.protocolProfile.codexVersion) {
       throw new AppServerConnectionError('App Server runtime version is unsupported', epoch);
     }
   }
@@ -460,7 +475,7 @@ export class AppServerClient {
       if (!this.isCurrentConnection(child, epoch)) {
         return;
       }
-      this.publish({ type: 'stderr', text: chunk.toString(), epoch });
+      this.publish({ type: 'stderr', text: summarizeStderr(chunk), epoch });
     });
     child.on('error', (error) => {
       this.failCurrentConnection(child, epoch, toConnectionError(error, 'App Server child failed', epoch));
@@ -638,7 +653,7 @@ export class AppServerClient {
           return;
         }
         this.pending.delete(id);
-        reject(new Error(`App Server RPC timeout: ${method}`));
+        reject(new Error('App Server RPC request timed out'));
       }, timeoutMs);
 
       const pending: PendingRequest = {
@@ -882,10 +897,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function parseAppServerVersion(userAgent: string): string | undefined {
-  return APP_SERVER_USER_AGENT_PATTERN.exec(userAgent)?.[1];
-}
-
 function hasOwn(value: object, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(value, key);
 }
@@ -917,12 +928,11 @@ function parseRpcError(value: unknown): RpcError | undefined {
 }
 
 function toConnectionError(
-  value: unknown,
+  _value: unknown,
   prefix: string,
   epoch: number,
 ): AppServerConnectionError {
-  const message = value instanceof Error ? value.message : String(value);
-  return new AppServerConnectionError(`${prefix}: ${message}`, epoch);
+  return new AppServerConnectionError(prefix, epoch);
 }
 
 function toError(value: unknown): Error {
@@ -953,4 +963,11 @@ function resolvesWithin(promise: Promise<void>, timeoutMs: number): Promise<bool
       resolve(true);
     });
   });
+}
+
+function summarizeStderr(chunk: Buffer | string): string {
+  const byteLength = Buffer.isBuffer(chunk)
+    ? chunk.byteLength
+    : Buffer.byteLength(chunk, 'utf8');
+  return `App Server stderr received (${byteLength} bytes; content redacted)`;
 }

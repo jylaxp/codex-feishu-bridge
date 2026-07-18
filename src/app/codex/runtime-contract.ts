@@ -10,7 +10,11 @@ import { basename, join, relative } from 'node:path';
 import { promisify } from 'node:util';
 
 import type { BridgeConfig } from '../domain';
-import { SUPPORTED_APP_SERVER_SCHEMA_DIGEST } from './contract';
+import {
+  type AppServerProtocolProfile,
+  parseCodexCliVersion,
+  selectAppServerProtocolProfile,
+} from './app-server-protocol-registry';
 import { buildCodexEnvironment } from './environment';
 
 const execFileAsync = promisify(execFile);
@@ -18,6 +22,7 @@ const execFileAsync = promisify(execFile);
 export interface CodexRuntimeContractReport {
   readonly codexVersion: string;
   readonly schemaDigest: string;
+  readonly protocolProfile: AppServerProtocolProfile;
 }
 
 /** Verifies the configured CLI and its generated App Server protocol exactly. */
@@ -36,21 +41,19 @@ export async function verifyCodexRuntimeContract(
       env,
     );
     const schemaDigest = digestJsonSchemaDirectory(schemaDirectory);
-    assertCompatibleCodexRuntime(codexVersion, schemaDigest);
-    return Object.freeze({ codexVersion, schemaDigest });
+    const protocolProfile = assertCompatibleCodexRuntime(codexVersion, schemaDigest);
+    return Object.freeze({ codexVersion, schemaDigest, protocolProfile });
   } finally {
     rmSync(schemaDirectory, { recursive: true, force: true });
   }
 }
 
-/** Accepts patch-level CLI changes only when the generated protocol is unchanged. */
-export function assertCompatibleCodexRuntime(codexVersion: string, schemaDigest: string): void {
-  if (!/^codex-cli \d+\.\d+\.\d+$/.test(codexVersion)) {
-    throw new Error('Configured Codex CLI version response is invalid');
-  }
-  if (schemaDigest !== SUPPORTED_APP_SERVER_SCHEMA_DIGEST) {
-    throw new Error('Configured Codex App Server schema is unsupported');
-  }
+/** Returns the exact registered profile after validating CLI and schema identity. */
+export function assertCompatibleCodexRuntime(
+  codexVersion: string,
+  schemaDigest: string,
+): AppServerProtocolProfile {
+  return selectAppServerProtocolProfile(parseCodexCliVersion(codexVersion), schemaDigest);
 }
 
 /** Digests generated schemas independently of nondeterministic JSON object key order. */

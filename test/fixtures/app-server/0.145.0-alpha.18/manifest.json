@@ -1,0 +1,73 @@
+{
+  "profileId": "app-server-0.145.0-alpha.18",
+  "cliVersion": "codex-cli 0.145.0-alpha.18",
+  "schemaDigest": "7a5aaea66a649faae713d43313289ddd79b4883086c10875f9031a56ec00bd5c",
+  "capturedAt": "2026-07-17T23:06:52Z",
+  "schemaGeneration": {
+    "experimental": true,
+    "schemaFileCount": 341
+  },
+  "source": {
+    "binaryName": "codex",
+    "binarySha256": "a2bc3f63b0d7ce5c065ae070e16d964fa71192bf6ceb8da82d2315227d55a6bf",
+    "distribution": "ChatGPT.app"
+  },
+  "handshake": {
+    "mode": "owned_stdio",
+    "userAgent": "Codex Desktop/0.145.0-alpha.18 (Mac OS 15.6.1; arm64) dumb (bridge_contract_capture; 2.0.0)"
+  },
+  "evidence": {
+    "representativeMessages": "representative-messages.json",
+    "methods": [
+      "initialize",
+      "thread/list",
+      "thread/read",
+      "thread/resume",
+      "thread/start",
+      "thread/fork",
+      "thread/name/set",
+      "thread/archive",
+      "thread/goal/get",
+      "thread/goal/set",
+      "thread/goal/clear",
+      "thread/compact/start",
+      "skills/list",
+      "mcpServerStatus/list",
+      "account/rateLimits/read",
+      "turn/start"
+    ],
+    "schemaFiles": [
+      "v1/InitializeResponse.json",
+      "v2/ThreadListParams.json",
+      "v2/ThreadListResponse.json",
+      "v2/ThreadReadParams.json",
+      "v2/ThreadReadResponse.json",
+      "v2/ThreadResumeParams.json",
+      "v2/ThreadResumeResponse.json",
+      "v2/ThreadStartParams.json",
+      "v2/ThreadStartResponse.json",
+      "v2/ThreadForkParams.json",
+      "v2/ThreadForkResponse.json",
+      "v2/ThreadSetNameParams.json",
+      "v2/ThreadSetNameResponse.json",
+      "v2/ThreadArchiveParams.json",
+      "v2/ThreadArchiveResponse.json",
+      "v2/ThreadGoalGetParams.json",
+      "v2/ThreadGoalGetResponse.json",
+      "v2/ThreadGoalSetParams.json",
+      "v2/ThreadGoalSetResponse.json",
+      "v2/ThreadGoalClearParams.json",
+      "v2/ThreadGoalClearResponse.json",
+      "v2/ThreadCompactStartParams.json",
+      "v2/ThreadCompactStartResponse.json",
+      "v2/SkillsListParams.json",
+      "v2/SkillsListResponse.json",
+      "v2/ListMcpServerStatusParams.json",
+      "v2/ListMcpServerStatusResponse.json",
+      "v2/GetAccountRateLimitsResponse.json",
+      "v2/TurnStartParams.json",
+      "v2/TurnStartResponse.json",
+      "v2/TurnStartedNotification.json"
+    ]
+  }
+}

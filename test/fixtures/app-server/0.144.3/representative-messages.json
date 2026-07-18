@@ -1,0 +1,29 @@
+{
+  "initializeResponse": {
+    "id": 1,
+    "result": {
+      "userAgent": "lark_codex_144_smoke/0.144.3 (Mac OS 15.6.1; arm64) unknown (lark_codex_144_smoke; 3.0.0)",
+      "codexHome": "/Users/example/.codex",
+      "platformFamily": "unix",
+      "platformOs": "macos"
+    }
+  },
+  "threadListRequest": {
+    "id": 2,
+    "method": "thread/list",
+    "params": {
+      "limit": 20,
+      "sortKey": "updated_at",
+      "sortDirection": "desc",
+      "archived": false
+    }
+  },
+  "threadListResponse": {
+    "id": 2,
+    "result": {
+      "data": [],
+      "nextCursor": null,
+      "backwardsCursor": null
+    }
+  }
+}

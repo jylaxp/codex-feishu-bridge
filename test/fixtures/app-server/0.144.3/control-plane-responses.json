@@ -1,0 +1,106 @@
+{
+  "threadList": {
+    "data": [{
+      "id": "thread-144",
+      "preview": "144 fixture",
+      "cwd": "/workspace",
+      "updatedAt": 1784300001,
+      "status": { "type": "notLoaded" },
+      "name": null,
+      "legacyExtension": true
+    }],
+    "nextCursor": null,
+    "legacyExtension": true
+  },
+  "threadRead": {
+    "thread": {
+      "id": "thread-144",
+      "preview": "144 fixture",
+      "cwd": "/workspace",
+      "updatedAt": 1784300001,
+      "status": { "type": "idle" },
+      "name": "144 thread",
+      "legacyExtension": true
+    }
+  },
+  "threadResume": {
+    "thread": {
+      "id": "thread-144",
+      "turns": [{
+        "id": "turn-144",
+        "items": [],
+        "status": "completed",
+        "error": null,
+        "startedAt": 1784300000,
+        "completedAt": 1784300001,
+        "durationMs": 1000,
+        "legacyExtension": true
+      }]
+    },
+    "model": "gpt-5.4",
+    "legacyExtension": true
+  },
+  "threadStart": { "thread": { "id": "thread-start-144" }, "legacyExtension": true },
+  "threadFork": { "thread": { "id": "thread-fork-144" }, "legacyExtension": true },
+  "empty": { "legacyExtension": true },
+  "goalGet": {
+    "goal": {
+      "objective": "Support 144",
+      "status": "active",
+      "tokenBudget": null,
+      "tokensUsed": 10,
+      "timeUsedSeconds": 5,
+      "createdAt": 1784300000,
+      "updatedAt": 1784300001,
+      "legacyExtension": true
+    }
+  },
+  "goalSet": {
+    "goal": {
+      "objective": "Support 144",
+      "status": "active",
+      "tokenBudget": 1000,
+      "tokensUsed": 0,
+      "timeUsedSeconds": 0,
+      "createdAt": 1784300000,
+      "updatedAt": 1784300000
+    }
+  },
+  "goalClear": { "cleared": true, "legacyExtension": true },
+  "skillsList": {
+    "data": [{
+      "skills": [{
+        "name": "review",
+        "description": "Review code",
+        "path": "/skills/review/SKILL.md",
+        "scope": "repo",
+        "legacyExtension": true
+      }]
+    }]
+  },
+  "mcpList": {
+    "data": [{ "name": "filesystem", "authStatus": "unsupported", "legacyExtension": true }]
+  },
+  "rateLimits": {
+    "rateLimits": {
+      "planType": "pro",
+      "primary": { "usedPercent": 25, "windowDurationMins": 10080, "resetsAt": 1784400000 },
+      "secondary": null,
+      "credits": { "hasCredits": true, "balance": "42" },
+      "legacyExtension": true
+    },
+    "legacyExtension": true
+  },
+  "turnStart": {
+    "turn": {
+      "id": "turn-start-144",
+      "items": [],
+      "status": "inProgress",
+      "error": null,
+      "startedAt": 1784300000,
+      "completedAt": null,
+      "durationMs": null,
+      "legacyExtension": true
+    }
+  }
+}

@@ -17,6 +17,12 @@ import { toast } from './lark/event-server';
 
 const APPROVAL_TTL_MS = 10 * 60_000;
 
+/** Exact Desktop owner capability used to return an approval decision. */
+export type DesktopApprovalClient = Pick<
+  DesktopIpcClient,
+  'connectionEpoch' | 'respondToApproval'
+>;
+
 interface ApprovalCardClient {
   createCard(card: CardKitJson): Promise<string>;
   replyCard(rootMessageId: string, cardId: string, idempotencyKey: string): Promise<string>;
@@ -92,7 +98,7 @@ export class DesktopApprovalService {
 
   public constructor(
     private readonly config: BridgeConfig,
-    private readonly desktop: DesktopIpcClient,
+    private readonly desktop: DesktopApprovalClient,
     private readonly cards: ApprovalCardClient,
     private readonly tasks: ApprovalTaskLookup,
     now: () => number = Date.now,

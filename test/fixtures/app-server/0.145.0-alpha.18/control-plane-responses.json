@@ -1,0 +1,217 @@
+{
+  "threadList": {
+    "data": [
+      {
+        "id": "thread-1",
+        "sessionId": "session-1",
+        "preview": "Protocol fixture",
+        "cwd": "/workspace",
+        "modelProvider": "openai",
+        "updatedAt": 1784300001,
+        "status": { "type": "notLoaded" },
+        "name": "Fixture thread",
+        "turns": [],
+        "upstreamExtension": { "ignored": true }
+      }
+    ],
+    "nextCursor": null,
+    "backwardsCursor": "previous-page",
+    "upstreamExtension": true
+  },
+  "threadRead": {
+    "thread": {
+      "id": "thread-1",
+      "sessionId": "session-1",
+      "preview": "Protocol fixture",
+      "cwd": "/workspace",
+      "modelProvider": "openai",
+      "updatedAt": 1784300001,
+      "status": { "type": "idle" },
+      "name": "Fixture thread",
+      "turns": [],
+      "upstreamExtension": true
+    },
+    "upstreamExtension": true
+  },
+  "threadStart": {
+    "thread": {
+      "id": "thread-2",
+      "sessionId": "session-2",
+      "preview": "",
+      "cwd": "/workspace",
+      "modelProvider": "openai",
+      "updatedAt": 1784300002,
+      "status": { "type": "idle" },
+      "name": null,
+      "turns": []
+    },
+    "model": "gpt-5.4",
+    "modelProvider": "openai",
+    "cwd": "/workspace",
+    "serviceTier": null
+  },
+  "threadFork": {
+    "thread": {
+      "id": "thread-fork",
+      "sessionId": "session-1",
+      "preview": "Protocol fixture",
+      "cwd": "/workspace",
+      "modelProvider": "openai",
+      "updatedAt": 1784300003,
+      "status": { "type": "idle" },
+      "name": "Fixture fork",
+      "turns": []
+    },
+    "model": "gpt-5.4",
+    "modelProvider": "openai",
+    "cwd": "/workspace"
+  },
+  "threadResume": {
+    "thread": {
+      "id": "thread-1",
+      "sessionId": "session-1",
+      "preview": "Protocol fixture",
+      "cwd": "/workspace",
+      "modelProvider": "openai",
+      "updatedAt": 1784300004,
+      "status": { "type": "idle" },
+      "name": "Fixture thread",
+      "turns": [
+        {
+          "id": "turn-complete",
+          "input": [
+            {
+              "type": "skill",
+              "name": "review",
+              "path": "/skills/review/SKILL.md"
+            }
+          ],
+          "items": [
+            {
+              "id": "tool-1",
+              "type": "mcpToolCall",
+              "toolName": "read_file",
+              "tool": "read_file",
+              "description": "Read the selected file",
+              "query": "protocol adapter",
+              "path": "/workspace/src/adapter.ts",
+              "status": "completed"
+            }
+          ],
+          "itemsView": "full",
+          "status": "completed",
+          "error": null,
+          "startedAt": 1784300000,
+          "completedAt": 1784300003,
+          "durationMs": 3000,
+          "model": "gpt-5.4",
+          "tokenUsage": {
+            "inputTokens": 120,
+            "outputTokens": 45,
+            "contextTokens": 1000,
+            "contextLength": 200000
+          },
+          "upstreamExtension": true
+        }
+      ]
+    },
+    "model": "gpt-5.4",
+    "modelProvider": "openai",
+    "cwd": "/workspace",
+    "initialTurnsPage": null,
+    "upstreamExtension": true
+  },
+  "empty": { "upstreamExtension": true },
+  "goalGet": {
+    "goal": {
+      "threadId": "thread-1",
+      "objective": "Ship safely",
+      "status": "active",
+      "tokenBudget": null,
+      "tokensUsed": 12,
+      "timeUsedSeconds": 8,
+      "createdAt": 1784300000,
+      "updatedAt": 1784300001,
+      "upstreamExtension": true
+    }
+  },
+  "goalSet": {
+    "goal": {
+      "threadId": "thread-1",
+      "objective": "Ship safely",
+      "status": "active",
+      "tokenBudget": 1000,
+      "tokensUsed": 0,
+      "timeUsedSeconds": 0,
+      "createdAt": 1784300000,
+      "updatedAt": 1784300000
+    }
+  },
+  "goalClear": { "cleared": true, "upstreamExtension": true },
+  "skillsList": {
+    "data": [
+      {
+        "cwd": "/workspace",
+        "skills": [
+          {
+            "name": "review",
+            "description": "Review code",
+            "shortDescription": "Review",
+            "path": "/skills/review/SKILL.md",
+            "scope": "repo",
+            "upstreamExtension": true
+          }
+        ],
+        "errors": [],
+        "upstreamExtension": true
+      }
+    ],
+    "upstreamExtension": true
+  },
+  "mcpList": {
+    "data": [
+      {
+        "name": "filesystem",
+        "authStatus": "unsupported",
+        "tools": {},
+        "upstreamExtension": true
+      }
+    ],
+    "nextCursor": null,
+    "upstreamExtension": true
+  },
+  "rateLimits": {
+    "rateLimits": {
+      "limitId": "codex",
+      "limitName": "Codex",
+      "primary": {
+        "usedPercent": 25,
+        "windowDurationMins": 10080,
+        "resetsAt": 1784400000,
+        "upstreamExtension": true
+      },
+      "secondary": null,
+      "credits": { "hasCredits": true, "balance": "42", "upstreamExtension": true },
+      "planType": "pro",
+      "spendControlReached": false,
+      "upstreamExtension": true
+    },
+    "rateLimitsByLimitId": null,
+    "rateLimitResetCredits": null,
+    "upstreamExtension": true
+  },
+  "turnStart": {
+    "turn": {
+      "id": "turn-new",
+      "items": [],
+      "itemsView": "full",
+      "status": "inProgress",
+      "error": null,
+      "startedAt": 1784300000,
+      "completedAt": null,
+      "durationMs": null,
+      "upstreamExtension": true
+    },
+    "upstreamExtension": true
+  }
+}

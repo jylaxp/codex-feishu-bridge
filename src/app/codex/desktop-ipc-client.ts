@@ -108,6 +108,8 @@ export interface DesktopIpcClientOptions {
   readonly requestTimeoutMs?: number;
   readonly maxFrameBytes?: number;
   readonly requestIdFactory?: () => string;
+  /** Test seam for framed transport behavior; production always uses createConnection. */
+  readonly connectSocket?: (address: string) => Socket;
 }
 
 export interface DesktopApprovalResponse {
@@ -167,6 +169,7 @@ export class DesktopIpcClient {
   private readonly requestTimeoutMs: number;
   private readonly maxFrameBytes: number;
   private readonly requestIdFactory: () => string;
+  private readonly connectSocket: (address: string) => Socket;
   private readonly pendingRequests = new Map<string, PendingRequest>();
   private readonly threadStreamListeners = new Set<ThreadStreamListener>();
   private readonly connectionLossListeners = new Set<ConnectionLossListener>();
@@ -201,6 +204,7 @@ export class DesktopIpcClient {
       options.maxFrameBytes ?? DEFAULT_MAX_FRAME_BYTES,
     );
     this.requestIdFactory = options.requestIdFactory ?? randomUUID;
+    this.connectSocket = options.connectSocket ?? createConnection;
   }
 
   public get state(): DesktopIpcConnectionState {
@@ -420,7 +424,7 @@ export class DesktopIpcClient {
       throw error;
     }
 
-    const socket = createConnection(this.endpoint.address);
+    const socket = this.connectSocket(this.endpoint.address);
     this.socket = socket;
     this.epoch += 1;
     const epoch = this.epoch;

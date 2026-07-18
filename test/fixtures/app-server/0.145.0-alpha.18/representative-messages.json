@@ -1,0 +1,90 @@
+{
+  "initializeResponse": {
+    "id": 1,
+    "result": {
+      "userAgent": "Codex Desktop/0.145.0-alpha.18 (Mac OS 15.6.1; arm64) dumb (bridge_contract_capture; 2.0.0)",
+      "codexHome": "/Users/example/.codex",
+      "platformFamily": "unix",
+      "platformOs": "macos"
+    }
+  },
+  "threadListRequest": {
+    "id": 2,
+    "method": "thread/list",
+    "params": {
+      "limit": 20,
+      "sortKey": "updated_at",
+      "sortDirection": "desc",
+      "archived": false
+    }
+  },
+  "threadListResponse": {
+    "id": 2,
+    "result": {
+      "data": [
+        {
+          "id": "019f-thread",
+          "sessionId": "019f-session",
+          "preview": "Protocol fixture",
+          "modelProvider": "openai",
+          "createdAt": 1784300000,
+          "updatedAt": 1784300001,
+          "status": {
+            "type": "notLoaded"
+          },
+          "cwd": "/workspace",
+          "cliVersion": "0.145.0-alpha.18",
+          "source": "appServer",
+          "turns": [],
+          "ephemeral": false
+        }
+      ],
+      "nextCursor": null
+    }
+  },
+  "rateLimitsResponse": {
+    "id": 3,
+    "result": {
+      "rateLimits": {
+        "limitId": "codex",
+        "limitName": "Codex",
+        "spendControlReached": false
+      }
+    }
+  },
+  "turnStartRequest": {
+    "id": 4,
+    "method": "turn/start",
+    "params": {
+      "threadId": "019f-thread",
+      "input": [
+        {
+          "type": "text",
+          "text": "protocol fixture",
+          "text_elements": []
+        }
+      ]
+    }
+  },
+  "turnStartResponse": {
+    "id": 4,
+    "result": {
+      "turn": {
+        "id": "019f-turn",
+        "items": [],
+        "status": "inProgress"
+      }
+    }
+  },
+  "turnStartedNotification": {
+    "method": "turn/started",
+    "params": {
+      "threadId": "019f-thread",
+      "turn": {
+        "id": "019f-turn",
+        "items": [],
+        "status": "inProgress"
+      }
+    }
+  }
+}
