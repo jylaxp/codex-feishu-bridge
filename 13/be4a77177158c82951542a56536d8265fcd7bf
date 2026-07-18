@@ -1,0 +1,46 @@
+test/app/desktop-ipc-regression.test.ts
+  s_c54cf697e76a51::t_9a919bb831d9db 318-338
+  s_c54cf697e76a51::t_28568007b30043 19-23,163-224,235-245,250,252-253,255,273,315-316,339-372,519,539-543,545-547,679-719,723-725,734-736,740
+  s_c54cf697e76a51::t_159318cea7af31 225-234,246-249,251,254,256-272,274-277
+  s_c54cf697e76a51::t_8eccd80abeec1b 70,91-100,102-104,143,150-155,731-733,737-739
+  s_c54cf697e76a51::t_deb1f16dd08b36 282-284,289-291,295,314
+  s_c54cf697e76a51::t_ffc29920a99448 317
+  s_c54cf697e76a51::t_bbd12ab656ea37 741
+src/app/in-memory-orchestrator.ts
+  s_c54cf697e76a51::t_278651befa6b78 71-72,170,197,201-205,417,419-421,504,635,901-904
+  s_c54cf697e76a51::t_9a919bb831d9db 865,868,889-891,894-896
+  s_c54cf697e76a51::t_181ca1756fb724 905
+test/app/macos-platform-adapter.test.ts
+  s_c54cf697e76a51::t_d5b7d77ebef86d 1-52
+src/app/main.ts
+  s_c54cf697e76a51::t_9525900263a438 106-107,109-114,116,145,154-156
+  s_c54cf697e76a51::t_ba8195a04dca0f 105,108,115,117-120,209,217,235-237
+  s_c54cf697e76a51::t_28568007b30043 205,265-266
+docs/plans/2026-07-14-001-feat-feishu-chatgpt-desktop-ipc-bridge-plan.md
+  s_c54cf697e76a51::t_789ff3a65004f9 144,207
+src/app/platform/macos-platform-adapter.ts
+  s_c54cf697e76a51::t_a4a879470d431d 22,59
+  s_c54cf697e76a51::t_d5b7d77ebef86d 1,4,15,17,29,31,36,38,43,46-49,94-96
+  s_c54cf697e76a51::t_3b0caea66bd061 97-98
+src/app/codex/desktop-ipc-client.ts
+  s_c54cf697e76a51::t_b30f93d776c06f 302-326
+  s_c54cf697e76a51::t_28568007b30043 143,621
+  s_c54cf697e76a51::t_d1f31693704f46 146-147,178,282-301,372,516,753-803,966-971
+  s_c54cf697e76a51::t_3d28c0f2e279af 972-973
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "13be4a77177158c82951542a56536d8265fcd7bf",
+  "prompts": {},
+  "sessions": {
+    "s_c54cf697e76a51": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5e80-7c30-7a71-a434-09aeae22cce8",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    }
+  }
+}
