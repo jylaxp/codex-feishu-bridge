@@ -1,0 +1,188 @@
+test/fixtures/app-server/0.144.3/control-plane-responses.json
+  s_c54cf697e76a51::t_933c79cbb2f9a0 1-106
+src/app/codex/app-server-protocol-registry.ts
+  s_c54cf697e76a51::t_3820a73106c8b0 6-11
+  s_c54cf697e76a51::t_b44540a4cb28ee 1-5,17-76,81-85,89-90,92-97,117-166,174-200
+  s_c54cf697e76a51::t_a986ec48659960 12-16,98-116
+  s_c54cf697e76a51::t_9f26921fe8c003 77-80,86-88,91,167-173
+scripts/clean-app-build.mjs
+  s_c54cf697e76a51::t_77409233800f4d 5-8
+test/fixtures/app-server/0.144.3/schema-comparison.json
+  s_c54cf697e76a51::t_933c79cbb2f9a0 1-39
+test/fixtures/app-server/0.145.0-alpha.18/control-plane-responses.json
+  s_c54cf697e76a51::t_90ef99867fbbef 82-100,107-113
+  s_c54cf697e76a51::t_5be5953e212d92 1-81,101-106,114-217
+src/app/codex/app-server-protocol-v145.ts
+  s_c54cf697e76a51::t_a8795839a38697 1,4-6
+  s_c54cf697e76a51::t_45ff148fbdef19 2-3
+test/fixtures/app-server/0.145.0-alpha.18/manifest.json
+  s_c54cf697e76a51::t_d701466f70b770 15-18
+  s_c54cf697e76a51::t_77409233800f4d 1-14,19-73
+src/app/codex/app-server-protocol-v144.ts
+  s_c54cf697e76a51::t_c11a0c1bc91118 1,7,9-10,12-13,25-30
+  s_c54cf697e76a51::t_5d8e2eb179aad1 11,14-16,18-24
+  s_c54cf697e76a51::t_8ae0b033d990fc 17
+  s_c54cf697e76a51::t_a8795839a38697 2-6,8
+docs/plans/2026-07-18-001-feat-app-server-145-multi-version-compatibility-plan.md
+  s_c54cf697e76a51::t_707c41336800bb 263,275,356-358,365,382,388,406-408,416,471-472
+  s_c54cf697e76a51::t_e55c6c34e92bb5 479-489
+  s_c54cf697e76a51::t_6f883c3248bb50 1-262,264-274,276-355,359-364,366-381,383-387,389-405,409-415,417-470,473-478,490-653
+test/app/app-server-control-plane.test.ts
+  s_c54cf697e76a51::t_3698bacb204452 207,214,216,219-220,306,308,312
+  s_c54cf697e76a51::t_eb2f4ee5b45787 18
+  s_c54cf697e76a51::t_6986aca168bd78 8,19,315,322-323,325-326,328-331,334,340-383,391,400,402-403,409-413,417-421,423,426,429-484,486-487,489-498,500-506,510-527
+  s_c54cf697e76a51::t_5d8e2eb179aad1 68-132
+  s_c54cf697e76a51::t_cff51809cee292 12,15-17,20,51,57-59,183,191-192
+  s_c54cf697e76a51::t_68d530c52fd35f 133-159
+  s_c54cf697e76a51::t_90ef99867fbbef 212,217,221-228,553-570
+  s_c54cf697e76a51::t_26647f6ced973e 316-317,319
+  s_c54cf697e76a51::t_1dab3119d4d7d3 21,29-32,52-56,60-67,160-182,184-190,332-333,338-339,384-390,392-399,401,404-408,414-416,541-548
+  s_c54cf697e76a51::t_0c783258fdd514 488
+  s_c54cf697e76a51::t_bd6e0118cc42e1 485
+  s_c54cf697e76a51::t_4aa8089750aaec 2-4,7,313-314,318,320-321,324,327,422,424-425,427-428,499,507-509
+  s_c54cf697e76a51::t_94babbd4be5f5b 335-337
+  s_c54cf697e76a51::t_5be5953e212d92 1,5-6,9-11,13-14,22-28,33-50,193,208-211,213,215,218,229-239,241-305,307,309-311,528-540,549-552,571-587
+  s_c54cf697e76a51::t_e32ca88a86669f 194-206
+  s_c54cf697e76a51::t_9e385f0b89b853 240
+src/app/main.ts
+  s_c54cf697e76a51::t_7d94843dc5bae2 81,89
+  s_c54cf697e76a51::t_26647f6ced973e 259,261
+  s_c54cf697e76a51::t_91625c5c128440 7-11,80,82-88,90-93,96,103,123,136-137,143,164,255,260,262,317
+src/app/codex/contract.ts
+  s_c54cf697e76a51::t_b44540a4cb28ee 1-2,4-7
+test/app/ui-sync-validator.test.ts
+  s_c54cf697e76a51::t_68d530c52fd35f 8-11,86-118,120-124,171-216
+  s_c54cf697e76a51::t_90efc8500f765e 1,3-7,12-85,125-170,217-218
+  s_c54cf697e76a51::t_e99b743947834d 2,119
+test/fixtures/app-server/0.145.0-alpha.18/representative-messages.json
+  s_c54cf697e76a51::t_77409233800f4d 1-4,6-31,35-90
+  s_c54cf697e76a51::t_8588f963ca5c4f 5
+  s_c54cf697e76a51::t_5292465f59b908 32-34
+src/app/desktop-approval-service.ts
+  s_c54cf697e76a51::t_eb2f4ee5b45787 20-25,101
+src/app/codex/desktop-ipc-client.ts
+  s_c54cf697e76a51::t_da4024c06dc2b2 111-112,172,207,427
+src/app/codex/app-server-control-plane.ts
+  s_c54cf697e76a51::t_5d8e2eb179aad1 13,46-52,93-94
+  s_c54cf697e76a51::t_c11a0c1bc91118 55
+  s_c54cf697e76a51::t_9067e59d8c834c 63-64
+  s_c54cf697e76a51::t_a8795839a38697 3,73-74,83
+  s_c54cf697e76a51::t_45ff148fbdef19 5-12,14-45,53-54,56-61,65-69,89-92,95-99,104
+  s_c54cf697e76a51::t_439d5f9d3c7bdf 1,62
+  s_c54cf697e76a51::t_6f4bc4b5bf3868 2,4,70-72,75-82,84-88,100-103
+test/fixtures/app-server/0.144.3/manifest.json
+  s_c54cf697e76a51::t_933c79cbb2f9a0 1-42
+scripts/capture-app-server-contract.mjs
+  s_c54cf697e76a51::t_d701466f70b770 159,249-251
+  s_c54cf697e76a51::t_2da580cfaadccb 237
+  s_c54cf697e76a51::t_74116d4e1d6c84 342
+  s_c54cf697e76a51::t_8588f963ca5c4f 119-122,264,270-271
+  s_c54cf697e76a51::t_0ad48bd776aafc 1-23,34-118,123-158,160-226,238-248,252-263,266-269,272-327,344-354
+  s_c54cf697e76a51::t_488d1282302e46 24-33,227-236,265,328-341,343
+test/fixtures/app-server/0.144.3/representative-messages.json
+  s_c54cf697e76a51::t_933c79cbb2f9a0 1-29
+src/app/in-memory-orchestrator.ts
+  s_c54cf697e76a51::t_eb2f4ee5b45787 28-33,183
+.env.example
+  s_c54cf697e76a51::t_daf1af2a41fd9f 26-27,29
+src/app/doctor.ts
+  s_c54cf697e76a51::t_55a3535d8f4652 8,52
+  s_c54cf697e76a51::t_96fc718282df2a 4-7,9,22-23,60-61
+src/app/codex/app-server-protocol-validator.ts
+  s_c54cf697e76a51::t_2e33ede7c229b7 28-31,47-97,127,134-137
+  s_c54cf697e76a51::t_a8795839a38697 1-27,32-33,38-43,45-46,98-126,128-133,138-165,167-170,178-433
+  s_c54cf697e76a51::t_c11a0c1bc91118 34-37,44,166,171-177
+test/app/app-server-client.test.ts
+  s_c54cf697e76a51::t_4beeb8bc2419af 1-13,19-79,94-159,164-166,168-198
+  s_c54cf697e76a51::t_1dab3119d4d7d3 14-18,80-93,160-163,167
+tsconfig.test.json
+  s_c54cf697e76a51::t_77409233800f4d 1-8,10
+  s_c54cf697e76a51::t_efb948e168d356 9
+test/app/desktop-ipc-regression.test.ts
+  s_c54cf697e76a51::t_47ad1dd379d408 1,4-19,21-80,82-86,88-94,101-215,226-316,318-320,324,326-327,337-339,380-407,409-412,414-419,421-485,489
+  s_c54cf697e76a51::t_e20a3c878cd079 2-3,81,87,321-323,325,328-336,341-372,408,413,420
+  s_c54cf697e76a51::t_da4024c06dc2b2 20,95-100,317,340,373-379
+  s_c54cf697e76a51::t_ee031e3a3bb332 216-225,486-488
+README.md
+  s_c54cf697e76a51::t_0469eaa2788baf 189
+  s_c54cf697e76a51::t_daf1af2a41fd9f 20-29,117-120,193-197,270-271,274-278
+  s_c54cf697e76a51::t_e0c086a04af340 121
+src/app/codex/runtime-contract.ts
+  s_c54cf697e76a51::t_b44540a4cb28ee 13-17,25,44-45,51-56
+src/app/ui-sync-validator.ts
+  s_c54cf697e76a51::t_0d607e3d69dd1b 3-11,51-61,70,78-84,92,98-100,112,128,152,202
+docs/app-server-support-matrix.md
+  s_c54cf697e76a51::t_28096c10a8b8b2 61
+  s_c54cf697e76a51::t_54f8a50f79ee65 1-60,62-64
+src/app/codex/app-server-protocol-adapter.ts
+  s_c54cf697e76a51::t_3311a90683ec22 1-2
+  s_c54cf697e76a51::t_45ff148fbdef19 3-28,30,32-41
+  s_c54cf697e76a51::t_c11a0c1bc91118 31
+  s_c54cf697e76a51::t_9067e59d8c834c 29
+docs/app-server-upgrade-runbook.md
+  s_c54cf697e76a51::t_54f8a50f79ee65 1-114,116-122,127-161,163-180
+  s_c54cf697e76a51::t_28096c10a8b8b2 162
+  s_c54cf697e76a51::t_e55c6c34e92bb5 115,123-126
+package.json
+  s_c54cf697e76a51::t_77409233800f4d 22,27,29-30
+  s_c54cf697e76a51::t_efb948e168d356 28
+src/app/codex/app-server-client.ts
+  s_c54cf697e76a51::t_90c6380abde8e6 16-19,74,83-86,147,154-169,445-451,478,656,931,935,967-972
+  s_c54cf697e76a51::t_b405fff52d506d 973
+test/app/runtime-contract.test.ts
+  s_c54cf697e76a51::t_74116d4e1d6c84 381-384
+  s_c54cf697e76a51::t_2d97da23a5711c 363-380,385-423,475-476,485-497,499-505
+  s_4672ec237d452e::t_df1bf68251f5d8 1,16-17,19,26,29,65,75-76,107,132-133,285,311,460
+  s_c54cf697e76a51::t_94babbd4be5f5b 41,135
+  s_c54cf697e76a51::t_fb5e4847a254ac 21-25,188-194,206-216,239-284,288-307,310
+  s_c54cf697e76a51::t_9aed8ea4091a71 39-40,42-64
+  s_c54cf697e76a51::t_40d82c3c4ceac3 218,227,425,433,519-531
+  s_c54cf697e76a51::t_5481bd3a16291f 2-15,18,27-28,30-36,38,66-74,77-106,108,286-287,308-309,312-320,326-338,349-362,424,426-432,434-436,440,459,461-474,498,506-518,532-557
+  s_c54cf697e76a51::t_d701466f70b770 437-439
+  s_c54cf697e76a51::t_0ad48bd776aafc 321-325,339-348
+  s_c54cf697e76a51::t_efb948e168d356 441-442,444-445,447-452,458
+  s_c54cf697e76a51::t_f45296f6b3ee15 134,136-187
+  s_c54cf697e76a51::t_1dab3119d4d7d3 37,109-131
+  s_c54cf697e76a51::t_f12f67367d0ec0 217,219-226,228-238
+  s_c54cf697e76a51::t_59a17b72928238 443,446,453-457
+  s_c54cf697e76a51::t_9300d69eef98b0 477-484
+  s_c54cf697e76a51::t_6854a9e905b60c 20,195-205
+test/app/doctor.test.ts
+  s_c54cf697e76a51::t_15a1f3a36b7436 2-40,43-51
+  s_4672ec237d452e::t_2e3317f88e2b90 41
+  s_c54cf697e76a51::t_b24b2c25b37d5c 1
+  s_c54cf697e76a51::t_ecd5b6b7a59d7e 52-54
+  s_6d7ab06d35096b::t_bd72f6734409b4 42,55-56
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "315a392e21797cc154ff2c6bb4f527533ad9fea8",
+  "prompts": {},
+  "sessions": {
+    "s_4672ec237d452e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5be6-2b87-7190-8898-ae985cbeb51e",
+        "model": "gpt-5.5"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    },
+    "s_6d7ab06d35096b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f7588-8274-7490-ae3c-1565910251a3",
+        "model": "unknown"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    },
+    "s_c54cf697e76a51": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5e80-7c30-7a71-a434-09aeae22cce8",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    }
+  }
+}
