@@ -1,0 +1,36 @@
+README.md
+  s_c54cf697e76a51::t_a6b715cfefdef4 33-35
+  s_c54cf697e76a51::t_0d01061f60a224 32
+scripts/check-package.mjs
+  s_c54cf697e76a51::t_b46f108c66a8e7 2,4-7,30-47
+test/scripts/node-support-contract.test.mjs
+  s_c54cf697e76a51::t_b46f108c66a8e7 1-35
+src/app/config.ts
+  s_c54cf697e76a51::t_0d01061f60a224 6
+test/app/preflight.test.ts
+  s_c54cf697e76a51::t_0d01061f60a224 9-19,25,29
+  s_c54cf697e76a51::t_d2daf0f02f8e74 1-8,20-24,26-28,30-40
+scripts/node-support-contract.mjs
+  s_c54cf697e76a51::t_b46f108c66a8e7 1-31
+package.json
+  s_c54cf697e76a51::t_0d01061f60a224 35
+  s_c54cf697e76a51::t_b46f108c66a8e7 28
+package-lock.json
+  s_c54cf697e76a51::t_961bc7c9dde6ed 22
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "36ab4b3c049dc0df460b5870a1cae9f431cc3d43",
+  "prompts": {},
+  "sessions": {
+    "s_c54cf697e76a51": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5e80-7c30-7a71-a434-09aeae22cce8",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    }
+  }
+}
