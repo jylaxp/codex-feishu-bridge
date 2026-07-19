@@ -19,6 +19,7 @@ import {
   approvalResponseMethod,
   type DesktopApprovalKind,
 } from './desktop-approval-adapter';
+import { DESKTOP_IPC_CONTRACT } from './desktop-ipc-contract';
 import { DESKTOP_THREAD_STREAM_PROTOCOL_VERSION } from './desktop-thread-stream-normalizer';
 
 export type DesktopIpcConnectionState =
@@ -143,7 +144,7 @@ interface SendRequestOptions {
 type ThreadStreamListener = (message: DesktopThreadStreamBroadcast, epoch: number) => void;
 type ConnectionLossListener = (epoch: number) => void;
 
-const DESKTOP_THREAD_FOLLOWING_PROTOCOL_VERSION = 1;
+const DESKTOP_THREAD_FOLLOWING_PROTOCOL_VERSION = DESKTOP_IPC_CONTRACT.followingProtocolVersion;
 const DESKTOP_HOST_ID = 'local';
 const DEFAULT_CONNECT_TIMEOUT_MS = 5_000;
 const DEFAULT_INITIALIZE_TIMEOUT_MS = 5_000;

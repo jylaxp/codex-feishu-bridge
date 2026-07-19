@@ -24,6 +24,8 @@ import type {
   TaskStatus,
 } from './domain';
 import type { InboundTextMessage } from './lark/intake';
+import type { RuntimeTaskHealth } from './runtime-health';
+import { ThreadTaskScheduler } from './task-scheduler';
 
 /** Desktop-owned execution capabilities; App Server clients cannot satisfy this boundary. */
 export type DesktopTurnClient = Pick<
@@ -70,9 +72,16 @@ export interface InMemoryOrchestratorOptions {
   readonly readThreadTitle?: (threadId: string) => Promise<string | null>;
   /** Reconciles Desktop state subscriptions when the live task set changes. */
   readonly onActiveThreadsChanged?: () => void;
+  /** Publishes content-free task counters when queue or delivery state changes. */
+  readonly onRuntimeHealthChanged?: () => void;
 }
 
-export type InMemoryInboundOutcome = 'started' | 'queued' | 'steered' | 'duplicate';
+export type InMemoryInboundOutcome =
+  | 'started'
+  | 'queued'
+  | 'steered'
+  | 'duplicate'
+  | 'rejected_queue_full';
 
 export interface RuntimeApprovalContext {
   readonly taskId: string;
@@ -116,6 +125,7 @@ interface RuntimeTask {
   terminalCleanupTimer: NodeJS.Timeout | undefined;
   updateTimer: NodeJS.Timeout | undefined;
   outputFilesUploaded: boolean;
+  cardDeliveryPending: boolean;
   nextToolGroupId: number;
   lastActivityKind: 'none' | 'text' | 'tool';
 }
@@ -143,6 +153,7 @@ interface TimelineEntry {
 const TERMINAL: ReadonlySet<TaskStatus> = new Set(['SUCCEEDED', 'FAILED', 'INTERRUPTED']);
 const DEDUPE_TTL_MS = 10 * 60_000;
 const TERMINAL_CARD_RETENTION_MS = 5 * 60_000;
+const PENDING_TERMINAL_CARD_RETENTION_MS = 30 * 60_000;
 const TEXT_LIMIT = 128 * 1024;
 const MAX_CARD_RETRY_ATTEMPTS = 3;
 const CARD_RETRY_BASE_DELAY_MS = 250;
@@ -168,13 +179,13 @@ export class InMemoryOrchestrator {
   private readonly readSkills: ((cwd: string) => Promise<unknown>) | undefined;
   private readonly readThreadTitle: ((threadId: string) => Promise<string | null>) | undefined;
   private readonly onActiveThreadsChanged: () => void;
+  private readonly onRuntimeHealthChanged: () => void;
   private readonly tasksById = new Map<string, RuntimeTask>();
-  private readonly activeByThreadId = new Map<string, RuntimeTask>();
-  private readonly terminalByTurnKey = new Map<string, RuntimeTask>();
-  private readonly queuesByThreadId = new Map<string, Array<{
+  private readonly scheduler = new ThreadTaskScheduler<RuntimeTask, {
     readonly message: InboundTextMessage;
     readonly binding: ChatThreadBinding;
-  }>>();
+  }>();
+  private readonly terminalByTurnKey = new Map<string, RuntimeTask>();
   private readonly pendingByThreadId = new Map<string, ServerNotification[]>();
   private readonly pendingDesktopByTurnKey = new Map<string, ServerNotification[]>();
   private readonly startingDesktopTurnKeys = new Set<string>();
@@ -195,12 +206,44 @@ export class InMemoryOrchestrator {
     this.readSkills = options.readSkills;
     this.readThreadTitle = options.readThreadTitle;
     this.onActiveThreadsChanged = options.onActiveThreadsChanged ?? (() => undefined);
+    this.onRuntimeHealthChanged = options.onRuntimeHealthChanged ?? (() => undefined);
     this.cardRetryDelayMs = options.cardRetryDelayMs ?? CARD_RETRY_BASE_DELAY_MS;
   }
 
   /** Returns the threads whose live cards still depend on Desktop state events. */
   public activeThreadIds(): readonly string[] {
-    return Object.freeze([...this.activeByThreadId.keys()]);
+    return this.scheduler.activeThreadIds();
+  }
+
+  /** Returns content-free counters for runtime health reporting. */
+  public runtimeTaskHealth(): RuntimeTaskHealth {
+    let pendingCardDeliveries = 0;
+    for (const task of this.tasksById.values()) {
+      if (task.cardDeliveryPending) {
+        pendingCardDeliveries += 1;
+      }
+    }
+    return Object.freeze({
+      active: this.scheduler.activeCount,
+      queued: this.scheduler.queuedCount,
+      pendingCardDeliveries,
+    });
+  }
+
+  /** Replays only undelivered card projections after Lark reconnects; never replays a Codex turn. */
+  public resumeCardDelivery(): void {
+    for (const task of this.tasksById.values()) {
+      if (!task.cardDeliveryPending) {
+        continue;
+      }
+      if (task.cardRetryTimer) {
+        clearTimeout(task.cardRetryTimer);
+        task.cardRetryTimer = undefined;
+      }
+      task.cardRetryCount = 0;
+      void this.flushCard(task, TERMINAL.has(task.status));
+    }
+    this.onRuntimeHealthChanged();
   }
 
   public async handleInbound(
@@ -220,7 +263,7 @@ export class InMemoryOrchestrator {
       return 'duplicate';
     }
     ({ message, binding } = await this.resolveInlineSkill(message, binding));
-    const active = this.activeByThreadId.get(binding.threadId);
+    const active = this.scheduler.active(binding.threadId);
     let outcome: InMemoryInboundOutcome;
     if (
       active?.turnId
@@ -240,6 +283,7 @@ export class InMemoryOrchestrator {
       outcome = await this.start(message, binding);
     }
     this.processedMessageKeys.set(dedupeKey, this.now());
+    this.onRuntimeHealthChanged();
     return outcome;
   }
 
@@ -274,7 +318,7 @@ export class InMemoryOrchestrator {
     if (!identity) {
       return;
     }
-    const task = this.activeByThreadId.get(identity.threadId)
+    const task = this.scheduler.active(identity.threadId)
       ?? this.terminalByTurnKey.get(turnKey(identity.threadId, identity.turnId));
     if (!task) {
       this.captureDesktopOriginNotification(notification, identity);
@@ -339,7 +383,7 @@ export class InMemoryOrchestrator {
 
   /** Cancels the current task for an authorized chat command without a card token. */
   public async cancelCurrent(chatId: string, threadId: string): Promise<boolean> {
-    const task = this.activeByThreadId.get(threadId);
+    const task = this.scheduler.active(threadId);
     if (!task || task.message.chatId !== chatId || TERMINAL.has(task.status)) {
       return false;
     }
@@ -366,7 +410,7 @@ export class InMemoryOrchestrator {
 
   /** Returns the source conversation for a still-live, exact Desktop turn. */
   public approvalContext(threadId: string, turnId: string | null): RuntimeApprovalContext | undefined {
-    const task = this.activeByThreadId.get(threadId);
+    const task = this.scheduler.active(threadId);
     if (!task || TERMINAL.has(task.status) || (turnId && task.turnId !== turnId)) {
       return undefined;
     }
@@ -380,7 +424,7 @@ export class InMemoryOrchestrator {
 
   /** Marks an exact live turn as waiting for an in-process approval response. */
   public setAwaitingApproval(threadId: string, turnId: string | null, waiting: boolean): boolean {
-    const task = this.activeByThreadId.get(threadId);
+    const task = this.scheduler.active(threadId);
     if (!task || TERMINAL.has(task.status) || (turnId && task.turnId !== turnId)) {
       return false;
     }
@@ -391,7 +435,7 @@ export class InMemoryOrchestrator {
 
   /** Ends a task after an approval response has an unknown delivery result. */
   public failForApprovalDelivery(threadId: string, turnId: string | null): void {
-    const task = this.activeByThreadId.get(threadId);
+    const task = this.scheduler.active(threadId);
     if (!task || TERMINAL.has(task.status) || (turnId && task.turnId !== turnId)) {
       return;
     }
@@ -414,15 +458,14 @@ export class InMemoryOrchestrator {
       }
     }
     this.tasksById.clear();
-    const hadActiveThreads = this.activeByThreadId.size > 0;
-    this.activeByThreadId.clear();
+    const hadActiveThreads = this.scheduler.clear();
     if (hadActiveThreads) {
       this.onActiveThreadsChanged();
     }
     this.terminalByTurnKey.clear();
-    this.queuesByThreadId.clear();
     this.pendingByThreadId.clear();
     this.pendingDesktopByTurnKey.clear();
+    this.onRuntimeHealthChanged();
     this.startingDesktopTurnKeys.clear();
     this.processedMessageKeys.clear();
     this.inboundLocks.clear();
@@ -497,6 +540,7 @@ export class InMemoryOrchestrator {
       terminalCleanupTimer: undefined,
       updateTimer: undefined,
       outputFilesUploaded: false,
+      cardDeliveryPending: false,
       nextToolGroupId: 0,
       lastActivityKind: 'none',
     };
@@ -560,13 +604,13 @@ export class InMemoryOrchestrator {
     }
     this.startingDesktopTurnKeys.add(key);
     void this.runExclusive(identity.threadId, async () => {
-      if (this.activeByThreadId.has(identity.threadId)) {
+      if (this.scheduler.hasActive(identity.threadId)) {
         return;
       }
       await this.startDesktopProjection(binding, turn, prompt);
     }).catch((error: unknown) => this.onCardError(toError(error))).finally(() => {
       this.startingDesktopTurnKeys.delete(key);
-      if (!this.activeByThreadId.has(identity.threadId)) {
+      if (!this.scheduler.hasActive(identity.threadId)) {
         this.pendingDesktopByTurnKey.delete(key);
       }
     });
@@ -628,6 +672,7 @@ export class InMemoryOrchestrator {
       terminalCleanupTimer: undefined,
       updateTimer: undefined,
       outputFilesUploaded: false,
+      cardDeliveryPending: false,
       nextToolGroupId: 0,
       lastActivityKind: 'none',
     };
@@ -641,12 +686,9 @@ export class InMemoryOrchestrator {
   }
 
   private enqueue(message: InboundTextMessage, binding: ChatThreadBinding): InMemoryInboundOutcome {
-    const queue = this.queuesByThreadId.get(binding.threadId) ?? [];
-    if (queue.length >= this.config.maxQueuedTasks) {
-      return 'queued';
+    if (!this.scheduler.enqueue(binding.threadId, { message, binding }, this.config.maxQueuedTasks)) {
+      return 'rejected_queue_full';
     }
-    queue.push({ message, binding });
-    this.queuesByThreadId.set(binding.threadId, queue);
     return 'queued';
   }
 
@@ -772,6 +814,8 @@ export class InMemoryOrchestrator {
     if (content === task.lastStreamedAnswer) {
       return;
     }
+    task.cardDeliveryPending = true;
+    this.onRuntimeHealthChanged();
     try {
       task.cardSequence = await this.cards.streamElement(
         task.cardId,
@@ -782,6 +826,8 @@ export class InMemoryOrchestrator {
       );
       task.lastStreamedAnswer = content;
       task.cardRetryCount = 0;
+      task.cardDeliveryPending = false;
+      this.onRuntimeHealthChanged();
     } catch (error) {
       const cardError = toError(error);
       if (error instanceof CardKitError && error.retryable && task.cardRetryCount < MAX_CARD_RETRY_ATTEMPTS) {
@@ -805,6 +851,8 @@ export class InMemoryOrchestrator {
     if (!this.tasksById.has(task.id)) {
       return;
     }
+    task.cardDeliveryPending = true;
+    this.onRuntimeHealthChanged();
     try {
       if (terminal && !task.streamingClosed) {
         task.cardSequence = await this.cards.closeStreaming(
@@ -832,6 +880,13 @@ export class InMemoryOrchestrator {
         `task:${task.id}:${task.cardSequence + 1}`,
       );
       task.cardRetryCount = 0;
+      task.cardDeliveryPending = false;
+      this.onRuntimeHealthChanged();
+      if (terminal && this.terminalByTurnKey.get(
+        turnKey(task.binding.threadId, task.turnId ?? ''),
+      ) === task) {
+        this.scheduleTerminalCleanup(task, TERMINAL_CARD_RETENTION_MS);
+      }
     } catch (error) {
       const cardError = toError(error);
       if (error instanceof CardKitError && error.retryable && task.cardRetryCount < MAX_CARD_RETRY_ATTEMPTS) {
@@ -863,28 +918,24 @@ export class InMemoryOrchestrator {
       clearTimeout(task.updateTimer);
     }
     let activeTaskRemoved = false;
-    if (this.activeByThreadId.get(task.binding.threadId) === task) {
-      this.activeByThreadId.delete(task.binding.threadId);
-      activeTaskRemoved = true;
-    }
+    activeTaskRemoved = this.scheduler.release(task.binding.threadId, task);
     if (task.turnId) {
       const key = turnKey(task.binding.threadId, task.turnId);
       this.terminalByTurnKey.set(key, task);
-      task.terminalCleanupTimer = setTimeout(() => {
-        if (task.cardRetryTimer) {
-          clearTimeout(task.cardRetryTimer);
-        }
-        this.terminalByTurnKey.delete(key);
-        this.tasksById.delete(task.id);
-      }, TERMINAL_CARD_RETENTION_MS);
-      task.terminalCleanupTimer.unref();
+      this.scheduleTerminalCleanup(
+        task,
+        task.cardDeliveryPending
+          ? PENDING_TERMINAL_CARD_RETENTION_MS
+          : TERMINAL_CARD_RETENTION_MS,
+      );
     } else {
       if (task.cardRetryTimer) {
         clearTimeout(task.cardRetryTimer);
       }
       this.tasksById.delete(task.id);
     }
-    const next = this.queuesByThreadId.get(task.binding.threadId)?.shift();
+    const next = this.scheduler.takeNext(task.binding.threadId);
+    this.onRuntimeHealthChanged();
     if (!next) {
       if (activeTaskRemoved) {
         this.onActiveThreadsChanged();
@@ -898,9 +949,29 @@ export class InMemoryOrchestrator {
       .catch((error: unknown) => this.onCardError(toError(error)));
   }
 
+  private scheduleTerminalCleanup(task: RuntimeTask, delayMs: number): void {
+    if (!task.turnId) {
+      return;
+    }
+    if (task.terminalCleanupTimer) {
+      clearTimeout(task.terminalCleanupTimer);
+    }
+    const key = turnKey(task.binding.threadId, task.turnId);
+    task.terminalCleanupTimer = setTimeout(() => {
+      if (task.cardRetryTimer) {
+        clearTimeout(task.cardRetryTimer);
+      }
+      this.terminalByTurnKey.delete(key);
+      this.tasksById.delete(task.id);
+      this.onRuntimeHealthChanged();
+    }, delayMs);
+    task.terminalCleanupTimer.unref();
+  }
+
   private activateTask(task: RuntimeTask): void {
-    this.activeByThreadId.set(task.binding.threadId, task);
+    this.scheduler.activate(task.binding.threadId, task);
     this.onActiveThreadsChanged();
+    this.onRuntimeHealthChanged();
   }
 
   private async refreshRateLimits(task: RuntimeTask): Promise<void> {

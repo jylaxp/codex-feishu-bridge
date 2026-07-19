@@ -51,6 +51,27 @@ export interface ApprovalSummaryCardOptions {
   readonly entries: readonly ApprovalSummaryEntryCardOptions[];
 }
 
+/** Builds the explicit rejection shown when a conversation queue has no capacity. */
+export function createQueueFullCard(maxQueuedTasks: number): CardKitJson {
+  return {
+    schema: '2.0',
+    config: { wide_screen_mode: true },
+    header: {
+      template: 'orange',
+      title: { tag: 'plain_text', content: '⚠️ 任务未接收' },
+    },
+    body: {
+      elements: [{
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: `当前会话已有任务运行，且 ${maxQueuedTasks} 个排队位置已满。请稍后重新发送。`,
+        },
+      }],
+    },
+  };
+}
+
 function markdown(content: SanitizedCardText | string, elementId?: string): Record<string, unknown> {
   return {
     tag: 'markdown',

@@ -4,6 +4,7 @@ import type { Socket } from 'node:net';
 import test from 'node:test';
 
 import type { ChatThreadBinding } from '../../src/app/binding-store';
+import { CardKitError } from '../../src/app/cards/cardkit-client';
 import type { CardKitJson } from '../../src/app/cards/layouts';
 import {
   DesktopIpcClient,
@@ -339,6 +340,52 @@ test('orchestrator keeps a thread active while handing off to its next queued ta
   orchestrator.abandonAll();
 });
 
+test('orchestrator rejects a message when the per-thread queue is full', async () => {
+  const desktop = new RecordingDesktopTurnClient();
+  const orchestrator = new InMemoryOrchestrator(
+    { ...config, maxQueuedTasks: 1 },
+    desktop,
+    new RecordingCards(),
+  );
+
+  assert.equal(await orchestrator.handleInbound(inbound('full-1', 'first'), binding), 'started');
+  assert.equal(await orchestrator.handleInbound(inbound('full-2', 'second'), binding), 'queued');
+  assert.equal(
+    await orchestrator.handleInbound(inbound('full-3', 'must not disappear'), binding),
+    'rejected_queue_full',
+  );
+
+  orchestrator.handleNotification(completedNotification('turn-1', 'first result'));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(desktop.starts.length, 2);
+
+  orchestrator.handleNotification(completedNotification('turn-2', 'second result'));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(desktop.starts.length, 2);
+  orchestrator.abandonAll();
+});
+
+test('orchestrator resumes the latest terminal card after Lark reconnects', async () => {
+  const desktop = new RecordingDesktopTurnClient();
+  const cards = new ReconnectingCards();
+  const orchestrator = new InMemoryOrchestrator(config, desktop, cards, {
+    cardRetryDelayMs: 1,
+  });
+
+  assert.equal(await orchestrator.handleInbound(inbound('recover-1', 'finish offline'), binding), 'started');
+  const deliveredBeforeDisconnect = cards.replacements.length;
+  cards.connected = false;
+  orchestrator.handleNotification(completedNotification('turn-1', 'result after reconnect'));
+  await waitFor(() => cards.failedWrites >= 4);
+  assert.equal(cards.replacements.length, deliveredBeforeDisconnect);
+
+  cards.connected = true;
+  orchestrator.resumeCardDelivery();
+  await waitFor(() => cards.replacements.length > 0);
+  assert.match(JSON.stringify(cards.replacements.at(-1)), /result after reconnect/);
+  orchestrator.abandonAll();
+});
+
 test('unrelated Desktop thread broadcasts do not update the bound task card', async () => {
   const desktop = new RecordingDesktopTurnClient();
   const cards = new RecordingCards();
@@ -462,6 +509,23 @@ class RecordingCards implements InMemoryCardClient {
 
   async closeStreaming(_id: string, sequence: number): Promise<number> {
     return sequence + 1;
+  }
+}
+
+class ReconnectingCards extends RecordingCards {
+  connected = true;
+  failedWrites = 0;
+
+  override async replaceCard(
+    id: string,
+    card: CardKitJson,
+    sequence: number,
+  ): Promise<number> {
+    if (!this.connected) {
+      this.failedWrites += 1;
+      throw new CardKitError('NETWORK_RETRYABLE', 'offline');
+    }
+    return super.replaceCard(id, card, sequence);
   }
 }
 

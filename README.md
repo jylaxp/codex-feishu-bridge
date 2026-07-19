@@ -137,7 +137,7 @@ ALLOWED_SHELL_COMMANDS=ls,pwd,git,find,cd
 
 `LOG_TO_FILE=true` 时，Bridge 写脱敏、轮转的运行日志；相对 `LOG_FILE_PATH` 位于 config-home 的 `logs/`，绝对路径按用户显式配置处理。日志不会记录 prompt、回复或 CardKit payload。`ENABLE_AUTO_FILE_UPLOAD=true` 时，最终回复中指向绝对本地路径的非图片 Markdown 文件会作为同一飞书话题的文件回复上传；文件数量、类型和大小校验仍然保留，该信息不会保存到 Bridge 文件。
 
-持久业务数据只有 `.env` 和 `bindings.json`。Bridge 不创建 SQLite、WAL、任务历史或恢复队列。后台模式还会生成 `bridge.pid` 和 `logs/`，它们只用于进程管理与运行日志，不保存 prompt、模型回复、推理、工具输出或卡片 payload。Bridge 崩溃/重启、Desktop 断开或网络结果未知时，当前进程内任务直接停止跟踪且绝不自动重放，用户可在 ChatGPT Desktop 继续处理或重新从飞书发送。
+持久业务数据只有 `.env` 和 `bindings.json`。Bridge 不创建 SQLite、WAL、任务历史或恢复队列。后台模式还会生成 `bridge.pid`、`runtime-health.json` 和 `logs/`；健康快照只记录连接状态、协议标识和任务计数，不保存 prompt、模型回复、推理、工具输出或卡片 payload。Bridge 崩溃/重启、Desktop 断开或网络结果未知时，当前进程内任务直接停止跟踪且绝不自动重放，用户可在 ChatGPT Desktop 继续处理或重新从飞书发送。
 
 ## 启动方式
 
@@ -173,6 +173,7 @@ codex-feishu-bridge start
 ```bash
 # 查看后台进程状态和日志位置
 codex-feishu-bridge status
+codex-feishu-bridge status --json
 
 # 重启后台服务
 codex-feishu-bridge restart
@@ -188,7 +189,29 @@ codex-feishu-bridge update --force
 
 # 检查本机配置、App Server protocol profile 和运行依赖
 codex-feishu-bridge doctor
+
+# 查看本机 ChatGPT App、Codex CLI、binary 和 schema 版本
+codex-feishu-bridge version
+codex-feishu-bridge version --json
+
+# 只读检查协议兼容性；第一行固定为“兼容”或“不兼容”
+codex-feishu-bridge compatibility
+codex-feishu-bridge compatibility --json
 ```
+
+首次执行 `run`、`start`、`doctor`、`version` 或 `compatibility` 时，如果配置不存在，Bridge 会把内置支持
+目录写入 `~/.codex-feishu-bridge/protocol-versions.json`。后续启动读取该文件，再检测当前本机版本。文件同时
+记录最近一次 ChatGPT App/Codex 版本、binary SHA-256、完整 schema digest 和兼容结论，不包含 prompt、结果或
+凭证。
+
+精确版本和 digest 已在配置目录中时可以启动；版本尚未列入、但完整 schema digest 与已支持合同相同时，
+`compatibility` 返回“兼容”并标记 `upgrade_available`，Bridge 仍拒绝启动，直到操作员审查后明确执行：
+
+```bash
+codex-feishu-bridge compatibility --approve
+```
+
+`--approve` 只允许加入 schema 已匹配的精确版本，不接受未知 schema，也不会修改源码或 `package.json`。
 
 `doctor` 会生成配置 binary 的完整 experimental schema digest，并报告
 `protocolProfileId`、`codexVersion`、`schemaDigest`、`appServerMode` 和

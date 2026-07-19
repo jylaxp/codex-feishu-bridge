@@ -24,7 +24,9 @@ import {
 } from '../../src/app/codex/app-server-protocol-registry';
 import {
   assertCompatibleCodexRuntime,
+  CodexRuntimeCompatibilityError,
   digestJsonSchemaDirectory,
+  inspectCodexCompatibility,
   verifyCodexRuntimeContract,
 } from '../../src/app/codex/runtime-contract';
 
@@ -106,6 +108,20 @@ test('145 fixture records the current full experimental schema digest', () => {
     '7a5aaea66a649faae713d43313289ddd79b4883086c10875f9031a56ec00bd5c',
   );
   assert.equal(manifest.schemaGeneration.schemaFileCount, 341);
+});
+
+test('one protocol contract records multiple independently verified runtime artifacts', () => {
+  const evidence = readJson(join(fixtureRoot, 'artifacts.json')) as {
+    readonly protocolContractId: string;
+    readonly artifacts: ReadonlyArray<{
+      readonly binarySha256: string;
+      readonly appBuild: string | null;
+    }>;
+  };
+
+  assert.equal(evidence.protocolContractId, APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18.id);
+  assert.deepEqual(evidence.artifacts.map((artifact) => artifact.appBuild), [null, '5551']);
+  assert.equal(new Set(evidence.artifacts.map((artifact) => artifact.binarySha256)).size, 2);
 });
 
 test('144 fixture records exact binary provenance and full experimental schema digest', () => {
@@ -232,7 +248,103 @@ test('runtime verification reports and cleans up the selected profile', async (t
     assert.equal(report.codexVersion, 'codex-cli 0.145.0-alpha.18');
     assert.equal(report.protocolProfile, APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18);
     assert.equal(report.schemaDigest, report.protocolProfile.schemaDigest);
+    assert.equal(report.runtimeArtifact.protocolContractId, report.protocolProfile.id);
+    assert.match(report.runtimeArtifact.binarySha256, /^[a-f0-9]{64}$/);
+    const versionConfig = readJson(join(root, 'config', 'protocol-versions.json')) as {
+      readonly supportedVersions: readonly { readonly codexVersion: string }[];
+      readonly lastDetection: {
+        readonly codexVersion: string;
+        readonly compatibility: { readonly conclusion: string; readonly status: string };
+      };
+    };
+    assert.deepEqual(
+      versionConfig.supportedVersions.map((entry) => entry.codexVersion),
+      ['0.144.3', '0.145.0-alpha.18'],
+    );
+    assert.equal(versionConfig.lastDetection.codexVersion, '0.145.0-alpha.18');
+    assert.deepEqual(
+      versionConfig.lastDetection.compatibility,
+      {
+        conclusion: '兼容',
+        status: 'supported',
+        adapterProfileId: 'app-server-0.145.0-alpha.18',
+      },
+    );
     assert.deepEqual(readdirSync(temporaryRoot), []);
+  });
+});
+
+test('compatible exact-version upgrade requires approval and persists across startup', async () => {
+  await withTemporaryDirectoryAsync(async (root) => {
+    const codexCwd = join(root, 'workspace');
+    const configHome = join(root, 'config');
+    const temporaryRoot = join(root, 'runtime');
+    mkdirSync(codexCwd);
+    mkdirSync(configHome);
+    mkdirSync(temporaryRoot);
+    const schemaValue = { type: 'string', title: 'Hermetic protocol schema' };
+    const schemaRoot = join(root, 'expected-schema');
+    writeJson(join(schemaRoot, 'v2/Fake.json'), schemaValue);
+    const schemaDigest = digestJsonSchemaDirectory(schemaRoot);
+    const candidateBinary = createVersionedFakeCodex(
+      root,
+      '0.145.0-alpha.19',
+      schemaValue,
+      'candidate',
+    );
+    writeJson(join(configHome, 'protocol-versions.json'), {
+      schemaVersion: 1,
+      supportedVersions: [{
+        codexVersion: '0.145.0-alpha.18',
+        schemaDigest,
+        adapterProfileId: 'app-server-0.145.0-alpha.18',
+        source: 'approved',
+      }],
+      lastDetection: null,
+    });
+    const probe = { codexBin: candidateBinary, codexCwd, configHome };
+    const config = { ...minimalConfig(candidateBinary, codexCwd), configHome };
+    const env = { PATH: process.env.PATH };
+
+    await assert.rejects(
+      verifyCodexRuntimeContract(config, env, temporaryRoot),
+      (error: unknown) => error instanceof CodexRuntimeCompatibilityError
+        && error.status === 'upgrade_available',
+    );
+
+    const approved = await inspectCodexCompatibility(
+      probe,
+      env,
+      temporaryRoot,
+      { approve: true },
+    );
+    assert.equal(approved.assessment.status, 'supported');
+    assert.equal(approved.config.supportedVersions.at(-1)?.codexVersion, '0.145.0-alpha.19');
+
+    const freshStore = readJson(join(configHome, 'protocol-versions.json')) as {
+      readonly supportedVersions: readonly { readonly codexVersion: string }[];
+    };
+    assert.equal(freshStore.supportedVersions.at(-1)?.codexVersion, '0.145.0-alpha.19');
+    const accepted = await verifyCodexRuntimeContract(config, env, temporaryRoot);
+    assert.equal(accepted.codexVersion, 'codex-cli 0.145.0-alpha.19');
+
+    const incompatibleBinary = createVersionedFakeCodex(
+      root,
+      '0.145.0-alpha.20',
+      { type: 'number', title: 'Unknown protocol schema' },
+      'incompatible',
+    );
+    const rejected = await inspectCodexCompatibility(
+      { codexBin: incompatibleBinary, codexCwd, configHome },
+      env,
+      temporaryRoot,
+      { approve: true },
+    );
+    assert.equal(rejected.assessment.status, 'incompatible');
+    assert.equal(
+      rejected.config.supportedVersions.some((entry) => entry.codexVersion === '0.145.0-alpha.20'),
+      false,
+    );
   });
 });
 
@@ -509,8 +621,32 @@ for (const relativePath of schemaFiles) {
   return filePath;
 }
 
+function createVersionedFakeCodex(
+  root: string,
+  version: string,
+  schemaValue: unknown,
+  name: string,
+): string {
+  const filePath = join(root, `fake-codex-${name}.mjs`);
+  const source = `#!/usr/bin/env node
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+if (process.argv[2] === '--version') {
+  console.log(${JSON.stringify(`codex-cli ${version}`)});
+  process.exit(0);
+}
+const output = process.argv[process.argv.indexOf('--out') + 1];
+const schemaPath = join(output, 'v2/Fake.json');
+mkdirSync(dirname(schemaPath), { recursive: true });
+writeFileSync(schemaPath, ${JSON.stringify(JSON.stringify(schemaValue))});
+`;
+  writeFileSync(filePath, source);
+  chmodSync(filePath, 0o755);
+  return filePath;
+}
+
 function minimalConfig(codexBin: string, codexCwd: string): BridgeConfig {
-  return { codexBin, codexCwd } as BridgeConfig;
+  return { codexBin, codexCwd, configHome: join(codexCwd, 'config') } as BridgeConfig;
 }
 
 function writeJson(filePath: string, value: unknown): void {

@@ -31,13 +31,16 @@ export interface CodexCliVersion {
 }
 
 /** Immutable identity of one explicitly supported App Server protocol contract. */
-export interface AppServerProtocolProfile {
+export interface AppServerProtocolContract {
   readonly id: AppServerProtocolProfileId;
   readonly codexVersion: string;
   readonly cliVersionOutput: string;
   readonly schemaDigest: string;
   readonly diagnosticLabel: string;
 }
+
+/** @deprecated Use AppServerProtocolContract; retained for adapter API compatibility. */
+export type AppServerProtocolProfile = AppServerProtocolContract;
 
 export const APP_SERVER_PROTOCOL_PROFILE_0_144_3 = createProfile({
   id: 'app-server-0.144.3',

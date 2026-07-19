@@ -10,6 +10,7 @@ import {
 import { defaultConfigHome, inspectConfigReset, resetConfigHome } from './config-reset';
 import { loadBridgeEnvironment } from './config-file';
 import { initializeSetupFiles, runSetup, SetupOptions, SetupReport } from './setup';
+import type { LocalVersionReport } from './local-version-command';
 
 type Command =
   | 'init'
@@ -20,10 +21,13 @@ type Command =
   | 'status'
   | 'update'
   | 'doctor'
+  | 'version'
+  | 'compatibility'
   | 'validate-ui-sync'
   | 'config-reset'
   | 'setup'
   | 'rebind'
+  | 'supervise'
   | 'help';
 
 interface CliArguments {
@@ -34,6 +38,8 @@ interface CliArguments {
   readonly destructive: boolean;
   readonly rebind: boolean;
   readonly force: boolean;
+  readonly json: boolean;
+  readonly approve: boolean;
 }
 
 export interface CliRuntime {
@@ -56,6 +62,10 @@ export interface CliDependencies {
     options: BackgroundServiceOptions,
     env: NodeJS.ProcessEnv,
   ) => Promise<BackgroundServiceReport>;
+  readonly runLocalVersionCommand?: (
+    env: NodeJS.ProcessEnv,
+    options: { readonly approve?: boolean },
+  ) => Promise<LocalVersionReport>;
 }
 
 export async function runCli(
@@ -72,6 +82,12 @@ export async function runCli(
     return;
   }
 
+  if (parsed.command === 'supervise') {
+    const { runProcessSupervisor } = await import('./process-supervisor');
+    await runProcessSupervisor();
+    return;
+  }
+
   if (parsed.command === 'init') {
     const initialize = dependencies.initializeSetupFiles ?? initializeSetupFiles;
     const report = initialize(parsed.configHome, runtimeEnv);
@@ -82,6 +98,37 @@ export async function runCli(
   if (parsed.command === 'doctor') {
     const { runDoctor } = await import('./doctor');
     process.stdout.write(`${JSON.stringify(await runDoctor(loadBridgeEnvironment(runtimeEnv)), null, 2)}\n`);
+    return;
+  }
+  if (parsed.command === 'version' || parsed.command === 'compatibility') {
+    const localVersion = await import('./local-version-command');
+    const inspect = dependencies.runLocalVersionCommand ?? localVersion.runLocalVersionCommand;
+    let report: LocalVersionReport;
+    try {
+      report = await inspect(runtimeEnv, {
+        approve: parsed.command === 'compatibility' && parsed.approve,
+      });
+    } catch (error) {
+      if (parsed.command !== 'compatibility') {
+        throw error;
+      }
+      const failure = Object.freeze({
+        conclusion: '不兼容' as const,
+        compatible: false,
+        status: 'inspection_failed' as const,
+      });
+      process.stdout.write(parsed.json
+        ? `${JSON.stringify(failure, null, 2)}\n`
+        : '不兼容\n状态: inspection_failed\n');
+      return;
+    }
+    if (parsed.json) {
+      process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    } else {
+      process.stdout.write(parsed.command === 'version'
+        ? localVersion.formatLocalVersion(report)
+        : localVersion.formatCompatibility(report));
+    }
     return;
   }
   if (parsed.command === 'config-reset') {
@@ -115,6 +162,7 @@ export async function runCli(
     await background(parsed.command, {
       configHome: parsed.configHome,
       forceUpdate: parsed.force,
+      jsonOutput: parsed.json,
     }, runtimeEnv);
     return;
   }
@@ -169,6 +217,8 @@ function parseArguments(args: readonly string[]): CliArguments {
   let destructive = false;
   let rebind = false;
   let force = false;
+  let json = false;
+  let approve = false;
   let commandSeen = false;
 
   for (let index = 0; index < args.length; index += 1) {
@@ -197,6 +247,14 @@ function parseArguments(args: readonly string[]): CliArguments {
     }
     if (argument === '--force' || argument === '-f') {
       force = true;
+      continue;
+    }
+    if (argument === '--json') {
+      json = true;
+      continue;
+    }
+    if (argument === '--approve') {
+      approve = true;
       continue;
     }
     if (argument === '--help' || argument === '-h') {
@@ -233,6 +291,8 @@ function parseArguments(args: readonly string[]): CliArguments {
     && command !== 'stop'
     && command !== 'status'
     && command !== 'update'
+    && command !== 'version'
+    && command !== 'compatibility'
   ) {
     throw new Error('--config-home is not valid with this command');
   }
@@ -248,7 +308,13 @@ function parseArguments(args: readonly string[]): CliArguments {
   if (force && command !== 'update') {
     throw new Error('--force is only valid with update');
   }
-  return { command, threadId, configHome, confirm, destructive, rebind, force };
+  if (json && command !== 'status' && command !== 'version' && command !== 'compatibility') {
+    throw new Error('--json is only valid with status, version, or compatibility');
+  }
+  if (approve && command !== 'compatibility') {
+    throw new Error('--approve is only valid with compatibility');
+  }
+  return { command, threadId, configHome, confirm, destructive, rebind, force, json, approve };
 }
 
 function requireOptionValue(
@@ -272,10 +338,13 @@ function isCommand(value: string | undefined): value is Command {
     || value === 'status'
     || value === 'update'
     || value === 'doctor'
+    || value === 'version'
+    || value === 'compatibility'
     || value === 'validate-ui-sync'
     || value === 'config-reset'
     || value === 'setup'
     || value === 'rebind'
+    || value === 'supervise'
     || value === 'help';
 }
 
@@ -311,9 +380,11 @@ function helpText(): string {
     '  codex-feishu-bridge start [--config-home PATH]',
     '  codex-feishu-bridge restart [--config-home PATH]',
     '  codex-feishu-bridge stop [--config-home PATH]',
-    '  codex-feishu-bridge status [--config-home PATH]',
+    '  codex-feishu-bridge status [--json] [--config-home PATH]',
     '  codex-feishu-bridge update [--force] [--config-home PATH]',
     '  codex-feishu-bridge doctor',
+    '  codex-feishu-bridge version [--json] [--config-home PATH]',
+    '  codex-feishu-bridge compatibility [--json] [--approve] [--config-home PATH]',
     '  codex-feishu-bridge validate-ui-sync [--thread THREAD_ID]',
     '  codex-feishu-bridge config reset [--config-home PATH] [--confirm] [--destructive]',
     '',
@@ -323,6 +394,8 @@ function helpText(): string {
     'run/start/restart also invoke setup automatically when credentials are missing.',
     'rebind forces a new Feishu QR-code app registration and replaces LARK_APP_ID/LARK_APP_SECRET.',
     'start/restart/stop/status manage the PID file and logs under ~/.codex-feishu-bridge/.',
+    'version detects local ChatGPT/Codex versions and refreshes protocol-versions.json.',
+    'compatibility reports 兼容/不兼容; --approve explicitly adds a compatible exact version.',
     'validate-ui-sync without --thread lists recent workspace tasks.',
     'config reset is a dry run until --confirm; --destructive is required to clear an already-current binding.',
     '',

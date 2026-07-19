@@ -1,0 +1,21 @@
+{
+  "protocolContractId": "app-server-0.145.0-alpha.18",
+  "artifacts": [
+    {
+      "capturedAt": "2026-07-17T23:06:52Z",
+      "binaryName": "codex",
+      "binarySha256": "a2bc3f63b0d7ce5c065ae070e16d964fa71192bf6ceb8da82d2315227d55a6bf",
+      "distribution": "ChatGPT.app",
+      "appVersion": null,
+      "appBuild": null
+    },
+    {
+      "capturedAt": "2026-07-19T08:33:48Z",
+      "binaryName": "codex",
+      "binarySha256": "5589325247117acfd2181ec5cf1daad3b88ca46abbeaf6dc43f19c65c07727c6",
+      "distribution": "ChatGPT.app",
+      "appVersion": "26.715.31925",
+      "appBuild": "5551"
+    }
+  ]
+}

@@ -13,6 +13,10 @@ import { basename, dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 import { BindingStore } from './binding-store';
+import {
+  PROTOCOL_VERSION_CONFIG_LOCK_FILE_NAME,
+  ProtocolVersionConfigStore,
+} from './codex/protocol-version-config';
 import { BridgeProcessLock } from './process-lock';
 
 const CONFIG_VERSION_LINE = 'BRIDGE_CONFIG_VERSION=2';
@@ -91,12 +95,33 @@ export function resetConfigHome(
   } catch (error) {
     throw new ConfigResetError('Bridge start or another config reset is in progress', { cause: error });
   }
-  const bridgeLock = existsSync(configHome) ? new BridgeProcessLock(configHome) : undefined;
   try {
-    bridgeLock?.acquire();
+    if (!existsSync(configHome)) {
+      mkdirSync(configHome, { recursive: false, mode: 0o700 });
+    }
+  } catch (error) {
+    resetLock.release();
+    throw new ConfigResetError('Config home could not be prepared for reset', { cause: error });
+  }
+  const bridgeLock = new BridgeProcessLock(configHome);
+  try {
+    bridgeLock.acquire();
   } catch (error) {
     resetLock.release();
     throw new ConfigResetError('Bridge must be stopped before config reset', { cause: error });
+  }
+  const protocolLock = new BridgeProcessLock(configHome, {
+    lockFileName: PROTOCOL_VERSION_CONFIG_LOCK_FILE_NAME,
+  });
+  try {
+    protocolLock.acquire();
+  } catch (error) {
+    bridgeLock.release();
+    resetLock.release();
+    throw new ConfigResetError(
+      'Protocol version inspection or approval must finish before config reset',
+      { cause: error },
+    );
   }
   const staging = join(parent, `.${name}.staging-${randomUUID()}`);
   const rollback = join(parent, `.${name}.rollback-${randomUUID()}`);
@@ -135,7 +160,8 @@ export function resetConfigHome(
           cause: error,
         });
   } finally {
-    bridgeLock?.release();
+    protocolLock.release();
+    bridgeLock.release();
     resetLock.release();
   }
 }
@@ -164,7 +190,7 @@ function assertConfigHome(configHome: string): void {
 }
 
 function isCurrentStructure(configHome: string, entries: readonly string[]): boolean {
-  const allowed = new Set(['.env', 'bindings.json']);
+  const allowed = new Set(['.env', 'bindings.json', 'protocol-versions.json']);
   if (entries.some((entry) => !allowed.has(entry))) {
     return false;
   }
@@ -178,6 +204,9 @@ function isCurrentStructure(configHome: string, entries: readonly string[]): boo
   try {
     const store = new BindingStore(configHome);
     store.load();
+    if (entries.includes('protocol-versions.json')) {
+      new ProtocolVersionConfigStore(configHome).loadOrCreate();
+    }
     return true;
   } catch {
     return false;

@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { BindingStore } from './binding-store';
 import { CardKitClient, type LarkReplyApi } from './cards/cardkit-client';
 import { CardImageRenderer, type LarkImageApi } from './cards/card-image-renderer';
+import { createQueueFullCard } from './cards/layouts';
 import { AppServerClient, type AppServerTransportOptions } from './codex/app-server-client';
 import {
   AppServerControlPlane,
@@ -10,7 +11,9 @@ import {
   type AppServerRequestClient,
 } from './codex/app-server-control-plane';
 import { DesktopIpcClient } from './codex/desktop-ipc-client';
+import { DESKTOP_IPC_CONTRACT } from './codex/desktop-ipc-contract';
 import { DesktopIpcSupervisor } from './codex/desktop-ipc-supervisor';
+import type { DesktopIpcSupervisorState } from './codex/desktop-ipc-supervisor';
 import { DesktopThreadStreamNormalizer } from './codex/desktop-thread-stream-normalizer';
 import { CodexAppNavigationAdapter } from './codex/app-navigation-adapter';
 import { verifyCodexRuntimeContract } from './codex/runtime-contract';
@@ -35,6 +38,12 @@ import { runPreflight } from './preflight';
 import { BridgeProcessLock } from './process-lock';
 import { RateLimitCache } from './rate-limit-cache';
 import { acquireConfigResetExclusion } from './config-reset';
+import {
+  RuntimeHealthPublisher,
+  RuntimeHealthStore,
+  type RuntimeHealthSnapshot,
+} from './runtime-health';
+import type { LarkWebsocketConnectionSnapshot } from './lark/client';
 
 export interface BridgeRuntime {
   readonly config: BridgeConfig;
@@ -104,6 +113,55 @@ export async function startBridge(
   const desktop = new DesktopIpcClient();
   await desktop.syncFollowedThreads(bindings.list().map((binding) => binding.threadId));
   let orchestrator: InMemoryOrchestrator | undefined;
+  const healthStore = new RuntimeHealthStore(preflight.configHome);
+  let runtimeStarted = false;
+  let runtimeStopped = false;
+  let appServerState: RuntimeHealthSnapshot['appServer']['state'] = 'starting';
+  let desktopState: DesktopIpcSupervisorState = 'STOPPED';
+  let desktopEpoch: number | null = null;
+  let larkConnection: LarkWebsocketConnectionSnapshot = Object.freeze({
+    state: 'idle',
+    reconnectCount: 0,
+    connectedAtMs: null,
+  });
+  const writeHealth = (): void => {
+    const status = runtimeStopped
+      ? 'stopped'
+      : runtimeStarted
+        && appServerState === 'ready'
+        && desktopState === 'READY'
+        && larkConnection.state === 'ready'
+        ? 'ready'
+        : runtimeStarted ? 'degraded' : 'starting';
+    try {
+      healthStore.write(Object.freeze({
+        schemaVersion: 1,
+        pid: process.pid,
+        supervisorPid: process.ppid,
+        updatedAt: new Date().toISOString(),
+        status,
+        appServer: Object.freeze({
+          state: appServerState,
+          protocolContractId: runtimeContract.protocolProfile.id,
+          schemaDigest: runtimeContract.schemaDigest,
+          artifactSha256: runtimeContract.runtimeArtifact.binarySha256,
+        }),
+        desktop: Object.freeze({
+          state: desktopState,
+          epoch: desktopEpoch,
+          contractId: DESKTOP_IPC_CONTRACT.id,
+        }),
+        lark: larkConnection,
+        tasks: orchestrator?.runtimeTaskHealth()
+          ?? Object.freeze({ active: 0, queued: 0, pendingCardDeliveries: 0 }),
+      }));
+    } catch (error) {
+      logger.error('runtime_health_write_failed', error);
+    }
+  };
+  const healthPublisher = new RuntimeHealthPublisher(writeHealth);
+  const publishHealth = (): void => healthPublisher.request();
+  healthPublisher.flush();
   let desktopThreadFollowingWrite = Promise.resolve();
   const syncDesktopThreadFollowing = async (): Promise<void> => {
     const threadIds = new Set(bindings.list().map((binding) => binding.threadId));
@@ -122,6 +180,17 @@ export async function startBridge(
   const lark = createLarkRuntimeClients(config, {
     logSink: (level) => logger.warn(`lark_sdk_${level}`),
     onTerminalWebsocketError: resolveFailure,
+    onWebsocketStateChanged: (snapshot) => {
+      larkConnection = snapshot;
+      logger.info('lark_websocket_state_changed', {
+        state: snapshot.state,
+        reconnectCount: snapshot.reconnectCount,
+      });
+      if (snapshot.state === 'ready' && snapshot.reconnectCount > 0) {
+        orchestrator?.resumeCardDelivery();
+      }
+      publishHealth();
+    },
   });
   const cardImages = new CardImageRenderer(lark.api as unknown as LarkImageApi);
   const cards = new CardKitClient(
@@ -154,6 +223,7 @@ export async function startBridge(
     onActiveThreadsChanged: () => {
       void syncDesktopThreadFollowing();
     },
+    onRuntimeHealthChanged: publishHealth,
   });
   const approvals = new DesktopApprovalService(config, desktop, cards, orchestrator);
   const conversationBindings = new ConversationBindingServiceV3(
@@ -189,14 +259,20 @@ export async function startBridge(
   );
   const desktopSupervisor = new DesktopIpcSupervisor(desktop, {
     onReady: (handshake) => {
+      desktopState = 'READY';
+      desktopEpoch = handshake.epoch;
       normalizer.beginEpoch(handshake.epoch);
       logger.info('desktop_ipc_ready', { epoch: handshake.epoch });
+      publishHealth();
     },
     onDisconnected: async (epoch) => {
+      desktopState = 'RECONNECTING';
+      desktopEpoch = epoch;
       normalizer.reset();
       approvals.abandonAll();
       orchestrator.abandonAll();
       logger.warn('desktop_ipc_abandoned_runtime', { epoch });
+      publishHealth();
     },
     onReconnectError: (error) => logger.error('desktop_ipc_reconnect_failed', error),
   });
@@ -216,6 +292,15 @@ export async function startBridge(
     }
     await syncDesktopThreadFollowing();
     const outcome = await orchestrator.handleInbound(message, binding);
+    if (outcome === 'rejected_queue_full') {
+      const cardId = await cards.createCard(createQueueFullCard(config.maxQueuedTasks));
+      await cards.replyCard(
+        message.rootMessageId,
+        cardId,
+        `queue-full:${message.eventId}`,
+      );
+      return;
+    }
     if (binding.activeSkill && outcome !== 'duplicate') {
       await commands.consumeActiveSkill(binding);
     }
@@ -277,17 +362,26 @@ export async function startBridge(
   let stopped = false;
   try {
     await appServer.start();
+    appServerState = 'ready';
+    publishHealth();
     await desktopSupervisor.start();
     await eventServer.start();
+    runtimeStarted = true;
+    healthPublisher.flush();
     logger.info('bridge_started', {
       executionMode: 'desktop_follower',
       codexVersion: runtimeContract.codexVersion,
       appServerProtocolProfile: runtimeContract.protocolProfile.id,
       appServerProtocolSupported: true,
       appServerSchemaDigest: runtimeContract.schemaDigest,
+      codexRuntimeArtifactSha256: runtimeContract.runtimeArtifact.binarySha256,
+      desktopIpcContract: DESKTOP_IPC_CONTRACT.id,
       runtimeInstance: randomUUID().slice(0, 8),
     });
   } catch (error) {
+    runtimeStopped = true;
+    appServerState = 'stopped';
+    desktopState = 'STOPPED';
     await stopResources(
       eventServer,
       desktopSupervisor,
@@ -297,6 +391,7 @@ export async function startBridge(
       approvals,
       processLock,
     );
+    healthPublisher.flush();
     throw error;
   }
 
@@ -308,6 +403,9 @@ export async function startBridge(
         return;
       }
       stopped = true;
+      runtimeStopped = true;
+      appServerState = 'stopped';
+      desktopState = 'STOPPED';
       await stopResources(
         eventServer,
         desktopSupervisor,
@@ -317,6 +415,7 @@ export async function startBridge(
         approvals,
         processLock,
       );
+      healthPublisher.flush();
       logger.info('bridge_stopped');
     },
   });

@@ -15,11 +15,12 @@ import type {
   TurnStatus,
   UserInput,
 } from './protocol';
+import { DESKTOP_IPC_CONTRACT } from './desktop-ipc-contract';
 
 type UnknownRecord = Record<string, unknown>;
 
 /** The Desktop follower state broadcast contract pinned by the runtime probe. */
-export const DESKTOP_THREAD_STREAM_PROTOCOL_VERSION = 11;
+export const DESKTOP_THREAD_STREAM_PROTOCOL_VERSION = DESKTOP_IPC_CONTRACT.stateProtocolVersion;
 
 export class DesktopThreadStreamProtocolError extends Error {
   public constructor(message: string) {

@@ -139,7 +139,24 @@ App Server control plane 不参与生产 turn 执行。
 
 ## 8. 执行发布门禁
 
-先让 doctor 对候选 binary 给出 exact profile、version、digest 和 mode：
+先查看候选 binary 的本机版本和只读兼容结论：
+
+```bash
+CODEX_BIN=/absolute/path/to/codex codex-feishu-bridge version --json
+CODEX_BIN=/absolute/path/to/codex codex-feishu-bridge compatibility
+```
+
+结论必须明确为“兼容”或“不兼容”。`upgrade_available` 表示 schema 与现有合同一致，但精确版本尚未批准；
+检查本身不修改支持目录。人工复核 binary 来源、schema 和 smoke 证据后，才允许执行：
+
+```bash
+CODEX_BIN=/absolute/path/to/codex codex-feishu-bridge compatibility --approve
+```
+
+首次运行会把内置支持目录写入 config home 的 `protocol-versions.json`，后续运行读取该文件。未知 schema
+不得使用 `--approve` 绕过。
+
+然后让 doctor 对已批准 binary 给出 exact profile、version、digest 和 mode：
 
 ```bash
 CODEX_BIN=/absolute/path/to/codex codex-feishu-bridge doctor
@@ -151,6 +168,15 @@ CODEX_BIN=/absolute/path/to/codex codex-feishu-bridge doctor
 npm run check
 git diff --check
 ```
+
+后台运行时还应核对进程和三个连接面的实时状态：
+
+```bash
+codex-feishu-bridge status --json
+```
+
+健康结果必须同时显示 App Server、Desktop IPC 和飞书为 ready；PID 存活但 worker 不存活或健康快照不属于
+当前 supervisor 时，不得判为 READY。健康文件只保存协议标识、连接状态和计数，不保存任务内容。
 
 `npm run check` 已包含 typecheck、协议测试、应用构建和 package 检查。发布证据还应记录真实
 `owned_stdio` smoke、必要的飞书/Desktop E2E，以及当前版本在
@@ -178,3 +204,6 @@ codex-feishu-bridge start
 
 回滚不清空 `.env` 或 `bindings.json`，也不重新绑定。Bridge 重启时当前内存任务会停止跟踪；不得恢复、补发
 或重放旧 turn。若 doctor 不能选中上一 profile，不要启动服务，先恢复与矩阵一致的官方 binary。
+
+飞书短时断网恢复属于同一进程内的投影补发：Bridge 只重发尚未确认的最新 CardKit 状态，不重新执行 turn。
+进程退出或 supervisor 拉起新 worker 后，仍然不恢复旧任务或旧卡片投影。

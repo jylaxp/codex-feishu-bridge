@@ -11,8 +11,11 @@ import {
 import { join, resolve } from 'node:path';
 
 import { resolveConfigHome } from './config';
+import { readRuntimeHealth, type RuntimeHealthSnapshot } from './runtime-health';
+import { WORKER_SHUTDOWN_GRACE_MS } from './process-supervisor';
+import { isProcessAlive } from './process-liveness';
 
-const STOP_WAIT_MS = 2_000;
+const STOP_WAIT_MS = WORKER_SHUTDOWN_GRACE_MS + 2_000;
 const STOP_POLL_MS = 100;
 const UPDATE_REPOSITORY = 'git+https://github.com/jylaxp/codex-feishu-bridge.git';
 
@@ -25,6 +28,7 @@ export interface BackgroundServiceOptions {
   readonly spawnProcess?: typeof spawn;
   readonly executeFile?: typeof execFileSync;
   readonly output?: { write(chunk: string): unknown };
+  readonly jsonOutput?: boolean;
 }
 
 export interface BackgroundServiceReport {
@@ -33,6 +37,7 @@ export interface BackgroundServiceReport {
   readonly pid: number | null;
   readonly stdoutLog: string;
   readonly stderrLog: string;
+  readonly health: RuntimeHealthSnapshot | null;
 }
 
 /** Implements the original PID/log based background lifecycle. */
@@ -45,7 +50,7 @@ export async function runBackgroundCommand(
   const output = options.output ?? process.stdout;
   if (command === 'status') {
     const report = statusReport(command, paths);
-    output.write(formatStatus(report));
+    output.write(options.jsonOutput ? `${JSON.stringify(report, null, 2)}\n` : formatStatus(report));
     return report;
   }
   if (command === 'stop') {
@@ -111,7 +116,7 @@ function startService(
   try {
     child = (options.spawnProcess ?? spawn)(
       process.execPath,
-      [options.entryPath ?? resolve(__dirname, 'cli.js'), 'run'],
+      [options.entryPath ?? resolve(__dirname, 'cli.js'), 'supervise'],
       {
         cwd: process.cwd(),
         detached: true,
@@ -134,12 +139,13 @@ function startService(
     pid: child.pid,
     stdoutLog: paths.stdoutLog,
     stderrLog: paths.stderrLog,
+    health: null,
   };
 }
 
 async function stopService(paths: ServicePaths): Promise<BackgroundServiceReport> {
   const pid = readPid(paths.pidFile);
-  if (!pid || !isPidRunning(pid)) {
+  if (!pid || !isProcessAlive(pid)) {
     removePidFile(paths.pidFile);
     return statusReport('stop', paths);
   }
@@ -150,10 +156,10 @@ async function stopService(paths: ServicePaths): Promise<BackgroundServiceReport
     return statusReport('stop', paths);
   }
   const deadline = Date.now() + STOP_WAIT_MS;
-  while (Date.now() < deadline && isPidRunning(pid)) {
+  while (Date.now() < deadline && isProcessAlive(pid)) {
     await delay(STOP_POLL_MS);
   }
-  if (isPidRunning(pid)) {
+  if (isProcessAlive(pid)) {
     try {
       process.kill(pid, 'SIGKILL');
     } catch {
@@ -166,14 +172,16 @@ async function stopService(paths: ServicePaths): Promise<BackgroundServiceReport
 
 function statusReport(command: BackgroundCommand, paths: ServicePaths): BackgroundServiceReport {
   const pid = readPid(paths.pidFile);
-  const running = pid !== null && isPidRunning(pid);
+  const running = pid !== null && isProcessAlive(pid);
   if (pid !== null && !running) removePidFile(paths.pidFile);
+  const health = running ? readRuntimeHealth(paths.configHome) : null;
   return {
     command,
     running,
     pid: running ? pid : null,
     stdoutLog: paths.stdoutLog,
     stderrLog: paths.stderrLog,
+    health: health?.supervisorPid === pid && isProcessAlive(health.pid) ? health : null,
   };
 }
 
@@ -181,15 +189,6 @@ function readPid(pidFile: string): number | null {
   if (!existsSync(pidFile)) return null;
   const value = Number(readFileSync(pidFile, 'utf8').trim());
   return Number.isSafeInteger(value) && value > 0 ? value : null;
-}
-
-function isPidRunning(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function removePidFile(pidFile: string): void {
@@ -205,8 +204,9 @@ function delay(milliseconds: number): Promise<void> {
 }
 
 function formatStatus(report: BackgroundServiceReport): string {
+  const runtimeStatus = report.health?.status ?? 'unknown';
   return report.running
-    ? `🟢 Bridge 正在运行，PID: ${report.pid}\n标准日志: ${report.stdoutLog}\n错误日志: ${report.stderrLog}\n`
+    ? `🟢 Bridge 进程正在运行，PID: ${report.pid}\n运行状态: ${runtimeStatus}\n标准日志: ${report.stdoutLog}\n错误日志: ${report.stderrLog}\n`
     : '🔴 Bridge 当前未在后台运行。\n';
 }
 

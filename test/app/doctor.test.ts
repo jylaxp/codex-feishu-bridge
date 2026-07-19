@@ -36,6 +36,11 @@ test('doctor reports selected profile and managed proxy trust boundary', async (
           codexVersion: 'codex-cli 0.145.0-alpha.18',
           schemaDigest: APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18.schemaDigest,
           protocolProfile: APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18,
+          runtimeArtifact: {
+            binaryName: 'codex',
+            binarySha256: 'a'.repeat(64),
+            protocolContractId: APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18.id,
+          },
         };
       },
       nodeVersion: '20.17.0',

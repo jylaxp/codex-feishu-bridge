@@ -42,6 +42,11 @@ test('UI validator detects once and binds the selected profile to client and con
           codexVersion: 'codex-cli 0.145.0-alpha.18',
           schemaDigest: APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18.schemaDigest,
           protocolProfile: APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18,
+          runtimeArtifact: {
+            binaryName: 'codex',
+            binarySha256: 'a'.repeat(64),
+            protocolContractId: APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18.id,
+          },
         };
       },
       createClient: (options) => {
@@ -107,6 +112,11 @@ test('144 UI validator maps turn/start while preserving the resumed thread path'
         codexVersion: 'codex-cli 0.144.3',
         schemaDigest: APP_SERVER_PROTOCOL_PROFILE_0_144_3.schemaDigest,
         protocolProfile: APP_SERVER_PROTOCOL_PROFILE_0_144_3,
+        runtimeArtifact: {
+          binaryName: 'codex',
+          binarySha256: 'b'.repeat(64),
+          protocolContractId: APP_SERVER_PROTOCOL_PROFILE_0_144_3.id,
+        },
       }),
       createClient: () => client,
     });

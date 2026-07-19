@@ -21,6 +21,21 @@ export interface LarkRuntimeClients {
 export interface LarkRuntimeWebsocketClient {
   start(params: Parameters<Lark.WSClient['start']>[0]): Promise<void>;
   close(params?: Parameters<Lark.WSClient['close']>[0]): void;
+  connectionSnapshot(): LarkWebsocketConnectionSnapshot;
+}
+
+export type LarkWebsocketConnectionState =
+  | 'idle'
+  | 'connecting'
+  | 'ready'
+  | 'reconnecting'
+  | 'terminal'
+  | 'closed';
+
+export interface LarkWebsocketConnectionSnapshot {
+  readonly state: LarkWebsocketConnectionState;
+  readonly reconnectCount: number;
+  readonly connectedAtMs: number | null;
 }
 
 export type LarkSdkLogLevel = 'error' | 'warn';
@@ -38,6 +53,7 @@ export interface LarkRuntimeClientOptions {
   readonly factories?: LarkRuntimeClientFactories;
   readonly websocketReadyTimeoutMs?: number;
   readonly onTerminalWebsocketError?: (error: Error) => void;
+  readonly onWebsocketStateChanged?: (snapshot: LarkWebsocketConnectionSnapshot) => void;
 }
 
 const DEFAULT_LARK_CLIENT_FACTORIES: LarkRuntimeClientFactories = Object.freeze({
@@ -81,12 +97,16 @@ class ReadyLarkWebsocketClient implements LarkRuntimeWebsocketClient {
   private readyReached = false;
   private closed = false;
   private terminalErrorReported = false;
+  private state: LarkWebsocketConnectionState = 'idle';
+  private reconnectCount = 0;
+  private connectedAtMs: number | null = null;
 
   public constructor(
     options: LarkWebsocketOptions,
     factory: LarkRuntimeClientFactories['createWebsocketClient'],
     private readonly readyTimeoutMs: number,
     private readonly onTerminalError: (error: Error) => void,
+    private readonly onStateChanged: (snapshot: LarkWebsocketConnectionSnapshot) => void,
   ) {
     if (!Number.isSafeInteger(readyTimeoutMs) || readyTimeoutMs < 1) {
       throw new RangeError('Lark WebSocket ready timeout must be a positive safe integer');
@@ -97,9 +117,23 @@ class ReadyLarkWebsocketClient implements LarkRuntimeWebsocketClient {
       handshakeTimeoutMs: Math.min(10_000, readyTimeoutMs),
       onReady: () => {
         this.readyReached = true;
+        this.transition('ready');
         this.readyResolve?.();
       },
       onError: () => this.handleConnectionError(),
+      onReconnecting: () => {
+        if (this.closed || this.terminalErrorReported) {
+          return;
+        }
+        this.reconnectCount += 1;
+        this.transition('reconnecting');
+      },
+      onReconnected: () => {
+        if (this.closed || this.terminalErrorReported) {
+          return;
+        }
+        this.transition('ready');
+      },
     });
   }
 
@@ -107,6 +141,7 @@ class ReadyLarkWebsocketClient implements LarkRuntimeWebsocketClient {
     if (this.startPromise) {
       return this.startPromise;
     }
+    this.transition('connecting');
     const start = this.startAndWait(params);
     this.startPromise = start;
     return start;
@@ -114,14 +149,24 @@ class ReadyLarkWebsocketClient implements LarkRuntimeWebsocketClient {
 
   public close(params?: Parameters<Lark.WSClient['close']>[0]): void {
     this.closed = true;
+    this.transition('closed');
     this.readyReject?.(new LarkWebsocketStartupError('Lark WebSocket startup was cancelled'));
     this.readyResolve = undefined;
     this.readyReject = undefined;
     this.rawClient.close(params);
   }
 
+  public connectionSnapshot(): LarkWebsocketConnectionSnapshot {
+    return Object.freeze({
+      state: this.state,
+      reconnectCount: this.reconnectCount,
+      connectedAtMs: this.connectedAtMs,
+    });
+  }
+
   private handleConnectionError(): void {
     if (!this.readyReached) {
+      this.transition('terminal');
       this.readyReject?.(new LarkWebsocketStartupError('Lark WebSocket connection failed'));
       return;
     }
@@ -129,9 +174,16 @@ class ReadyLarkWebsocketClient implements LarkRuntimeWebsocketClient {
       return;
     }
     this.terminalErrorReported = true;
+    this.transition('terminal');
     this.onTerminalError(
       new LarkWebsocketTerminalError('Lark WebSocket connection terminated'),
     );
+  }
+
+  private transition(state: LarkWebsocketConnectionState): void {
+    this.state = state;
+    this.connectedAtMs = state === 'ready' ? Date.now() : null;
+    this.onStateChanged(this.connectionSnapshot());
   }
 
   private async startAndWait(params: Parameters<Lark.WSClient['start']>[0]): Promise<void> {
@@ -151,6 +203,9 @@ class ReadyLarkWebsocketClient implements LarkRuntimeWebsocketClient {
       // auxiliary promise so its timer cannot later create an unhandled rejection.
       this.readyResolve?.();
       this.rawClient.close({ force: true });
+      if (this.state !== 'terminal') {
+        this.transition('terminal');
+      }
       throw new LarkWebsocketStartupError('Lark WebSocket could not become ready');
     } finally {
       if (timeout) {
@@ -291,6 +346,7 @@ export function createLarkRuntimeClients(
       factories.createWebsocketClient,
       websocketReadyTimeoutMs,
       options.onTerminalWebsocketError ?? (() => undefined),
+      options.onWebsocketStateChanged ?? (() => undefined),
     ),
   });
 }
