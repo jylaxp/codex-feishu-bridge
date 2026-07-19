@@ -3,7 +3,7 @@ import * as os from 'os';
 import { BridgeConfig } from './domain';
 
 export const MIN_NODE_VERSION = '20.17.0';
-export const MAX_NODE_MAJOR_EXCLUSIVE = 21;
+export const MAX_NODE_MAJOR_EXCLUSIVE = 27;
 export const DEFAULT_MAX_TEXT_LENGTH = 10_000;
 export const MIN_TEXT_LENGTH = 1_000;
 export const MAX_TEXT_LENGTH = 20_000;

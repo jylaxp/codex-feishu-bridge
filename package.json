@@ -25,14 +25,14 @@
     "doctor": "node dist/app/cli.js doctor",
     "validate:ui-sync": "node dist/app/cli.js validate-ui-sync",
     "test": "npm run test:protocol",
-    "test:protocol": "npm run build:test && node --test dist-test/test/app/*.test.js",
+    "test:protocol": "npm run build:test && node --test dist-test/test/app/*.test.js test/scripts/*.test.mjs",
     "typecheck:app": "tsc -p tsconfig.app.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "check:app": "npm run typecheck:app && npm run test:protocol && npm run build:app",
     "check:package": "node scripts/check-package.mjs",
     "check": "npm run check:app && npm run check:package"
   },
   "engines": {
-    "node": ">=20.17.0 <25"
+    "node": ">=20.17.0 <27"
   },
   "packageManager": "npm@11.16.0",
   "dependencies": {
