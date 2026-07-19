@@ -1,0 +1,158 @@
+src/app/codex/desktop-thread-stream-normalizer.ts
+  s_c54cf697e76a51::t_4f8765c0d8a65d 18,23
+src/app/codex/runtime-artifact.ts
+  s_c54cf697e76a51::t_20ae968da03b49 7,10-13,17,19,31-38
+  s_c54cf697e76a51::t_4f8765c0d8a65d 1-6,8-9,14-16,18,20-30,39
+test/app/chatgpt-app-version.test.ts
+  s_c54cf697e76a51::t_0334f389320f44 1-33
+test/fixtures/app-server/0.145.0-alpha.18/artifacts.json
+  s_c54cf697e76a51::t_1e7de53a109285 1-12,14-21
+  s_c54cf697e76a51::t_968c8c17a5fe13 13
+README.md
+  s_c54cf697e76a51::t_a3d55c08c3425c 192-211,214
+  s_c54cf697e76a51::t_a4899bf1d38bda 140
+  s_c54cf697e76a51::t_2c89b427e9208f 176
+  s_c54cf697e76a51::t_4ef831db1da136 215
+test/app/local-version-command.test.ts
+  s_c54cf697e76a51::t_16951153de79b7 1-6,8-51,53-121
+  s_c54cf697e76a51::t_007751443a2a43 7,52
+test/app/runtime-contract.test.ts
+  s_c54cf697e76a51::t_1e7de53a109285 113-115,117-126,251-252
+  s_c54cf697e76a51::t_a0997f96064bab 116
+  s_c54cf697e76a51::t_68c4a830b2884f 253-272
+  s_c54cf697e76a51::t_310185a9659478 27,29,277-350,624-641,646
+  s_c54cf697e76a51::t_0729fce947ad95 649
+  s_c54cf697e76a51::t_caa4af501bf876 642-645
+  s_c54cf697e76a51::t_e0cda00de464fe 647
+src/app/codex/desktop-ipc-client.ts
+  s_c54cf697e76a51::t_1e7de53a109285 22,147
+src/app/codex/protocol-version-config.ts
+  s_c54cf697e76a51::t_28df398e56ced7 14,364,366,370-373,375
+  s_c54cf697e76a51::t_458c2a1d9a6cb7 11,77-78,80,83-97,101-143,145-162,165-170,188-201
+  s_c54cf697e76a51::t_2313cded1d182d 243-248
+  s_c54cf697e76a51::t_50a4da4001a508 21,163
+  s_c54cf697e76a51::t_3a9883c071bbe2 1-10,12-13,15-20,22-76,79,81-82,98-100,144,164,171-187,202-242,249-363,365,367-369,374,376-411
+docs/app-server-support-matrix.md
+  s_c54cf697e76a51::t_a3d55c08c3425c 3-5,31,34-38
+  s_c54cf697e76a51::t_de7890e78f9621 12,19,62-63
+  s_c54cf697e76a51::t_968c8c17a5fe13 14
+src/app/main.ts
+  s_c54cf697e76a51::t_feea3b88f3dcf7 6,295-303
+  s_c54cf697e76a51::t_a4899bf1d38bda 140
+  s_c54cf697e76a51::t_3c042a82d6118e 14,41-45,127,152,162-164,370,378,394,418
+  s_c54cf697e76a51::t_4f1cce09014125 183,185-191,193
+  s_c54cf697e76a51::t_1e7de53a109285 377
+  s_c54cf697e76a51::t_80b14b2aa8830a 16,46,116-126,128-139,141-151,153-161,184,192,226,262-263,266,269-270,275,365-366,369,382-384,406-408
+src/app/config-reset.ts
+  s_c54cf697e76a51::t_75cd7b06ccac66 105-108,113-115,117,119,163-164
+  s_c54cf697e76a51::t_8b009f6d254d9a 99-104
+  s_c54cf697e76a51::t_50a4da4001a508 16-19,116,118,120-125
+  s_c54cf697e76a51::t_4daf270922f262 193
+  s_c54cf697e76a51::t_3a5b0cab9b50e4 207-209
+test/app/cli-version.test.ts
+  s_c54cf697e76a51::t_dc02e786edb08f 37-49
+  s_c54cf697e76a51::t_60f4563f652f54 1-36,50-84
+test/app/process-supervisor.test.ts
+  s_c54cf697e76a51::t_443c8f43b78b98 1-4,9-32,46
+  s_c54cf697e76a51::t_3c042a82d6118e 5-8,33-45
+test/app/lark-client.test.ts
+  s_c54cf697e76a51::t_f37700f6ad85e0 1-85
+src/app/codex/desktop-ipc-contract.ts
+  s_c54cf697e76a51::t_4f8765c0d8a65d 1-12
+test/app/doctor.test.ts
+  s_c54cf697e76a51::t_1e7de53a109285 39-43
+src/app/cli.ts
+  s_c54cf697e76a51::t_2c89b427e9208f 41,133,165,220,252-253,258-259,313,383
+  s_c54cf697e76a51::t_342834757674c0 106-124
+  s_c54cf697e76a51::t_4c113b4d2685f8 13,24-25,42,65-68,103-105,125-131,221,254-257,294-295,311-312,314-317,341-342,386-387,397-398
+  s_c54cf697e76a51::t_f5c9be26995ee4 30,85-90,132,347
+test/app/ui-sync-validator.test.ts
+  s_c54cf697e76a51::t_1e7de53a109285 45-49,115-119
+test/app/process-liveness.test.ts
+  s_c54cf697e76a51::t_372535ba555190 1-17
+src/app/codex/chatgpt-app-version.ts
+  s_c54cf697e76a51::t_23bd538cb16e00 1-55
+src/app/task-scheduler.ts
+  s_c54cf697e76a51::t_7ba73bf083083a 1-74
+src/app/process-liveness.ts
+  s_c54cf697e76a51::t_372535ba555190 1-21
+src/app/runtime-health.ts
+  s_c54cf697e76a51::t_a4899bf1d38bda 27,110-114
+  s_c54cf697e76a51::t_64d73e3e5adb5e 1-12,14-26,28-38,40-66,100-109,115-118
+  s_c54cf697e76a51::t_3c042a82d6118e 13,39,67-99
+src/app/process-supervisor.ts
+  s_c54cf697e76a51::t_f5c9be26995ee4 1-7,9-28,30-32,36-47,50-67,72,84-95
+  s_c54cf697e76a51::t_3c042a82d6118e 8,29,33-35,48-49,68-71,73-83
+test/app/config-reset.test.ts
+  s_c54cf697e76a51::t_50a4da4001a508 18,72-96
+  s_c54cf697e76a51::t_75cd7b06ccac66 100-117
+  s_c54cf697e76a51::t_3a5b0cab9b50e4 1-13,19-41,47-52,71,97-99
+  s_c54cf697e76a51::t_8b009f6d254d9a 14-17,42-46,53-70
+src/app/lark/client.ts
+  s_c54cf697e76a51::t_55244d4d70423f 24-38,56,100-102,109,120,124-136,144,152,159-166,169,177,183-188,206-208,349
+src/app/codex/app-server-protocol-registry.ts
+  s_c54cf697e76a51::t_4f8765c0d8a65d 34,42-43
+  s_c54cf697e76a51::t_1cb7a88ddf4baf 44
+src/app/codex/runtime-contract.ts
+  s_c54cf697e76a51::t_cf35cfcdaa6a8f 84,86
+  s_c54cf697e76a51::t_458c2a1d9a6cb7 113-119,122
+  s_c54cf697e76a51::t_367bc0b0839336 104,106
+  s_c54cf697e76a51::t_336868a19e29b1 18,21-22,25-32,41-75,85,87-103,105,107-112,120-121,123-150,154-155,162-163,191,205-240
+  s_c54cf697e76a51::t_4f8765c0d8a65d 20,23-24,40
+  s_c54cf697e76a51::t_744d6c3ba191b9 241
+test/app/runtime-health.test.ts
+  s_c54cf697e76a51::t_3c042a82d6118e 2,9,13,45-96
+  s_c54cf697e76a51::t_a4899bf1d38bda 21
+  s_c54cf697e76a51::t_2c89b427e9208f 1,3-8,10-12,14-20,22-44,97-100
+src/app/in-memory-orchestrator.ts
+  s_c54cf697e76a51::t_3c042a82d6118e 966
+  s_c54cf697e76a51::t_7ba73bf083083a 28,184,187-188,215,227-228,266,321,386,413,427,438,461,607,613,689,921,937,972
+  s_c54cf697e76a51::t_4f1cce09014125 128,156,233-245,543,675,817,829,854,883,885-889,925-930,952-965,967-968
+  s_c54cf697e76a51::t_64d73e3e5adb5e 27,216-226,229-231,969
+  s_c54cf697e76a51::t_80b14b2aa8830a 75-76,182,209,246,286,468,818,830,855,884,938,974
+  s_c54cf697e76a51::t_feea3b88f3dcf7 79-84,690
+  s_c54cf697e76a51::t_9f228948ed9afd 232
+  s_c54cf697e76a51::t_bd3a22fe06b3f6 970
+test/app/protocol-version-config.test.ts
+  s_c54cf697e76a51::t_b0300ab332f9a2 1-12,14-15,17-29,32-43,84-125,148-150,152-164,166,170-172
+  s_c54cf697e76a51::t_2a31644b954425 126-147
+  s_c54cf697e76a51::t_c52e57dc983626 13,16,30-31,44-83,151,165,167-169
+test/app/desktop-ipc-regression.test.ts
+  s_c54cf697e76a51::t_4f25338a350b98 343-367
+  s_c54cf697e76a51::t_9affe2180ee164 376,380
+  s_c54cf697e76a51::t_16c5dcf28bab54 7,368-375,377-379,381-388,515-528
+  s_c54cf697e76a51::t_09ba643d80c30b 529-531
+src/app/cards/layouts.ts
+  s_c54cf697e76a51::t_feea3b88f3dcf7 54-74
+test/app/task-scheduler.test.ts
+  s_c54cf697e76a51::t_7ba73bf083083a 1-19
+src/app/local-version-command.ts
+  s_c54cf697e76a51::t_28df398e56ced7 1,7,76,87-88
+  s_c54cf697e76a51::t_772b541ea10631 2-6,8-75,77-86,89-138
+docs/app-server-upgrade-runbook.md
+  s_c54cf697e76a51::t_de7890e78f9621 172-180,207-209
+  s_c54cf697e76a51::t_a3d55c08c3425c 142-159
+src/app/background-service.ts
+  s_c54cf697e76a51::t_80b14b2aa8830a 177
+  s_c54cf697e76a51::t_372535ba555190 16,148,159,162,175,184
+  s_c54cf697e76a51::t_2c89b427e9208f 31,53
+  s_c54cf697e76a51::t_64d73e3e5adb5e 14,40,142,207,209
+  s_c54cf697e76a51::t_3c042a82d6118e 15,18
+  s_c54cf697e76a51::t_f5c9be26995ee4 119
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "661ca64d2cb4ddbc10adc3cc3983f76734ce8cae",
+  "prompts": {},
+  "sessions": {
+    "s_c54cf697e76a51": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5e80-7c30-7a71-a434-09aeae22cce8",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    }
+  }
+}
