@@ -1,8 +1,13 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import type { BridgeConfig } from '../../src/app/domain';
+import { BridgeLogger } from '../../src/app/logger';
 import {
+  createRedactedLarkSdkLogger,
   createLarkRuntimeClients,
   type LarkRuntimeClientFactories,
   type LarkWebsocketConnectionSnapshot,
@@ -82,4 +87,28 @@ test('Lark WebSocket reports only an exhausted SDK connection as terminal', asyn
   websocketOptions?.onError?.(new Error('reconnect exhausted'));
   assert.equal(clients.websocket.connectionSnapshot().state, 'terminal');
   assert.equal(terminalErrors.length, 1);
+});
+
+test('Lark SDK logs obey the Bridge switch and discard all third-party payloads', () => {
+  const root = mkdtempSync(join(tmpdir(), 'bridge-lark-sdk-log-'));
+  const output: string[] = [];
+  try {
+    const logger = new BridgeLogger({ write: (value) => output.push(String(value)) });
+    const sdkLogger = createRedactedLarkSdkLogger((level) => {
+      logger.warn(`lark_sdk_${level}`, { source: 'lark_sdk' });
+    });
+
+    logger.configure({ configHome: root, logToFile: false, logFilePath: 'bridge.log' });
+    sdkLogger.warn('Authorization: Bearer disabled-secret');
+    assert.deepEqual(output, []);
+
+    logger.configure({ configHome: root, logToFile: true, logFilePath: 'bridge.log' });
+    sdkLogger.error({ token: 'enabled-secret' }, 'request payload');
+
+    const contents = readFileSync(join(root, 'logs', 'bridge.log'), 'utf8');
+    assert.match(contents, /"event":"lark_sdk_error"/);
+    assert.doesNotMatch(contents, /disabled-secret|enabled-secret|Authorization|request payload/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

@@ -1,6 +1,7 @@
 import * as Lark from '@larksuiteoapi/node-sdk';
 
 import { BridgeConfig } from '../domain';
+import { createRedactedLarkSdkLogger, type LarkSdkLogSink } from './client';
 import {
   InboundTextMessage,
   normalizeInboundMessage,
@@ -47,6 +48,7 @@ export interface LarkEventHandlers {
   readonly onRejectedEvent?: (reason: string) => void;
   readonly onHandlerError?: (kind: 'message' | 'card_action', error: Error) => void;
   readonly onScopeBound?: (config: BridgeConfig) => void;
+  readonly onSdkLog?: LarkSdkLogSink;
 }
 
 export interface LarkScopeAutoBindStore {
@@ -155,7 +157,9 @@ export class LarkEventServer {
       throw new Error('Lark event server is already started');
     }
 
-    const dispatcher = new Lark.EventDispatcher({}).register({
+    const dispatcher = new Lark.EventDispatcher({
+      logger: createRedactedLarkSdkLogger(this.handlers.onSdkLog),
+    }).register({
       'im.message.receive_v1': async (event: RawMessageEvent) => {
         let scopedConfig: BridgeConfig;
         try {

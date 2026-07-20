@@ -11,6 +11,7 @@ import {
 import { join, resolve } from 'node:path';
 
 import { resolveConfigHome } from './config';
+import { loadBridgeEnvironment } from './config-file';
 import { readRuntimeHealth, type RuntimeHealthSnapshot } from './runtime-health';
 import { WORKER_SHUTDOWN_GRACE_MS } from './process-supervisor';
 import { isProcessAlive } from './process-liveness';
@@ -35,6 +36,7 @@ export interface BackgroundServiceReport {
   readonly command: BackgroundCommand;
   readonly running: boolean;
   readonly pid: number | null;
+  readonly loggingEnabled: boolean;
   readonly stdoutLog: string;
   readonly stderrLog: string;
   readonly health: RuntimeHealthSnapshot | null;
@@ -49,17 +51,17 @@ export async function runBackgroundCommand(
   const paths = servicePaths(options.configHome ?? resolveConfigHome(baseEnv));
   const output = options.output ?? process.stdout;
   if (command === 'status') {
-    const report = statusReport(command, paths);
+    const report = statusReport(command, paths, baseEnv);
     output.write(options.jsonOutput ? `${JSON.stringify(report, null, 2)}\n` : formatStatus(report));
     return report;
   }
   if (command === 'stop') {
-    const report = await stopService(paths);
+    const report = await stopService(paths, baseEnv);
     output.write(report.running ? '❌ Bridge 未能停止。\n' : '✅ Bridge 后台服务已停止。\n');
     return report;
   }
   if (command === 'restart') {
-    await stopService(paths);
+    await stopService(paths, baseEnv);
     const report = startService(paths, options, baseEnv, 'restart');
     output.write(formatStarted(report, '重启'));
     return report;
@@ -69,12 +71,12 @@ export async function runBackgroundCommand(
     const args = ['install', '-g', UPDATE_REPOSITORY];
     if (options.forceUpdate) args.push('--force');
     (options.executeFile ?? execFileSync)(npm, args, { stdio: 'inherit' });
-    await stopService(paths);
+    await stopService(paths, baseEnv);
     const report = startService(paths, options, baseEnv, 'update');
     output.write(formatStarted(report, '更新并重启'));
     return report;
   }
-  const existing = statusReport('start', paths);
+  const existing = statusReport('start', paths, baseEnv);
   if (existing.running) {
     output.write(`ℹ️ Bridge 已在后台运行，PID: ${existing.pid}\n`);
     return existing;
@@ -109,24 +111,35 @@ function startService(
   baseEnv: NodeJS.ProcessEnv,
   command: BackgroundCommand,
 ): BackgroundServiceReport {
-  mkdirSync(paths.logsDir, { recursive: true, mode: 0o700 });
-  const stdout = openSync(paths.stdoutLog, 'a', 0o600);
-  const stderr = openSync(paths.stderrLog, 'a', 0o600);
+  const loggingEnabled = resolveLoggingEnabled(paths.configHome, baseEnv);
+  let stdout: number | undefined;
+  let stderr: number | undefined;
   let child: ChildProcess;
   try {
+    if (loggingEnabled) {
+      mkdirSync(paths.logsDir, { recursive: true, mode: 0o700 });
+      stdout = openSync(paths.stdoutLog, 'a', 0o600);
+      stderr = openSync(paths.stderrLog, 'a', 0o600);
+    }
     child = (options.spawnProcess ?? spawn)(
       process.execPath,
       [options.entryPath ?? resolve(__dirname, 'cli.js'), 'supervise'],
       {
         cwd: process.cwd(),
         detached: true,
-        stdio: ['ignore', stdout, stderr],
+        stdio: loggingEnabled
+          ? ['ignore', stdout!, stderr!]
+          : ['ignore', 'ignore', 'ignore'],
         env: { ...baseEnv, BRIDGE_CONFIG_HOME: paths.configHome },
       },
     );
   } finally {
-    closeSync(stdout);
-    closeSync(stderr);
+    if (stdout !== undefined) {
+      closeSync(stdout);
+    }
+    if (stderr !== undefined) {
+      closeSync(stderr);
+    }
   }
   if (!child.pid) {
     throw new Error('无法获取 Bridge 后台进程 PID');
@@ -137,23 +150,27 @@ function startService(
     command,
     running: true,
     pid: child.pid,
+    loggingEnabled,
     stdoutLog: paths.stdoutLog,
     stderrLog: paths.stderrLog,
     health: null,
   };
 }
 
-async function stopService(paths: ServicePaths): Promise<BackgroundServiceReport> {
+async function stopService(
+  paths: ServicePaths,
+  baseEnv: NodeJS.ProcessEnv,
+): Promise<BackgroundServiceReport> {
   const pid = readPid(paths.pidFile);
   if (!pid || !isProcessAlive(pid)) {
     removePidFile(paths.pidFile);
-    return statusReport('stop', paths);
+    return statusReport('stop', paths, baseEnv);
   }
   try {
     process.kill(pid, 'SIGTERM');
   } catch {
     removePidFile(paths.pidFile);
-    return statusReport('stop', paths);
+    return statusReport('stop', paths, baseEnv);
   }
   const deadline = Date.now() + STOP_WAIT_MS;
   while (Date.now() < deadline && isProcessAlive(pid)) {
@@ -167,10 +184,14 @@ async function stopService(paths: ServicePaths): Promise<BackgroundServiceReport
     }
   }
   removePidFile(paths.pidFile);
-  return statusReport('stop', paths);
+  return statusReport('stop', paths, baseEnv);
 }
 
-function statusReport(command: BackgroundCommand, paths: ServicePaths): BackgroundServiceReport {
+function statusReport(
+  command: BackgroundCommand,
+  paths: ServicePaths,
+  baseEnv: NodeJS.ProcessEnv,
+): BackgroundServiceReport {
   const pid = readPid(paths.pidFile);
   const running = pid !== null && isProcessAlive(pid);
   if (pid !== null && !running) removePidFile(paths.pidFile);
@@ -179,10 +200,23 @@ function statusReport(command: BackgroundCommand, paths: ServicePaths): Backgrou
     command,
     running,
     pid: running ? pid : null,
+    loggingEnabled: resolveLoggingEnabled(paths.configHome, baseEnv),
     stdoutLog: paths.stdoutLog,
     stderrLog: paths.stderrLog,
     health: health?.supervisorPid === pid && isProcessAlive(health.pid) ? health : null,
   };
+}
+
+function resolveLoggingEnabled(configHome: string, baseEnv: NodeJS.ProcessEnv): boolean {
+  try {
+    const env = loadBridgeEnvironment({
+      ...baseEnv,
+      BRIDGE_CONFIG_HOME: configHome,
+    });
+    return env.LOG_TO_FILE?.trim() === 'true';
+  } catch {
+    return false;
+  }
 }
 
 function readPid(pidFile: string): number | null {
@@ -206,10 +240,14 @@ function delay(milliseconds: number): Promise<void> {
 function formatStatus(report: BackgroundServiceReport): string {
   const runtimeStatus = report.health?.status ?? 'unknown';
   return report.running
-    ? `🟢 Bridge 进程正在运行，PID: ${report.pid}\n运行状态: ${runtimeStatus}\n标准日志: ${report.stdoutLog}\n错误日志: ${report.stderrLog}\n`
+    ? report.loggingEnabled
+      ? `🟢 Bridge 进程正在运行，PID: ${report.pid}\n运行状态: ${runtimeStatus}\n标准日志: ${report.stdoutLog}\n错误日志: ${report.stderrLog}\n`
+      : `🟢 Bridge 进程正在运行，PID: ${report.pid}\n运行状态: ${runtimeStatus}\n日志: 已关闭\n`
     : '🔴 Bridge 当前未在后台运行。\n';
 }
 
 function formatStarted(report: BackgroundServiceReport, action: string): string {
-  return `✅ Bridge 已${action}，PID: ${report.pid}\n标准日志: ${report.stdoutLog}\n错误日志: ${report.stderrLog}\n`;
+  return report.loggingEnabled
+    ? `✅ Bridge 已${action}，PID: ${report.pid}\n标准日志: ${report.stdoutLog}\n错误日志: ${report.stderrLog}\n`
+    : `✅ Bridge 已${action}，PID: ${report.pid}\n日志: 已关闭\n`;
 }

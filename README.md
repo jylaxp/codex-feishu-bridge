@@ -126,7 +126,7 @@ CODEX_BIN=/absolute/path/to/codex
 # 可省略；默认使用 ~/.codex-feishu-bridge
 CODEX_CWD=/absolute/path/to/default/directory
 
-# 旧配置语义继续保留
+# 旧配置键继续保留
 RATE_LIMIT_QUERY_INTERVAL_MS=300000
 LOG_TO_FILE=false
 LOG_FILE_PATH=bridge.log
@@ -138,7 +138,7 @@ ALLOWED_SHELL_COMMANDS=ls,pwd,git,find,cd
 
 `APPROVAL_SUMMARY_MODE=0`（或留空）时，保持原应用的审批投递方式：每次审批都会发出一张独立审批卡。设为 `1` 时，同一个任务只保留一张审批汇总卡；后续审批会更新到该卡中，每个审批区块仍独立显示命令、原因和三个操作按钮。无论哪种模式，任一审批作出选择后，该审批区块的全部按钮都会禁用。
 
-`LOG_TO_FILE=true` 时，Bridge 写脱敏、轮转的运行日志；相对 `LOG_FILE_PATH` 位于 config-home 的 `logs/`，绝对路径按用户显式配置处理。日志不会记录 prompt、回复或 CardKit payload。`ENABLE_AUTO_FILE_UPLOAD=true` 时，最终回复中指向绝对本地路径的非图片 Markdown 文件会作为同一飞书话题的文件回复上传；文件数量、类型和大小校验仍然保留，该信息不会保存到 Bridge 文件。
+`LOG_TO_FILE` 是全部运行日志的总开关。设为 `false` 时，INFO、WARN、ERROR 以及飞书 SDK 运行日志均不写文件、也不输出到标准输出；设为 `true` 时，Bridge 将脱敏日志写入轮转文件。相对 `LOG_FILE_PATH` 位于 config-home 的 `logs/`，绝对路径按用户显式配置处理。日志不会记录 prompt、回复或 CardKit payload。CLI 命令结果（例如 `status`、`doctor`）属于用户请求的输出，不受日志开关影响。`ENABLE_AUTO_FILE_UPLOAD=true` 时，最终回复中指向绝对本地路径的非图片 Markdown 文件会作为同一飞书话题的文件回复上传；文件数量、类型和大小校验仍然保留，该信息不会保存到 Bridge 文件。
 
 持久业务数据只有 `.env` 和 `bindings.json`。Bridge 不创建 SQLite、WAL、任务历史或恢复队列。后台模式还会生成 `bridge.pid`、`runtime-health.json` 和 `logs/`；健康快照只记录连接状态、协议标识和任务计数，不保存 prompt、模型回复、推理、工具输出或卡片 payload。Bridge 崩溃/重启、Desktop 断开或网络结果未知时，当前进程内任务直接停止跟踪且绝不自动重放，用户可在 ChatGPT Desktop 继续处理或重新从飞书发送。
 
@@ -163,9 +163,12 @@ node dist/app/cli.js run
 codex-feishu-bridge start
 ```
 
-后台启动会写入：
+后台启动始终写入 PID：
 
 - PID：`~/.codex-feishu-bridge/bridge.pid`
+
+仅当 `LOG_TO_FILE=true` 时，后台进程才创建并追加：
+
 - 标准日志：`~/.codex-feishu-bridge/logs/bridge_stdout.log`
 - 错误日志：`~/.codex-feishu-bridge/logs/bridge_stderr.log`
 
@@ -221,7 +224,7 @@ codex-feishu-bridge compatibility --approve
 `appServerIdentityAssurance`。doctor 只做本机探测；正式启动还会用 initialize identity 核对实际 App Server
 版本。`managed_proxy` 的 assurance 会明确显示为操作员信任的版本佐证，而不是远端 schema 证明。
 
-实时查看日志：
+`LOG_TO_FILE=true` 时可实时查看后台输出日志：
 
 ```bash
 tail -f ~/.codex-feishu-bridge/logs/bridge_stdout.log

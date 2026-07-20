@@ -10,7 +10,7 @@ import {
   adapterForAppServerProfile,
   type AppServerRequestClient,
 } from './codex/app-server-control-plane';
-import { DesktopIpcClient } from './codex/desktop-ipc-client';
+import { DesktopIpcClient, DesktopIpcRequestError } from './codex/desktop-ipc-client';
 import { DESKTOP_IPC_CONTRACT } from './codex/desktop-ipc-contract';
 import { DesktopIpcSupervisor } from './codex/desktop-ipc-supervisor';
 import type { DesktopIpcSupervisorState } from './codex/desktop-ipc-supervisor';
@@ -23,7 +23,10 @@ import { BridgeCommandService } from './command-service';
 import { ConversationBindingServiceV3 } from './conversation-binding-service-v3';
 import { DesktopApprovalService } from './desktop-approval-service';
 import { BridgeConfig } from './domain';
-import { InMemoryOrchestrator } from './in-memory-orchestrator';
+import {
+  InMemoryOrchestrator,
+  type DesktopDeliveryOutcome,
+} from './in-memory-orchestrator';
 import { CachedTenantTokenProvider, createLarkRuntimeClients } from './lark/client';
 import {
   LarkMessageAcknowledgement,
@@ -41,6 +44,8 @@ import { acquireConfigResetExclusion } from './config-reset';
 import {
   RuntimeHealthPublisher,
   RuntimeHealthStore,
+  resolveRuntimeHealthStatus,
+  type DesktopRouteState,
   type RuntimeHealthSnapshot,
 } from './runtime-health';
 import type { LarkWebsocketConnectionSnapshot } from './lark/client';
@@ -119,20 +124,23 @@ export async function startBridge(
   let appServerState: RuntimeHealthSnapshot['appServer']['state'] = 'starting';
   let desktopState: DesktopIpcSupervisorState = 'STOPPED';
   let desktopEpoch: number | null = null;
+  let desktopRouteState: DesktopRouteState = 'unknown';
+  let lastDesktopDeliveryErrorCode: string | null = null;
+  const unavailableDesktopThreads = new Set<string>();
   let larkConnection: LarkWebsocketConnectionSnapshot = Object.freeze({
     state: 'idle',
     reconnectCount: 0,
     connectedAtMs: null,
   });
   const writeHealth = (): void => {
-    const status = runtimeStopped
-      ? 'stopped'
-      : runtimeStarted
-        && appServerState === 'ready'
-        && desktopState === 'READY'
-        && larkConnection.state === 'ready'
-        ? 'ready'
-        : runtimeStarted ? 'degraded' : 'starting';
+    const status = resolveRuntimeHealthStatus({
+      runtimeStarted,
+      runtimeStopped,
+      appServerState,
+      desktopState,
+      desktopRouteState,
+      larkState: larkConnection.state,
+    });
     try {
       healthStore.write(Object.freeze({
         schemaVersion: 1,
@@ -150,6 +158,9 @@ export async function startBridge(
           state: desktopState,
           epoch: desktopEpoch,
           contractId: DESKTOP_IPC_CONTRACT.id,
+          routeState: desktopRouteState,
+          unavailableThreadCount: unavailableDesktopThreads.size,
+          lastDeliveryErrorCode: lastDesktopDeliveryErrorCode,
         }),
         lark: larkConnection,
         tasks: orchestrator?.runtimeTaskHealth()
@@ -161,6 +172,53 @@ export async function startBridge(
   };
   const healthPublisher = new RuntimeHealthPublisher(writeHealth);
   const publishHealth = (): void => healthPublisher.request();
+  const updateDesktopDeliveryHealth = (outcome: DesktopDeliveryOutcome): void => {
+    const fields = {
+      operation: outcome.operation,
+      threadId: outcome.threadId,
+      chatId: outcome.chatId,
+      messageId: outcome.messageId,
+    };
+    if (outcome.status === 'succeeded') {
+      unavailableDesktopThreads.delete(outcome.threadId);
+      desktopRouteState = unavailableDesktopThreads.size > 0 ? 'unavailable' : 'ready';
+      if (unavailableDesktopThreads.size === 0) {
+        lastDesktopDeliveryErrorCode = null;
+      }
+      logger.info('desktop_delivery_succeeded', fields);
+      return;
+    }
+
+    const error = outcome.error;
+    if (error instanceof DesktopIpcRequestError) {
+      lastDesktopDeliveryErrorCode = error.remoteError ?? error.code;
+      if (error.disposition === 'PROVABLY_UNSENT') {
+        unavailableDesktopThreads.add(outcome.threadId);
+      } else if (error.disposition === 'DEFINITIVE_FAILURE') {
+        unavailableDesktopThreads.delete(outcome.threadId);
+      }
+      desktopRouteState = unavailableDesktopThreads.size > 0
+        ? 'unavailable'
+        : error.disposition === 'OUTCOME_UNKNOWN' ? 'unknown' : 'ready';
+      logger.error('desktop_delivery_failed', error, {
+        ...fields,
+        disposition: error.disposition,
+        remoteError: error.remoteError,
+        routeState: desktopRouteState,
+      });
+      return;
+    }
+
+    unavailableDesktopThreads.add(outcome.threadId);
+    desktopRouteState = 'unavailable';
+    lastDesktopDeliveryErrorCode = 'DESKTOP_IPC_LOCAL_ERROR';
+    logger.error('desktop_delivery_failed', error, {
+      ...fields,
+      disposition: 'PROVABLY_UNSENT',
+      remoteError: null,
+      routeState: desktopRouteState,
+    });
+  };
   healthPublisher.flush();
   let desktopThreadFollowingWrite = Promise.resolve();
   const syncDesktopThreadFollowing = async (): Promise<void> => {
@@ -224,6 +282,10 @@ export async function startBridge(
       void syncDesktopThreadFollowing();
     },
     onRuntimeHealthChanged: publishHealth,
+    onDesktopDeliveryOutcome: (outcome) => {
+      updateDesktopDeliveryHealth(outcome);
+      publishHealth();
+    },
   });
   const approvals = new DesktopApprovalService(config, desktop, cards, orchestrator);
   const conversationBindings = new ConversationBindingServiceV3(
@@ -261,6 +323,9 @@ export async function startBridge(
     onReady: (handshake) => {
       desktopState = 'READY';
       desktopEpoch = handshake.epoch;
+      desktopRouteState = 'unknown';
+      lastDesktopDeliveryErrorCode = null;
+      unavailableDesktopThreads.clear();
       normalizer.beginEpoch(handshake.epoch);
       logger.info('desktop_ipc_ready', { epoch: handshake.epoch });
       publishHealth();
@@ -268,6 +333,9 @@ export async function startBridge(
     onDisconnected: async (epoch) => {
       desktopState = 'RECONNECTING';
       desktopEpoch = epoch;
+      desktopRouteState = 'unknown';
+      lastDesktopDeliveryErrorCode = null;
+      unavailableDesktopThreads.clear();
       normalizer.reset();
       approvals.abandonAll();
       orchestrator.abandonAll();
@@ -307,6 +375,12 @@ export async function startBridge(
   };
   const eventServer = new LarkEventServer(lark.websocket, config, {
     onMessage: async (message) => {
+      logger.info('lark_text_message_accepted', {
+        tenantKey: message.tenantKey,
+        chatId: message.chatId,
+        messageId: message.messageId,
+        eventId: message.eventId,
+      });
       void acknowledgements.ack(message);
       void processInboundMessage(message).catch((error: unknown) => {
         logger.error('lark_async_message_failed', toError(error), {
@@ -338,6 +412,7 @@ export async function startBridge(
     },
     onRejectedEvent: (reason) => logger.warn('lark_event_rejected', { reason }),
     onHandlerError: (kind, error) => logger.error('lark_event_handler_failed', error, { kind }),
+    onSdkLog: (level) => logger.warn(`lark_sdk_${level}`),
     onScopeBound: (nextConfig) => {
       Object.assign(config, {
         larkTenantKey: nextConfig.larkTenantKey,
@@ -382,6 +457,9 @@ export async function startBridge(
     runtimeStopped = true;
     appServerState = 'stopped';
     desktopState = 'STOPPED';
+    desktopRouteState = 'unknown';
+    lastDesktopDeliveryErrorCode = null;
+    unavailableDesktopThreads.clear();
     await stopResources(
       eventServer,
       desktopSupervisor,
@@ -406,6 +484,9 @@ export async function startBridge(
       runtimeStopped = true;
       appServerState = 'stopped';
       desktopState = 'STOPPED';
+      desktopRouteState = 'unknown';
+      lastDesktopDeliveryErrorCode = null;
+      unavailableDesktopThreads.clear();
       await stopResources(
         eventServer,
         desktopSupervisor,

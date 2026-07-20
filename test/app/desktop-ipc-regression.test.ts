@@ -8,6 +8,7 @@ import { CardKitError } from '../../src/app/cards/cardkit-client';
 import type { CardKitJson } from '../../src/app/cards/layouts';
 import {
   DesktopIpcClient,
+  DesktopIpcRequestError,
   type DesktopThreadStreamBroadcast,
 } from '../../src/app/codex/desktop-ipc-client';
 import type {
@@ -30,6 +31,7 @@ import {
 import type { BridgeConfig } from '../../src/app/domain';
 import {
   InMemoryOrchestrator,
+  type DesktopDeliveryOutcome,
   type DesktopTurnClient,
   type InMemoryCardClient,
 } from '../../src/app/in-memory-orchestrator';
@@ -316,6 +318,68 @@ test('orchestrator uses App Server callbacks only for metadata and never replays
   orchestrator.abandonAll();
 });
 
+test('orchestrator exposes an unavailable Desktop owner in health callbacks and the failure card', async () => {
+  const desktop = new RejectingDesktopTurnClient();
+  const cards = new RecordingCards();
+  const deliveryOutcomes: DesktopDeliveryOutcome[] = [];
+  const orchestrator = new InMemoryOrchestrator(config, desktop, cards, {
+    onDesktopDeliveryOutcome: (outcome) => deliveryOutcomes.push(outcome),
+  });
+
+  assert.equal(await orchestrator.handleInbound(inbound('owner-missing', 'start'), binding), 'started');
+  await waitFor(() => cards.replacements.length > 0);
+
+  assert.deepEqual(deliveryOutcomes.map((outcome) => ({
+    operation: outcome.operation,
+    status: outcome.status,
+    threadId: outcome.threadId,
+    chatId: outcome.chatId,
+    messageId: outcome.messageId,
+    code: outcome.status === 'failed' && outcome.error instanceof DesktopIpcRequestError
+      ? outcome.error.code
+      : null,
+    remoteError: outcome.status === 'failed' && outcome.error instanceof DesktopIpcRequestError
+      ? outcome.error.remoteError
+      : null,
+  })), [{
+    operation: 'start',
+    status: 'failed',
+    threadId: 'thread-bound',
+    chatId: 'chat',
+    messageId: 'message-owner-missing',
+    code: 'DESKTOP_IPC_REMOTE_REJECTED',
+    remoteError: 'no-client-found',
+  }]);
+  assert.match(
+    JSON.stringify(cards.replacements.at(-1)),
+    /任务启动未发送到 ChatGPT Desktop（no-client-found）/,
+  );
+  orchestrator.abandonAll();
+});
+
+test('Desktop delivery observers cannot change start, steer, or interrupt semantics', async () => {
+  const desktop = new RecordingDesktopTurnClient();
+  const orchestrator = new InMemoryOrchestrator(config, desktop, new RecordingCards(), {
+    onDesktopDeliveryOutcome: () => {
+      throw new Error('diagnostic observer failed');
+    },
+  });
+
+  assert.equal(await orchestrator.handleInbound(inbound('observer-1', 'start'), binding), 'started');
+  assert.equal(
+    await orchestrator.handleInbound(
+      inbound('observer-2', 'follow up', 'root-observer-1'),
+      binding,
+    ),
+    'steered',
+  );
+  assert.equal(await orchestrator.cancelCurrent('chat', 'thread-bound'), true);
+  assert.equal(desktop.starts.length, 1);
+  assert.equal(desktop.steers.length, 1);
+  assert.deepEqual(desktop.interrupts, [{ threadId: 'thread-bound', turnId: 'turn-1' }]);
+  orchestrator.abandonAll();
+});
+
 test('orchestrator keeps a thread active while handing off to its next queued task', async () => {
   const desktop = new RecordingDesktopTurnClient();
   const activeThreadSnapshots: string[][] = [];
@@ -480,6 +544,21 @@ class RecordingDesktopTurnClient implements DesktopTurnClient {
 
   async interruptTurnTracked(params: TurnInterruptParams): Promise<void> {
     this.interrupts.push(params);
+  }
+}
+
+class RejectingDesktopTurnClient extends RecordingDesktopTurnClient {
+  override async startTurnTracked(params: TurnStartParams): Promise<Turn> {
+    this.starts.push(params);
+    throw new DesktopIpcRequestError(
+      'DESKTOP_IPC_REMOTE_REJECTED',
+      'PROVABLY_UNSENT',
+      7,
+      'thread-follower-start-turn',
+      'request-owner-missing',
+      undefined,
+      'no-client-found',
+    );
   }
 }
 

@@ -74,7 +74,22 @@ export interface InMemoryOrchestratorOptions {
   readonly onActiveThreadsChanged?: () => void;
   /** Publishes content-free task counters when queue or delivery state changes. */
   readonly onRuntimeHealthChanged?: () => void;
+  /** Reports content-free Desktop delivery outcomes for logs and runtime health. */
+  readonly onDesktopDeliveryOutcome?: (outcome: DesktopDeliveryOutcome) => void;
 }
+
+export type DesktopDeliveryOperation = 'start' | 'steer' | 'interrupt';
+
+interface DesktopDeliveryOutcomeBase {
+  readonly operation: DesktopDeliveryOperation;
+  readonly threadId: string;
+  readonly chatId: string;
+  readonly messageId: string;
+}
+
+export type DesktopDeliveryOutcome =
+  | DesktopDeliveryOutcomeBase & { readonly status: 'succeeded' }
+  | DesktopDeliveryOutcomeBase & { readonly status: 'failed'; readonly error: unknown };
 
 export type InMemoryInboundOutcome =
   | 'started'
@@ -180,6 +195,7 @@ export class InMemoryOrchestrator {
   private readonly readThreadTitle: ((threadId: string) => Promise<string | null>) | undefined;
   private readonly onActiveThreadsChanged: () => void;
   private readonly onRuntimeHealthChanged: () => void;
+  private readonly onDesktopDeliveryOutcome: (outcome: DesktopDeliveryOutcome) => void;
   private readonly tasksById = new Map<string, RuntimeTask>();
   private readonly scheduler = new ThreadTaskScheduler<RuntimeTask, {
     readonly message: InboundTextMessage;
@@ -207,6 +223,7 @@ export class InMemoryOrchestrator {
     this.readThreadTitle = options.readThreadTitle;
     this.onActiveThreadsChanged = options.onActiveThreadsChanged ?? (() => undefined);
     this.onRuntimeHealthChanged = options.onRuntimeHealthChanged ?? (() => undefined);
+    this.onDesktopDeliveryOutcome = options.onDesktopDeliveryOutcome ?? (() => undefined);
     this.cardRetryDelayMs = options.cardRetryDelayMs ?? CARD_RETRY_BASE_DELAY_MS;
   }
 
@@ -272,7 +289,9 @@ export class InMemoryOrchestrator {
     ) {
       try {
         await this.desktop.steerTurnTracked(buildSteer(active, message, binding), () => undefined);
+        this.reportDesktopDelivery('steer', 'succeeded', active, message.messageId);
       } catch (error) {
+        this.reportDesktopDelivery('steer', 'failed', active, message.messageId, error);
         active.tools = deliveryFailureText(error, '补充消息');
         this.requestCardUpdate(active, true);
       }
@@ -370,7 +389,9 @@ export class InMemoryOrchestrator {
           threadId: task.binding.threadId,
           turnId: task.turnId,
         }, () => undefined);
+        this.reportDesktopDelivery('interrupt', 'succeeded', task, task.message.messageId);
       } catch (error) {
+        this.reportDesktopDelivery('interrupt', 'failed', task, task.message.messageId, error);
         return this.handleInterruptDeliveryFailure(task, error);
       }
     }
@@ -397,7 +418,9 @@ export class InMemoryOrchestrator {
     if (task.turnId) {
       try {
         await this.desktop.interruptTurnTracked({ threadId, turnId: task.turnId }, () => undefined);
+        this.reportDesktopDelivery('interrupt', 'succeeded', task, task.message.messageId);
       } catch (error) {
+        this.reportDesktopDelivery('interrupt', 'failed', task, task.message.messageId, error);
         return this.handleInterruptDeliveryFailure(task, error);
       }
     }
@@ -547,25 +570,11 @@ export class InMemoryOrchestrator {
     this.tasksById.set(id, task);
     this.activateTask(task);
     void this.refreshRateLimits(task);
+    let turn: Turn;
     try {
-      const turn = await this.desktop.startTurnTracked(buildStart(task), () => undefined);
-      task.turnId = turn.id;
-      if (task.cancelRequested) {
-        await this.desktop.interruptTurnTracked({
-          threadId: task.binding.threadId,
-          turnId: task.turnId,
-        }, () => undefined);
-        task.status = 'INTERRUPTED';
-        task.completedAtMs ??= this.now();
-        await this.flushCard(task, true);
-        this.finish(task);
-        return 'started';
-      }
-      task.status = 'RUNNING';
-      this.replayPending(task);
-      this.requestCardUpdate(task, true);
-      return 'started';
+      turn = await this.desktop.startTurnTracked(buildStart(task), () => undefined);
     } catch (error) {
+      this.reportDesktopDelivery('start', 'failed', task, task.message.messageId, error);
       task.status = task.cancelRequested ? 'INTERRUPTED' : 'FAILED';
       task.completedAtMs ??= this.now();
       task.tools = task.cancelRequested
@@ -574,6 +583,54 @@ export class InMemoryOrchestrator {
       await this.flushCard(task, true);
       this.finish(task);
       return 'started';
+    }
+
+    this.reportDesktopDelivery('start', 'succeeded', task, task.message.messageId);
+    task.turnId = turn.id;
+    if (task.cancelRequested) {
+      try {
+        await this.desktop.interruptTurnTracked({
+          threadId: task.binding.threadId,
+          turnId: task.turnId,
+        }, () => undefined);
+        this.reportDesktopDelivery('interrupt', 'succeeded', task, task.message.messageId);
+      } catch (error) {
+        this.reportDesktopDelivery('interrupt', 'failed', task, task.message.messageId, error);
+        task.tools = deliveryFailureText(error, '取消请求');
+      }
+      task.status = 'INTERRUPTED';
+      task.completedAtMs ??= this.now();
+      await this.flushCard(task, true);
+      this.finish(task);
+      return 'started';
+    }
+    task.status = 'RUNNING';
+    this.replayPending(task);
+    this.requestCardUpdate(task, true);
+    return 'started';
+  }
+
+  private reportDesktopDelivery(
+    operation: DesktopDeliveryOperation,
+    status: DesktopDeliveryOutcome['status'],
+    task: RuntimeTask,
+    messageId: string,
+    error?: unknown,
+  ): void {
+    const identity = {
+      operation,
+      threadId: task.binding.threadId,
+      chatId: task.message.chatId,
+      messageId,
+    };
+    try {
+      if (status === 'failed') {
+        this.onDesktopDeliveryOutcome({ ...identity, status, error });
+        return;
+      }
+      this.onDesktopDeliveryOutcome({ ...identity, status });
+    } catch {
+      // Delivery observers are diagnostic only and must never change task semantics.
     }
   }
 
@@ -1073,6 +1130,9 @@ function taskCard(
 ): CardKitJson {
   const terminal = TERMINAL.has(status);
   const tools = toolProjection(toolExecutions, toolError);
+  const projectedFinalAnswer = status === 'FAILED' && !finalAnswer.trim() && toolError.trim()
+    ? toolError
+    : finalAnswer;
   const metadata = usage
     ? taskMetadataForBinding(usage.binding)
     : binding
@@ -1093,7 +1153,7 @@ function taskCard(
       toolCount: tools.count,
       toolGroups: tools.groups,
       timeline: timelineProjection(usage?.timeline ?? []),
-      finalAnswer: sanitizeCardMarkdown(finalAnswer, { maxLength: 10_000 }),
+      finalAnswer: sanitizeCardMarkdown(projectedFinalAnswer, { maxLength: 10_000 }),
       footer: sanitizeCardPlainText(formatFooter(status, startedAtMs, usage), { maxLength: 500 }),
       terminal,
     }),
@@ -1889,10 +1949,14 @@ function deliveryFailureText(error: unknown, operation: string): string {
     return `${operation}失败；Desktop IPC 发生本地错误，Bridge 不会自动重试。`;
   }
   if (error.disposition === 'PROVABLY_UNSENT') {
-    return `${operation}未发送到 ChatGPT Desktop（${error.code}）；请在连接恢复后重新发送。`;
+    return `${operation}未发送到 ChatGPT Desktop（${deliveryFailureCode(error)}）；请打开绑定任务后重新发送。`;
   }
   if (error.disposition === 'DEFINITIVE_FAILURE') {
-    return `${operation}被 ChatGPT Desktop 明确拒绝（${error.code}）；Bridge 不会重试。`;
+    return `${operation}被 ChatGPT Desktop 明确拒绝（${deliveryFailureCode(error)}）；Bridge 不会重试。`;
   }
-  return `${operation}的 Desktop 送达结果无法确认（${error.code}）；为避免重复执行，Bridge 不会自动重试。`;
+  return `${operation}的 Desktop 送达结果无法确认（${deliveryFailureCode(error)}）；为避免重复执行，Bridge 不会自动重试。`;
+}
+
+function deliveryFailureCode(error: DesktopIpcRequestError): string {
+  return error.remoteError ?? error.code;
 }

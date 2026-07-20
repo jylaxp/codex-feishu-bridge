@@ -340,7 +340,7 @@ function renderManagedEnvironment(source: string): string {
     value('RATE_LIMIT_QUERY_INTERVAL_MS'),
     '',
     '# ==================== 日志与文件输出 ====================',
-    '# true 时写入日志文件；false 时输出到标准输出。',
+    '# true 时启用全部运行日志并写入文件；false 时关闭全部运行日志。',
     value('LOG_TO_FILE'),
     '# 相对路径位于 Bridge 配置目录下，启用文件日志时生效。',
     value('LOG_FILE_PATH'),

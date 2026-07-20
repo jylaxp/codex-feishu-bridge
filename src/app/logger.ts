@@ -12,14 +12,22 @@ export interface BridgeLoggerOptions {
   readonly logFilePath: string | null;
 }
 
+export interface BridgeLogOutput {
+  write(value: string): unknown;
+}
+
 /** Minimal structured logger which accepts only curated scalar fields. */
 export class BridgeLogger {
+  private enabled = false;
   private filePath: string | undefined;
 
-  /** Enables legacy file logging after trusted preflight has resolved config home. */
+  public constructor(private readonly output: BridgeLogOutput = process.stdout) {}
+
+  /** Enables or disables all runtime logs after trusted preflight resolves config home. */
   public configure(options: BridgeLoggerOptions): void {
+    this.enabled = false;
+    this.filePath = undefined;
     if (!options.logToFile) {
-      this.filePath = undefined;
       return;
     }
     const requested = options.logFilePath ?? 'bridge.log';
@@ -31,6 +39,7 @@ export class BridgeLogger {
     }
     mkdirSync(dirname(resolved), { recursive: true, mode: 0o700 });
     this.filePath = resolved;
+    this.enabled = true;
   }
   public info(event: string, fields: LogFields = {}): void {
     this.write('info', event, fields);
@@ -46,19 +55,29 @@ export class BridgeLogger {
   }
 
   private write(level: string, event: string, fields: LogFields): void {
-    const record = {
-      timestamp: new Date().toISOString(),
-      level,
-      event: normalizeEventName(event),
-      ...fields,
-    };
-    const line = `${JSON.stringify(record)}\n`;
-    if (!this.filePath) {
-      process.stdout.write(line);
+    if (!this.enabled) {
       return;
     }
-    rotateIfNeeded(this.filePath, Buffer.byteLength(line, 'utf8'));
-    appendFileSync(this.filePath, line, { encoding: 'utf8', mode: 0o600 });
+    try {
+      const record = {
+        timestamp: new Date().toISOString(),
+        level,
+        event: normalizeEventName(event),
+        ...fields,
+      };
+      const line = `${JSON.stringify(record)}\n`;
+      if (!this.filePath) {
+        this.output.write(line);
+        return;
+      }
+      rotateIfNeeded(this.filePath, Buffer.byteLength(line, 'utf8'));
+      appendFileSync(this.filePath, line, { encoding: 'utf8', mode: 0o600 });
+    } catch {
+      // Logging is diagnostic only. Disable the failed destination so storage or
+      // output errors can never interrupt message delivery or shutdown handling.
+      this.enabled = false;
+      this.filePath = undefined;
+    }
   }
 }
 

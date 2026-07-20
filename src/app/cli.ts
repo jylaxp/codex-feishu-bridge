@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { BridgeLogger } from './logger';
+import { parseEnvironment } from './config';
 import {
   type BackgroundCommand,
   type BackgroundServiceOptions,
@@ -53,6 +54,7 @@ export interface ShutdownSignalWaiter {
 }
 
 export interface CliDependencies {
+  readonly logger?: BridgeLogger;
   readonly startBridge?: (env: NodeJS.ProcessEnv) => Promise<CliRuntime>;
   readonly createShutdownSignalWaiter?: () => ShutdownSignalWaiter;
   readonly runSetup?: (options: SetupOptions, env: NodeJS.ProcessEnv) => Promise<SetupReport>;
@@ -77,6 +79,7 @@ export async function runCli(
   const runtimeEnv = parsed.configHome
     ? { ...baseEnv, BRIDGE_CONFIG_HOME: parsed.configHome }
     : baseEnv;
+  configureCliLogger(dependencies.logger, runtimeEnv);
   if (parsed.command === 'help') {
     process.stdout.write(helpText());
     return;
@@ -202,6 +205,22 @@ export async function runCli(
     }
   } finally {
     shutdown.dispose();
+  }
+}
+
+function configureCliLogger(logger: BridgeLogger | undefined, env: NodeJS.ProcessEnv): void {
+  if (!logger) {
+    return;
+  }
+  try {
+    const config = parseEnvironment(loadBridgeEnvironment(env));
+    logger.configure({
+      configHome: config.configHome ?? defaultConfigHome(),
+      logToFile: config.logToFile,
+      logFilePath: config.logFilePath,
+    });
+  } catch {
+    // The logger is fail-closed until a complete, valid logging configuration is loaded.
   }
 }
 
@@ -404,7 +423,7 @@ function helpText(): string {
 
 if (require.main === module) {
   const logger = new BridgeLogger();
-  void runCli().catch((error: unknown) => {
+  void runCli(undefined, process.env, { logger }).catch((error: unknown) => {
     logger.error('bridge_cli_failed', error);
     process.exitCode = 1;
   });

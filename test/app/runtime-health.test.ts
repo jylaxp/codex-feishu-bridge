@@ -6,6 +6,7 @@ import test from 'node:test';
 
 import {
   readRuntimeHealth,
+  resolveRuntimeHealthStatus,
   RuntimeHealthPublisher,
   RuntimeHealthStore,
   type RuntimeHealthSnapshot,
@@ -31,6 +32,9 @@ test('runtime health is atomic, content-free, and readable by status', () => {
         state: 'READY',
         epoch: 7,
         contractId: 'desktop-ipc-state-v11-following-v1',
+        routeState: 'ready',
+        unavailableThreadCount: 0,
+        lastDeliveryErrorCode: null,
       },
       lark: { state: 'ready', reconnectCount: 2, connectedAtMs: 1 },
       tasks: { active: 1, queued: 2, pendingCardDeliveries: 0 },
@@ -45,6 +49,36 @@ test('runtime health is atomic, content-free, and readable by status', () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('runtime status is degraded when Desktop is connected but its thread owner is unavailable', () => {
+  assert.equal(resolveRuntimeHealthStatus({
+    runtimeStarted: true,
+    runtimeStopped: false,
+    appServerState: 'ready',
+    desktopState: 'READY',
+    desktopRouteState: 'unavailable',
+    larkState: 'ready',
+  }), 'degraded');
+  assert.equal(resolveRuntimeHealthStatus({
+    runtimeStarted: true,
+    runtimeStopped: false,
+    appServerState: 'ready',
+    desktopState: 'READY',
+    desktopRouteState: 'ready',
+    larkState: 'ready',
+  }), 'ready');
+});
+
+test('runtime status remains degraded until Desktop route ownership is known', () => {
+  assert.equal(resolveRuntimeHealthStatus({
+    runtimeStarted: true,
+    runtimeStopped: false,
+    appServerState: 'ready',
+    desktopState: 'READY',
+    desktopRouteState: 'unknown',
+    larkState: 'ready',
+  }), 'degraded');
 });
 
 test('runtime health publisher coalesces bursty task updates', async () => {
@@ -83,6 +117,9 @@ test('background status rejects health from a dead supervised worker', async () 
         state: 'READY',
         epoch: 7,
         contractId: 'desktop-ipc-state-v11-following-v1',
+        routeState: 'unknown',
+        unavailableThreadCount: 0,
+        lastDeliveryErrorCode: null,
       },
       lark: { state: 'ready', reconnectCount: 0, connectedAtMs: 1 },
       tasks: { active: 0, queued: 0, pendingCardDeliveries: 0 },

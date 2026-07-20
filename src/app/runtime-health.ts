@@ -21,6 +21,19 @@ export interface RuntimeTaskHealth {
   readonly pendingCardDeliveries: number;
 }
 
+/** Whether a followed task thread currently has a routable ChatGPT Desktop owner. */
+export type DesktopRouteState = 'unknown' | 'ready' | 'unavailable';
+
+/** Content-free runtime signals used to derive the published readiness state. */
+export interface RuntimeHealthReadiness {
+  readonly runtimeStarted: boolean;
+  readonly runtimeStopped: boolean;
+  readonly appServerState: RuntimeHealthSnapshot['appServer']['state'];
+  readonly desktopState: DesktopIpcSupervisorState;
+  readonly desktopRouteState: DesktopRouteState;
+  readonly larkState: LarkWebsocketConnectionSnapshot['state'];
+}
+
 export interface RuntimeHealthSnapshot {
   readonly schemaVersion: 1;
   readonly pid: number;
@@ -37,9 +50,30 @@ export interface RuntimeHealthSnapshot {
     readonly state: DesktopIpcSupervisorState;
     readonly epoch: number | null;
     readonly contractId: DesktopIpcContract['id'];
+    readonly routeState: DesktopRouteState;
+    readonly unavailableThreadCount: number;
+    readonly lastDeliveryErrorCode: string | null;
   };
   readonly lark: LarkWebsocketConnectionSnapshot;
   readonly tasks: RuntimeTaskHealth;
+}
+
+/** Resolves readiness without treating an IPC handshake as proof of a routable Desktop owner. */
+export function resolveRuntimeHealthStatus(
+  readiness: RuntimeHealthReadiness,
+): RuntimeHealthSnapshot['status'] {
+  if (readiness.runtimeStopped) {
+    return 'stopped';
+  }
+  if (!readiness.runtimeStarted) {
+    return 'starting';
+  }
+  return readiness.appServerState === 'ready'
+    && readiness.desktopState === 'READY'
+    && readiness.desktopRouteState === 'ready'
+    && readiness.larkState === 'ready'
+    ? 'ready'
+    : 'degraded';
 }
 
 /** Persists a content-free, atomically replaced runtime health snapshot. */

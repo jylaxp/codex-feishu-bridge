@@ -93,7 +93,7 @@ export interface BridgeConfig {
   readonly maxQueuedTasks: number;
   /** Shared in-memory TTL for account/rate-limit reads. */
   readonly rateLimitQueryIntervalMs: number;
-  /** Legacy opt-in operational log switch. Logs never contain task payloads. */
+  /** Master switch for all operational logs. Logs never contain task payloads. */
   readonly logToFile: boolean;
   /** Optional log filename/path, resolved beneath the Bridge config home. */
   readonly logFilePath: string | null;
