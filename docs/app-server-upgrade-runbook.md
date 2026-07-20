@@ -104,9 +104,15 @@ turn/start
 
 1. 在 `src/app/codex/contract.ts` 增加精确 full schema digest；
 2. 在 `src/app/codex/app-server-protocol-registry.ts` 增加 exact version/profile；
-3. 增加 `test/fixtures/app-server/NEW_VERSION/manifest.json`、代表性消息和控制面响应；
+3. 增加 `test/fixtures/app-server/NEW_VERSION/manifest.json`，以及测试或协议审查实际消费的控制面响应、
+   schema comparison 等证据；
 4. 在 `adapterForAppServerProfile()` 增加穷举 mapping；
 5. 为 version/digest、cross-match、握手错配、adapter 和 15 方法补测试。
+
+fixture 必须保留 `manifest.json`，并保留已提交测试或协议审查实际消费的控制面/schema 证据。
+`representative-messages.json` 只在已提交测试或审计/复现流程存在明确消费者时保留。`0.144.3` 是有意的例外：
+它没有 representative messages 的消费者，因此只保留 manifest、控制面响应和 schema comparison；`0.145.0-alpha.18`
+的复现测试会比较 representative messages，所以该文件及通用 capture 输出必须继续保留。
 
 任何一步缺少真实 binary 证据，都只能保留为待验证实现，不能加入“支持”矩阵。
 

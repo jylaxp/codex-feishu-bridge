@@ -11,7 +11,7 @@
     "codex-feishu-bridge": "./dist/app/cli.js"
   },
   "files": [
-    "dist/app",
+    "dist/app/**/*.js",
     "README.md",
     ".env.example"
   ],
