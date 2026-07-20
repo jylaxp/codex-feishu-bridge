@@ -1,0 +1,35 @@
+scripts/check-package.mjs
+  s_c54cf697e76a51::t_8641cdcfc83137 21
+  s_c54cf697e76a51::t_a4973d326cf102 2,4,8-11,43-49,64-71,74
+  s_c54cf697e76a51::t_cccda56a307ed7 26,28,38-39,63,72-73
+  s_c54cf697e76a51::t_fa0dea34ddfd79 75
+test/scripts/package-contract.test.mjs
+  s_c54cf697e76a51::t_0e36f6811e3509 59-72,87-90,106
+  s_c54cf697e76a51::t_a5a1cf676fa923 102-103
+  s_c54cf697e76a51::t_a4973d326cf102 1-58,73-86,91-101,104-105,107-167
+package.json
+  s_c54cf697e76a51::t_cccda56a307ed7 14
+scripts/package-contract.mjs
+  s_c54cf697e76a51::t_a4973d326cf102 1-26,30-76,82-85,90-146,150-152
+  s_c54cf697e76a51::t_0e36f6811e3509 27-29,77-81,147-149
+  s_c54cf697e76a51::t_a5a1cf676fa923 86-89
+docs/app-server-upgrade-runbook.md
+  s_c54cf697e76a51::t_06f5e03d1a7603 107-108,112-115
+  s_c54cf697e76a51::t_79961696c0887d 116
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "0799ad38c8a01c4d9e663fbb4bfaec54f901ebea",
+  "prompts": {},
+  "sessions": {
+    "s_c54cf697e76a51": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5e80-7c30-7a71-a434-09aeae22cce8",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    }
+  }
+}
