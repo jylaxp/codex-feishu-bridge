@@ -89,9 +89,18 @@ export class CardKitClient {
     private readonly transformCard: (card: CardKitJson) => Promise<CardKitJson> = async (card) => card,
   ) {}
 
+  /** Applies every outbound card transform before size budgeting or delivery. */
+  public async renderCard(card: CardKitJson): Promise<CardKitJson> {
+    return this.transformCard(card);
+  }
+
   /** Creates a CardKit instance in streaming mode. */
   public async createCard(card: CardKitJson): Promise<string> {
-    const renderedCard = await this.transformCard(card);
+    return this.createRenderedCard(await this.renderCard(card));
+  }
+
+  /** Creates a CardKit instance from the exact snapshot that passed size validation. */
+  public async createRenderedCard(renderedCard: CardKitJson): Promise<string> {
     const payload = await this.request(CARDKIT_BASE_URL, {
       method: 'POST',
       body: JSON.stringify({ type: 'card_json', data: JSON.stringify(renderedCard) }),
@@ -181,7 +190,7 @@ export class CardKitClient {
 
   /** Replaces one interactive message with a complete card, matching the legacy product flow. */
   public async patchMessage(messageId: string, card: CardKitJson): Promise<void> {
-    const renderedCard = await this.transformCard(card);
+    const renderedCard = await this.renderCard(card);
     try {
       const response = await this.larkApi.im.message.patch({
         path: { message_id: messageId },
@@ -223,7 +232,21 @@ export class CardKitClient {
     acknowledgedSequence: number,
     idempotencyKey?: string,
   ): Promise<number> {
-    const renderedCard = await this.transformCard(card);
+    return this.replaceRenderedCard(
+      cardId,
+      await this.renderCard(card),
+      acknowledgedSequence,
+      idempotencyKey,
+    );
+  }
+
+  /** Replaces a card with the exact snapshot that passed size validation. */
+  public async replaceRenderedCard(
+    cardId: string,
+    renderedCard: CardKitJson,
+    acknowledgedSequence: number,
+    idempotencyKey?: string,
+  ): Promise<number> {
     return this.updateCardSequence(acknowledgedSequence, async (sequence) => {
       await this.request(`${CARDKIT_BASE_URL}/${encodeURIComponent(cardId)}`, {
         method: 'PUT',

@@ -14,6 +14,17 @@ export interface TaskCardOptions {
   readonly status: TaskStatus;
   readonly cancelToken?: string;
   readonly historical?: boolean;
+  /** A completed volume of a still-running task; it must not remain interactive. */
+  readonly continued?: boolean;
+  /** Follow-up volumes omit the original prompt to preserve space for new output. */
+  readonly showPrompt?: boolean;
+  /** Completed process-only volumes do not repeat the final-answer placeholder. */
+  readonly showFinalAnswer?: boolean;
+  /** Dedicated answer volumes omit the reasoning placeholder. */
+  readonly showReasoning?: boolean;
+  readonly continuationText?: SanitizedCardText;
+  /** The orchestrator already byte-sized this volume, so terminal rendering must preserve it. */
+  readonly contentFitsCard?: boolean;
 }
 
 export interface ApprovalCardOptions {
@@ -213,60 +224,73 @@ function approvalDetailElements(options: ApprovalSummaryEntryCardOptions): Recor
 /** Creates the complete task card from a sanitized projection snapshot. */
 export function createTaskCard(options: TaskCardOptions): CardKitJson {
   const { payload, status } = options;
-  const running = !payload.terminal;
-  const reasoning = running
+  const live = !payload.terminal && !options.continued;
+  const reasoning = live
     ? withCursor(activityText(payload.commentary, '', true), true)
-    : truncateText(
+    : options.contentFitsCard ? payload.commentary : truncateText(
         payload.commentary,
         10_000,
         '\n\n... (由于长度限制，后续推理过程已被截断) ...',
       );
-  const answer = running
+  const answer = live
     ? withCursor(payload.finalAnswer || '等待中...', true)
-    : truncateText(
+    : options.contentFitsCard ? payload.finalAnswer || '无最终文本输出' : truncateText(
         payload.finalAnswer || '无最终文本输出',
         10_000,
         '\n\n... (由于长度限制，后续输出已被截断，请在 IDE 中查看完整内容) ...',
       );
-  const title = payload.title || (running ? '🌌 Codex Remote Control' : terminalTitle(status, options.historical));
-  const elements: Record<string, unknown>[] = [
-    markdown(`**📥 输入 Prompt**\n> ${payload.prompt}`, running ? 'codex_prompt' : undefined),
-  ];
+  const title = payload.title || (live ? '🌌 Codex Remote Control' : terminalTitle(status, options.historical));
+  const elements: Record<string, unknown>[] = [];
 
-  if (payload.metadata) {
-    elements.push(markdown(payload.metadata, running ? 'codex_metadata' : undefined));
+  if (options.showPrompt !== false) {
+    elements.push(markdown(`**📥 输入 Prompt**\n> ${payload.prompt}`, live ? 'codex_prompt' : undefined));
+  } else {
+    elements.push(markdown('📚 **任务续页**'));
   }
 
-  const timeline = timelineElements(payload.timeline);
-  if (timeline.length > 0) {
+  if (payload.metadata) {
+    elements.push(markdown(payload.metadata, live ? 'codex_metadata' : undefined));
+  }
+
+  const timeline = options.showReasoning === false ? [] : timelineElements(payload.timeline);
+  if (options.showReasoning !== false && timeline.length > 0) {
     elements.push(
       { tag: 'hr' },
-      markdown('🧠 **模型推理过程**', running ? 'codex_reasoning' : undefined),
+      markdown('🧠 **模型推理过程**', live ? 'codex_reasoning' : undefined),
       ...timeline,
     );
-  } else if (running || payload.commentary) {
+  } else if (options.showReasoning !== false && (live || payload.commentary)) {
     elements.push(
       { tag: 'hr' },
       markdown(
         `🧠 **模型推理过程**\n${reasoning || '等待开始...'}`,
-        running ? 'codex_reasoning' : undefined,
+        live ? 'codex_reasoning' : undefined,
       ),
     );
   }
-  const toolPanels = timeline.length === 0 && running ? toolPanelElements(payload) : [];
+  const toolPanels = options.showReasoning !== false && timeline.length === 0 && live
+    ? toolPanelElements(payload)
+    : [];
   if (toolPanels.length > 0) {
     elements.push(
       { tag: 'hr' },
       ...toolPanels,
     );
   }
+  if (options.showFinalAnswer !== false) {
+    elements.push(
+      live ? { tag: 'hr', element_id: 'codex_output_hr' } : { tag: 'hr' },
+      markdown(`✨ **最终结果输出**\n${answer}`, live ? 'codex_output' : undefined),
+    );
+  }
   elements.push(
-    running ? { tag: 'hr', element_id: 'codex_output_hr' } : { tag: 'hr' },
-    markdown(`✨ **最终结果输出**\n${answer}`, running ? 'codex_output' : undefined),
     { tag: 'hr' },
-    markdown(`📊 ${payload.footer}`, running ? 'codex_footer' : undefined),
+    markdown(`📊 ${payload.footer}`, live ? 'codex_footer' : undefined),
   );
-  if (running && options.cancelToken) {
+  if (options.continuationText) {
+    elements.push({ tag: 'hr' }, markdown(options.continuationText));
+  }
+  if (live && options.cancelToken) {
     elements.push(
       { tag: 'hr', element_id: 'codex_cancel_hr' },
       {
@@ -289,7 +313,7 @@ export function createTaskCard(options: TaskCardOptions): CardKitJson {
 
   return {
     schema: '2.0',
-    config: running
+    config: live
       ? {
           streaming_mode: true,
           update_multi: true,
@@ -324,7 +348,7 @@ function timelineElements(entries: readonly CardTimelineEntry[] | undefined): re
     }
     if (entry.kind === 'tool' && entry.tool) {
       return [toolPanel(
-        `🛠️ [${entry.time}] 工具执行 · ${entry.tool.count} 步`,
+        `[${entry.time}] ${entry.tool.title}`,
         entry.tool.content,
         entry.tool.count,
         timelineElementId('t', index),

@@ -34,10 +34,18 @@ export type DesktopTurnClient = Pick<
 >;
 
 export interface InMemoryCardClient {
+  renderCard(card: CardKitJson): Promise<CardKitJson>;
   createCard(card: CardKitJson): Promise<string>;
+  createRenderedCard(card: CardKitJson): Promise<string>;
   replyCard(rootMessageId: string, cardId: string, idempotencyKey: string): Promise<string>;
   sendCard(chatId: string, cardId: string, idempotencyKey: string): Promise<string>;
   replaceCard(
+    cardId: string,
+    card: CardKitJson,
+    acknowledgedSequence: number,
+    idempotencyKey?: string,
+  ): Promise<number>;
+  replaceRenderedCard(
     cardId: string,
     card: CardKitJson,
     acknowledgedSequence: number,
@@ -109,8 +117,8 @@ interface RuntimeTask {
   readonly id: string;
   readonly message: InboundTextMessage;
   readonly binding: ChatThreadBinding;
-  readonly cardId: string;
-  readonly cardMessageId: string;
+  cardId: string;
+  cardMessageId: string;
   readonly cancelToken: string;
   turnId: string | null;
   status: TaskStatus;
@@ -121,7 +129,6 @@ interface RuntimeTask {
   readonly toolExecutions: ToolExecution[];
   readonly timeline: TimelineEntry[];
   finalAnswer: string;
-  lastStreamedAnswer: string;
   readonly startedAtMs: number;
   model: string | null;
   inputTokens: number | null;
@@ -143,6 +150,26 @@ interface RuntimeTask {
   cardDeliveryPending: boolean;
   nextToolGroupId: number;
   lastActivityKind: 'none' | 'text' | 'tool';
+  cardPageNumber: number;
+  readonly deliveredReasoningByItemId: Map<string, string>;
+  readonly deliveredToolItemIds: Set<string>;
+  readonly deliveredToolFallbackByKey: Map<string, string>;
+  answerOffset: number;
+  deliveredAnswerPrefix: string;
+  answerRevision: boolean;
+  pendingCardId: string | null;
+  readonly pendingFreezes: PendingCardFreeze[];
+  readonly staleCardMessageIds: Set<string>;
+}
+
+interface PendingCardFreeze {
+  readonly cardId: string;
+  readonly cardMessageId: string;
+  readonly card: CardKitJson;
+  readonly pageNumber: number;
+  sequence: number;
+  streamingClosed: boolean;
+  retryCount: number;
 }
 
 interface ToolExecution {
@@ -155,6 +182,7 @@ interface ToolExecution {
   outputTail: string;
   completed: boolean;
   failed: boolean;
+  revised: boolean;
 }
 
 interface TimelineEntry {
@@ -163,6 +191,28 @@ interface TimelineEntry {
   readonly occurredAtMs: number;
   text?: string;
   execution?: ToolExecution;
+}
+
+interface TaskCardPage {
+  readonly timeline: readonly CardTimelineEntry[];
+  readonly timelineConsumption: readonly TimelineConsumption[];
+  readonly finalAnswer: string;
+  readonly kind: 'timeline' | 'answer' | 'mixed';
+  readonly showPrompt: boolean;
+  readonly answerRevision: boolean;
+}
+
+interface TimelineConsumption {
+  readonly kind: 'reasoning' | 'tool';
+  readonly itemId?: string;
+  readonly text?: string;
+  readonly itemIds?: readonly string[];
+  readonly toolKey?: string;
+}
+
+interface ProjectedTimelineEntry {
+  readonly card: CardTimelineEntry;
+  readonly consumption: TimelineConsumption;
 }
 
 const TERMINAL: ReadonlySet<TaskStatus> = new Set(['SUCCEEDED', 'FAILED', 'INTERRUPTED']);
@@ -175,8 +225,8 @@ const CARD_RETRY_BASE_DELAY_MS = 250;
 const MAX_PENDING_NOTIFICATIONS = 512;
 const MAX_TOOL_OUTPUT_CHARS = 1_000;
 const MAX_TIMELINE_CARD_ENTRIES = 36;
-const MAX_TIMELINE_CARD_CHARS = 30_000;
-const MAX_TIMELINE_REASONING_CHARS = 4_000;
+const MAX_CARD_JSON_BYTES = 28 * 1024;
+const MAX_TIMELINE_REASONING_BYTES = 6 * 1024;
 
 /**
  * Current-process task state. It deliberately never serializes a task, queue,
@@ -369,7 +419,11 @@ export class InMemoryOrchestrator {
     }
     const task = [...this.tasksById.values()].find((candidate) => (
       candidate.message.chatId === action.chatId
-      && candidate.cardMessageId === action.messageId
+      && (
+        candidate.cardMessageId === action.messageId
+        || candidate.pendingFreezes.some((pending) => pending.cardMessageId === action.messageId)
+        || candidate.staleCardMessageIds.has(action.messageId)
+      )
       && secureTokenEquals(candidate.cancelToken, action.token)
       && !TERMINAL.has(candidate.status)
     ));
@@ -544,7 +598,6 @@ export class InMemoryOrchestrator {
       toolExecutions: [],
       timeline: [],
       finalAnswer: '',
-      lastStreamedAnswer: '',
       startedAtMs,
       model: null,
       inputTokens: null,
@@ -566,6 +619,16 @@ export class InMemoryOrchestrator {
       cardDeliveryPending: false,
       nextToolGroupId: 0,
       lastActivityKind: 'none',
+      cardPageNumber: 1,
+      deliveredReasoningByItemId: new Map(),
+      deliveredToolItemIds: new Set(),
+      deliveredToolFallbackByKey: new Map(),
+      answerOffset: 0,
+      deliveredAnswerPrefix: '',
+      answerRevision: false,
+      pendingCardId: null,
+      pendingFreezes: [],
+      staleCardMessageIds: new Set(),
     };
     this.tasksById.set(id, task);
     this.activateTask(task);
@@ -710,7 +773,6 @@ export class InMemoryOrchestrator {
       toolExecutions: [],
       timeline: [],
       finalAnswer: '',
-      lastStreamedAnswer: '',
       startedAtMs,
       model: null,
       inputTokens: null,
@@ -732,6 +794,16 @@ export class InMemoryOrchestrator {
       cardDeliveryPending: false,
       nextToolGroupId: 0,
       lastActivityKind: 'none',
+      cardPageNumber: 1,
+      deliveredReasoningByItemId: new Map(),
+      deliveredToolItemIds: new Set(),
+      deliveredToolFallbackByKey: new Map(),
+      answerOffset: 0,
+      deliveredAnswerPrefix: '',
+      answerRevision: false,
+      pendingCardId: null,
+      pendingFreezes: [],
+      staleCardMessageIds: new Set(),
     };
     this.tasksById.set(id, task);
     this.activateTask(task);
@@ -794,7 +866,7 @@ export class InMemoryOrchestrator {
     } else if (notification.method === 'item/started') {
       appendStartedTool(task, params, this.now());
     } else if (notification.method === 'item/completed') {
-      completeTool(task, params);
+      completeTool(task, params, this.now());
       completeAgentMessage(task, params, this.now());
     } else if (notification.method === 'item/agentMessage/delta') {
       const phase = stringField(params.phase);
@@ -819,7 +891,7 @@ export class InMemoryOrchestrator {
         task.lastActivityKind = 'text';
       }
     } else if (notification.method === 'item/commandExecution/outputDelta') {
-      appendToolOutput(task, params, stringField(params.delta));
+      appendToolOutput(task, params, stringField(params.delta), this.now());
     } else if (notification.method === 'error') {
       appendToTask(task, 'tools', stringField((params.error as Record<string, unknown> | undefined)?.message));
     } else if (notification.method === 'turn/completed') {
@@ -855,44 +927,9 @@ export class InMemoryOrchestrator {
   }
 
   private requestAnswerStream(task: RuntimeTask): void {
-    const write = task.cardWrite.then(
-      () => this.writeAnswerStream(task),
-      () => this.writeAnswerStream(task),
-    );
-    task.cardWrite = write;
-    void write;
-  }
-
-  private async writeAnswerStream(task: RuntimeTask): Promise<void> {
-    if (!this.tasksById.has(task.id) || task.streamingClosed || !task.finalAnswer) {
-      return;
-    }
-    const content = `${task.finalAnswer} ▍`;
-    if (content === task.lastStreamedAnswer) {
-      return;
-    }
-    task.cardDeliveryPending = true;
-    this.onRuntimeHealthChanged();
-    try {
-      task.cardSequence = await this.cards.streamElement(
-        task.cardId,
-        'codex_output',
-        content,
-        task.cardSequence,
-        `task:${task.id}:output:${task.cardSequence + 1}`,
-      );
-      task.lastStreamedAnswer = content;
-      task.cardRetryCount = 0;
-      task.cardDeliveryPending = false;
-      this.onRuntimeHealthChanged();
-    } catch (error) {
-      const cardError = toError(error);
-      if (error instanceof CardKitError && error.retryable && task.cardRetryCount < MAX_CARD_RETRY_ATTEMPTS) {
-        this.scheduleCardRetry(task);
-        return;
-      }
-      this.onCardError(cardError);
-    }
+    // Full-card projection is required here because an answer delta may cross
+    // the active volume's byte boundary and must create a continuation card.
+    this.requestCardUpdate(task, false);
   }
 
   private async flushCard(task: RuntimeTask, terminal: boolean): Promise<void> {
@@ -911,6 +948,17 @@ export class InMemoryOrchestrator {
     task.cardDeliveryPending = true;
     this.onRuntimeHealthChanged();
     try {
+      reconcileAnswerCursor(task);
+      let pages = await taskCardPages(task, this.cards);
+      while (pages.length > 1) {
+        const currentPage = pages[0];
+        const nextPage = pages[1];
+        if (!currentPage || !nextPage) {
+          break;
+        }
+        await this.continueCard(task, currentPage, nextPage);
+        pages = await taskCardPages(task, this.cards);
+      }
       if (terminal && !task.streamingClosed) {
         task.cardSequence = await this.cards.closeStreaming(
           task.cardId,
@@ -919,25 +967,24 @@ export class InMemoryOrchestrator {
         );
         task.streamingClosed = true;
       }
-      const card = taskCard(
-        task.message.text,
-        task.status,
-        task.commentary,
-        task.toolExecutions,
-        task.tools,
-        task.finalAnswer,
-        task.startedAtMs,
+      const currentPage = pages[0] ?? emptyTaskCardPage(task.cardPageNumber === 1);
+      const card = await renderedTaskPageCard(
         task,
-        terminal ? undefined : task.cancelToken,
+        this.cards,
+        currentPage,
+        task.cardPageNumber - 1,
+        true,
+        terminal,
       );
-      task.cardSequence = await this.cards.replaceCard(
+      task.cardSequence = await this.cards.replaceRenderedCard(
         task.cardId,
         card,
         task.cardSequence,
         `task:${task.id}:${task.cardSequence + 1}`,
       );
       task.cardRetryCount = 0;
-      task.cardDeliveryPending = false;
+      await this.drainPendingFreezes(task);
+      task.cardDeliveryPending = task.pendingFreezes.length > 0;
       this.onRuntimeHealthChanged();
       if (terminal && this.terminalByTurnKey.get(
         turnKey(task.binding.threadId, task.turnId ?? ''),
@@ -951,6 +998,93 @@ export class InMemoryOrchestrator {
         return;
       }
       this.onCardError(cardError);
+    }
+  }
+
+  private async continueCard(
+    task: RuntimeTask,
+    currentPage: TaskCardPage,
+    nextPage: TaskCardPage,
+  ): Promise<void> {
+    const nextPageNumber = task.cardPageNumber + 1;
+    if (!task.pendingCardId) {
+      const nextCard = await renderedTaskPageCard(
+        task,
+        this.cards,
+        nextPage,
+        nextPageNumber - 1,
+        true,
+        false,
+      );
+      task.pendingCardId = await this.cards.createRenderedCard(nextCard);
+    }
+    const frozenCard = await renderedTaskPageCard(
+      task,
+      this.cards,
+      currentPage,
+      task.cardPageNumber - 1,
+      false,
+      false,
+    );
+    const cardMessageId = await this.cards.sendCard(
+      task.message.chatId,
+      task.pendingCardId,
+      `task:${task.id}:page:${nextPageNumber}`,
+    );
+    task.pendingFreezes.push({
+      cardId: task.cardId,
+      cardMessageId: task.cardMessageId,
+      card: frozenCard,
+      pageNumber: task.cardPageNumber,
+      sequence: task.cardSequence,
+      streamingClosed: task.streamingClosed,
+      retryCount: 0,
+    });
+    task.cardId = task.pendingCardId;
+    task.cardMessageId = cardMessageId;
+    task.cardPageNumber = nextPageNumber;
+    task.pendingCardId = null;
+    task.cardSequence = 0;
+    task.streamingClosed = false;
+    consumeTaskCardPage(task, currentPage);
+  }
+
+  private async drainPendingFreezes(task: RuntimeTask): Promise<void> {
+    while (task.pendingFreezes.length > 0) {
+      const pending = task.pendingFreezes[0];
+      if (!pending) {
+        return;
+      }
+      try {
+        if (!pending.streamingClosed) {
+          pending.sequence = await this.cards.closeStreaming(
+            pending.cardId,
+            pending.sequence,
+            `task:${task.id}:page:${pending.pageNumber}:close`,
+          );
+          pending.streamingClosed = true;
+        }
+        pending.sequence = await this.cards.replaceRenderedCard(
+          pending.cardId,
+          pending.card,
+          pending.sequence,
+          `task:${task.id}:page:${pending.pageNumber}:freeze`,
+        );
+        task.pendingFreezes.shift();
+      } catch (error) {
+        pending.retryCount += 1;
+        if (
+          error instanceof CardKitError
+          && error.retryable
+          && pending.retryCount <= MAX_CARD_RETRY_ATTEMPTS
+        ) {
+          this.scheduleCardRetry(task);
+          return;
+        }
+        task.pendingFreezes.shift();
+        task.staleCardMessageIds.add(pending.cardMessageId);
+        this.onCardError(toError(error));
+      }
     }
   }
 
@@ -1127,9 +1261,21 @@ function taskCard(
   usage?: RuntimeTask,
   cancelToken?: string,
   binding?: ChatThreadBinding,
+  view?: {
+    readonly timeline: readonly CardTimelineEntry[];
+    readonly finalAnswer: string;
+    readonly pageNumber: number;
+    readonly active: boolean;
+    readonly showPrompt: boolean;
+    readonly showFinalAnswer: boolean;
+    readonly showReasoning: boolean;
+    readonly answerRevision: boolean;
+  },
 ): CardKitJson {
   const terminal = TERMINAL.has(status);
-  const tools = toolProjection(toolExecutions, toolError);
+  const tools = view && (view.timeline.length > 0 || !view.showReasoning)
+    ? { text: '', count: 0, groups: Object.freeze([]) }
+    : toolProjection(toolExecutions, toolError);
   const projectedFinalAnswer = status === 'FAILED' && !finalAnswer.trim() && toolError.trim()
     ? toolError
     : finalAnswer;
@@ -1141,9 +1287,22 @@ function taskCard(
   return createTaskCard({
     status,
     cancelToken,
+    continued: view ? !view.active : false,
+    showPrompt: view?.showPrompt,
+    showFinalAnswer: view?.showFinalAnswer,
+    showReasoning: view?.showReasoning,
+    contentFitsCard: Boolean(view),
+    continuationText: view?.answerRevision
+      ? sanitizeCardMarkdown('⚠️ **最终结果修订版**：此前流式草稿无法撤回，请以本页及后续修订版卡片为准。')
+      : view && !view.active
+        ? sanitizeCardMarkdown(`➡️ 本页已满，后续内容见第 ${view.pageNumber + 1} 张卡片。`)
+        : undefined,
     payload: Object.freeze({
-      title: sanitizeCardText(taskCardTitle(usage?.binding ?? binding), { maxLength: 80 }),
-      prompt: sanitizeCardMarkdown(prompt, { maxLength: 10_000 }),
+      title: sanitizeCardText(
+        `${taskCardTitle(usage?.binding ?? binding)} · 第 ${view?.pageNumber ?? 1} 页`,
+        { maxLength: 80 },
+      ),
+      prompt: sanitizeCardMarkdown(prompt, { maxLength: 4_000 }),
       metadata: metadata ? sanitizeCardMarkdown(metadata, { maxLength: 1_000 }) : null,
       commentary: sanitizeCardMarkdown(
         removeDesktopInternalProgress(commentary) ?? '',
@@ -1152,12 +1311,55 @@ function taskCard(
       toolSummary: sanitizeCardPlainText(tools.text || '暂无', { maxLength: 10_000 }),
       toolCount: tools.count,
       toolGroups: tools.groups,
-      timeline: timelineProjection(usage?.timeline ?? []),
-      finalAnswer: sanitizeCardMarkdown(projectedFinalAnswer, { maxLength: 10_000 }),
-      footer: sanitizeCardPlainText(formatFooter(status, startedAtMs, usage), { maxLength: 500 }),
+      timeline: view?.timeline ?? (usage
+        ? timelineEntriesProjection(usage).map((entry) => entry.card)
+        : Object.freeze([])),
+      finalAnswer: sanitizeCardMarkdown(view?.finalAnswer ?? projectedFinalAnswer, {
+        maxLength: view ? undefined : 10_000,
+      }),
+      footer: sanitizeCardPlainText(
+        view && !view.active
+          ? `📚 本页内容已完整展示 · 第 ${view.pageNumber} 页`
+          : `${formatFooter(status, startedAtMs, usage)} · 第 ${view?.pageNumber ?? 1} 页`,
+        { maxLength: 500 },
+      ),
       terminal,
     }),
   });
+}
+
+function taskPageCard(
+  task: RuntimeTask,
+  page: TaskCardPage,
+  pageIndex: number,
+  active: boolean,
+  terminal: boolean,
+): CardKitJson {
+  const status = terminal
+    ? task.status
+    : TERMINAL.has(task.status) ? 'COMPLETING' : task.status;
+  return taskCard(
+    task.message.text,
+    status,
+    '',
+    task.toolExecutions,
+    task.tools,
+    page.finalAnswer,
+    task.startedAtMs,
+    task,
+    active && !terminal && !TERMINAL.has(task.status) ? task.cancelToken : undefined,
+    undefined,
+    {
+      timeline: page.timeline,
+      finalAnswer: page.finalAnswer,
+      pageNumber: pageIndex + 1,
+      active,
+      showPrompt: page.showPrompt,
+      showFinalAnswer: page.kind !== 'timeline' || active,
+      showReasoning: page.kind !== 'answer',
+      answerRevision: page.answerRevision,
+    },
+  );
 }
 
 function taskCardTitle(binding: ChatThreadBinding | undefined): string {
@@ -1197,52 +1399,75 @@ function appendEllipsisWithinWidth(value: string, width: number, maxWidth: numbe
   return `${characters.join('')}${ellipsis}`;
 }
 
-function timelineProjection(entries: readonly TimelineEntry[]): readonly CardTimelineEntry[] {
-  const projected: CardTimelineEntry[] = [];
+function timelineEntriesProjection(task: RuntimeTask): readonly ProjectedTimelineEntry[] {
+  const projected: ProjectedTimelineEntry[] = [];
   let toolEntries: TimelineEntry[] = [];
-  let projectedCharacters = 0;
-  let truncated = false;
-
-  const append = (entry: CardTimelineEntry, size: number): boolean => {
-    if (
-      projected.length >= MAX_TIMELINE_CARD_ENTRIES
-      || projectedCharacters + size > MAX_TIMELINE_CARD_CHARS
-    ) {
-      truncated = true;
-      return false;
-    }
-    projected.push(entry);
-    projectedCharacters += size;
-    return true;
-  };
-  const flushTools = (): boolean => {
+  const flushTools = (): void => {
     if (toolEntries.length === 0) {
-      return true;
+      return;
     }
     const executions = toolEntries.flatMap((entry) => entry.execution ? [entry.execution] : []);
     const first = toolEntries[0];
     toolEntries = [];
     if (!first || executions.length === 0) {
-      return true;
+      return;
     }
     const tool = toolGroupForExecutions(executions);
-    return append(Object.freeze({
-      kind: 'tool',
-      time: sanitizeCardPlainText(formatTimelineTime(first.occurredAtMs), { maxLength: 16 }),
-      tool,
-    }), tool.content.length + tool.title.length);
+    const toolKey = executions.map((execution) => execution.itemId).join('\u0000');
+    const fallbackText = `${tool.title}\n${tool.content}`;
+    const deliveredFallback = task.deliveredToolFallbackByKey.get(toolKey) ?? '';
+    if (deliveredFallback) {
+      const remainingFallback = fallbackText.startsWith(deliveredFallback)
+        ? fallbackText.slice(deliveredFallback.length)
+        : '';
+      const chunks = splitUtf8Text(remainingFallback, MAX_TIMELINE_REASONING_BYTES);
+      chunks.forEach((content, index) => {
+        projected.push(Object.freeze({
+          card: Object.freeze({
+            kind: 'reasoning',
+            time: sanitizeCardPlainText(formatTimelineTime(first.occurredAtMs), { maxLength: 16 }),
+            content: sanitizeCardMarkdown(content),
+          }),
+          consumption: Object.freeze({
+            kind: 'tool',
+            toolKey,
+            text: content,
+            itemIds: index === chunks.length - 1
+              ? Object.freeze(executions.map((execution) => execution.itemId))
+              : Object.freeze([]),
+          }),
+        }));
+      });
+      return;
+    }
+    projected.push(Object.freeze({
+      card: Object.freeze({
+        kind: 'tool',
+        time: sanitizeCardPlainText(formatTimelineTime(first.occurredAtMs), { maxLength: 16 }),
+        tool,
+      }),
+      consumption: Object.freeze({
+        kind: 'tool',
+        toolKey,
+        itemIds: Object.freeze(executions.map((execution) => execution.itemId)),
+      }),
+    }));
   };
 
-  for (const entry of entries) {
-    if (entry.kind === 'tool' && entry.execution) {
+  for (const entry of task.timeline) {
+    if (
+      entry.kind === 'tool'
+      && entry.execution
+      && !task.deliveredToolItemIds.has(entry.itemId)
+    ) {
       const prior = toolEntries.at(-1)?.execution;
       if (prior && prior.groupId !== entry.execution.groupId) {
-        if (!flushTools()) break;
+        flushTools();
       }
       toolEntries.push(entry);
       continue;
     }
-    if (!flushTools()) break;
+    flushTools();
     if (entry.kind !== 'reasoning' || !entry.text) {
       continue;
     }
@@ -1250,36 +1475,402 @@ function timelineProjection(entries: readonly TimelineEntry[]): readonly CardTim
     if (!visibleText) {
       continue;
     }
-    const content = sanitizeCardMarkdown(visibleText, { maxLength: MAX_TIMELINE_REASONING_CHARS });
-    if (!append(Object.freeze({
-      kind: 'reasoning',
-      time: sanitizeCardPlainText(formatTimelineTime(entry.occurredAtMs), { maxLength: 16 }),
-      content,
-    }), content.length)) break;
-  }
-  if (!truncated && !flushTools()) {
-    truncated = true;
-  }
-  if (truncated) {
-    const lastTime = entries.at(-1)?.occurredAtMs ?? Date.now();
-    const marker = Object.freeze({
-      kind: 'reasoning' as const,
-      time: sanitizeCardPlainText(formatTimelineTime(lastTime), { maxLength: 16 }),
-      content: sanitizeCardMarkdown('… 后续执行过程因卡片长度限制未在飞书展示。', { maxLength: 100 }),
-    });
-    if (projected.length >= MAX_TIMELINE_CARD_ENTRIES) {
-      projected.splice(projected.length - 1, 1, marker);
-    } else {
-      projected.push(marker);
+    const delivered = task.deliveredReasoningByItemId.get(entry.itemId) ?? '';
+    if (delivered && !visibleText.startsWith(delivered)) {
+      continue;
+    }
+    const remainingText = visibleText.slice(delivered.length);
+    if (!remainingText) {
+      continue;
+    }
+    const time = sanitizeCardPlainText(formatTimelineTime(entry.occurredAtMs), { maxLength: 16 });
+    for (const content of splitUtf8Text(remainingText, MAX_TIMELINE_REASONING_BYTES)) {
+      projected.push(Object.freeze({
+        card: Object.freeze({
+          kind: 'reasoning',
+          time,
+          content: sanitizeCardMarkdown(content),
+        }),
+        consumption: Object.freeze({
+          kind: 'reasoning',
+          itemId: entry.itemId,
+          text: content,
+        }),
+      }));
     }
   }
+  flushTools();
   return Object.freeze(projected);
+}
+
+async function taskCardPages(
+  task: RuntimeTask,
+  cards: InMemoryCardClient,
+): Promise<readonly TaskCardPage[]> {
+  const pageIndex = task.cardPageNumber - 1;
+  const projectedTimeline = timelineEntriesProjection(task);
+  const timelinePages = await paginateTimeline(task, cards, projectedTimeline, pageIndex);
+  let answer = projectedTaskAnswer(task).slice(task.answerOffset);
+  if (!answer) {
+    return timelinePages.length > 0
+      ? timelinePages
+      : [emptyTaskCardPage(task.cardPageNumber === 1)];
+  }
+  if (timelinePages.length > 0) {
+    const lastIndex = timelinePages.length - 1;
+    const lastTimelinePage = timelinePages[lastIndex];
+    if (lastTimelinePage) {
+      const answerPrefix = await fittingAnswerPrefix(
+        task,
+        cards,
+        answer,
+        pageIndex + lastIndex,
+        lastTimelinePage.showPrompt,
+        lastTimelinePage.timeline,
+      );
+      if (answerPrefix) {
+        timelinePages[lastIndex] = Object.freeze({
+          ...lastTimelinePage,
+          finalAnswer: answerPrefix,
+          kind: 'mixed',
+          answerRevision: task.answerRevision,
+        });
+        answer = answer.slice(answerPrefix.length);
+      }
+    }
+  }
+  if (!answer) {
+    return Object.freeze(timelinePages);
+  }
+  const answerPages = await paginateAnswer(
+    task,
+    cards,
+    answer,
+    pageIndex + timelinePages.length,
+  );
+  return Object.freeze([...timelinePages, ...answerPages]);
+}
+
+async function paginateTimeline(
+  task: RuntimeTask,
+  cards: InMemoryCardClient,
+  entries: readonly ProjectedTimelineEntry[],
+  startingPageIndex: number,
+): Promise<TaskCardPage[]> {
+  if (entries.length === 0) {
+    return [];
+  }
+  const pages: TaskCardPage[] = [];
+  const remainingEntries = [...entries];
+  let current: ProjectedTimelineEntry[] = [];
+  while (remainingEntries.length > 0) {
+    const entry = remainingEntries.shift();
+    if (!entry) {
+      continue;
+    }
+    const candidate = [...current, entry];
+    const pageIndex = startingPageIndex + pages.length;
+    const showPrompt = pageIndex === 0;
+    const page = timelinePage(candidate, showPrompt);
+    const exceedsLimit = candidate.length > MAX_TIMELINE_CARD_ENTRIES
+      || !await taskPageFits(task, cards, page, pageIndex);
+    if (current.length > 0 && exceedsLimit) {
+      pages.push(timelinePage(current, showPrompt));
+      current = [];
+      remainingEntries.unshift(entry);
+      continue;
+    }
+    if (current.length === 0 && exceedsLimit && showPrompt) {
+      pages.push(emptyTaskCardPage(true));
+      remainingEntries.unshift(entry);
+      continue;
+    }
+    if (current.length === 0 && exceedsLimit) {
+      const split = await splitOversizedTimelineEntry(task, cards, entry, pageIndex, showPrompt);
+      if (!split) {
+        throw new Error(`CardKit timeline page ${pageIndex + 1} has no usable content capacity`);
+      }
+      current = [split.head];
+      if (split.tail) {
+        remainingEntries.unshift(split.tail);
+      }
+      continue;
+    }
+    current = candidate;
+  }
+  if (current.length > 0) {
+    pages.push(timelinePage(current, startingPageIndex + pages.length === 0));
+  }
+  return pages;
+}
+
+async function splitOversizedTimelineEntry(
+  task: RuntimeTask,
+  cards: InMemoryCardClient,
+  entry: ProjectedTimelineEntry,
+  pageIndex: number,
+  showPrompt: boolean,
+): Promise<{ readonly head: ProjectedTimelineEntry; readonly tail?: ProjectedTimelineEntry } | null> {
+  const rawText = entry.consumption.kind === 'reasoning'
+    ? entry.consumption.text ?? ''
+    : entry.consumption.text
+      ?? `${entry.card.tool?.title ?? '工具执行'}\n${entry.card.tool?.content ?? ''}`;
+  const characters = [...rawText];
+  let lower = 1;
+  let upper = characters.length;
+  let fitted = 0;
+  while (lower <= upper) {
+    const middle = Math.floor((lower + upper) / 2);
+    const candidate = projectedTimelineTextPart(entry, characters.slice(0, middle).join(''), false);
+    if (await taskPageFits(task, cards, timelinePage([candidate], showPrompt), pageIndex)) {
+      fitted = middle;
+      lower = middle + 1;
+    } else {
+      upper = middle - 1;
+    }
+  }
+  if (fitted === 0) {
+    return null;
+  }
+  const headText = characters.slice(0, fitted).join('');
+  const tailText = characters.slice(fitted).join('');
+  return Object.freeze({
+    head: projectedTimelineTextPart(entry, headText, tailText.length === 0),
+    ...(tailText
+      ? { tail: projectedTimelineTextPart(entry, tailText, true) }
+      : {}),
+  });
+}
+
+function projectedTimelineTextPart(
+  source: ProjectedTimelineEntry,
+  text: string,
+  finalPart: boolean,
+): ProjectedTimelineEntry {
+  const time = source.card.time;
+  if (source.consumption.kind === 'reasoning') {
+    return Object.freeze({
+      card: Object.freeze({ kind: 'reasoning', time, content: sanitizeCardMarkdown(text) }),
+      consumption: Object.freeze({
+        kind: 'reasoning',
+        itemId: source.consumption.itemId,
+        text,
+      }),
+    });
+  }
+  return Object.freeze({
+    card: Object.freeze({ kind: 'reasoning', time, content: sanitizeCardMarkdown(text) }),
+    consumption: Object.freeze({
+      kind: 'tool',
+      toolKey: source.consumption.toolKey,
+      text,
+      itemIds: finalPart ? source.consumption.itemIds : Object.freeze([]),
+    }),
+  });
+}
+
+async function paginateAnswer(
+  task: RuntimeTask,
+  cards: InMemoryCardClient,
+  answer: string,
+  startingPageIndex: number,
+): Promise<readonly TaskCardPage[]> {
+  const pages: TaskCardPage[] = [];
+  let remaining = answer;
+  while (remaining) {
+    const pageIndex = startingPageIndex + pages.length;
+    const showPrompt = pageIndex === 0;
+    const prefix = await fittingAnswerPrefix(task, cards, remaining, pageIndex, showPrompt, []);
+    if (!prefix) {
+      throw new Error(`CardKit answer page ${pageIndex + 1} has no usable content capacity`);
+    }
+    pages.push(Object.freeze({
+      timeline: Object.freeze([]),
+      timelineConsumption: Object.freeze([]),
+      finalAnswer: prefix,
+      kind: 'answer',
+      showPrompt,
+      answerRevision: task.answerRevision,
+    }));
+    remaining = remaining.slice(prefix.length);
+  }
+  return Object.freeze(pages);
+}
+
+async function fittingAnswerPrefix(
+  task: RuntimeTask,
+  cards: InMemoryCardClient,
+  answer: string,
+  pageIndex: number,
+  showPrompt: boolean,
+  timeline: readonly CardTimelineEntry[],
+): Promise<string> {
+  const characters = [...answer];
+  let lower = 1;
+  let upper = characters.length;
+  let fitted = 0;
+  while (lower <= upper) {
+    const middle = Math.floor((lower + upper) / 2);
+    const candidate = characters.slice(0, middle).join('');
+    const page: TaskCardPage = {
+      timeline,
+      timelineConsumption: Object.freeze([]),
+      finalAnswer: candidate,
+      kind: timeline.length > 0 ? 'mixed' : 'answer',
+      showPrompt,
+      answerRevision: task.answerRevision,
+    };
+    if (await taskPageFits(task, cards, page, pageIndex)) {
+      fitted = middle;
+      lower = middle + 1;
+    } else {
+      upper = middle - 1;
+    }
+  }
+  return characters.slice(0, fitted).join('');
+}
+
+async function taskPageFits(
+  task: RuntimeTask,
+  cards: InMemoryCardClient,
+  page: TaskCardPage,
+  pageIndex: number,
+): Promise<boolean> {
+  const rendered = await cards.renderCard(taskPageCard(task, page, pageIndex, true, false));
+  return Buffer.byteLength(
+    JSON.stringify(rendered),
+    'utf8',
+  ) <= MAX_CARD_JSON_BYTES;
+}
+
+async function renderedTaskPageCard(
+  task: RuntimeTask,
+  cards: InMemoryCardClient,
+  page: TaskCardPage,
+  pageIndex: number,
+  active: boolean,
+  terminal: boolean,
+): Promise<CardKitJson> {
+  const rendered = await cards.renderCard(taskPageCard(task, page, pageIndex, active, terminal));
+  const bytes = Buffer.byteLength(JSON.stringify(rendered), 'utf8');
+  if (bytes > MAX_CARD_JSON_BYTES) {
+    throw new Error(`CardKit page ${pageIndex + 1} exceeds ${MAX_CARD_JSON_BYTES} bytes after rendering`);
+  }
+  return rendered;
+}
+
+function timelinePage(
+  timeline: readonly ProjectedTimelineEntry[],
+  showPrompt: boolean,
+): TaskCardPage {
+  return Object.freeze({
+    timeline: Object.freeze(timeline.map((entry) => entry.card)),
+    timelineConsumption: Object.freeze(timeline.map((entry) => entry.consumption)),
+    finalAnswer: '',
+    kind: 'timeline',
+    showPrompt,
+    answerRevision: false,
+  });
+}
+
+function emptyTaskCardPage(showPrompt: boolean): TaskCardPage {
+  return timelinePage([], showPrompt);
+}
+
+function consumeTaskCardPage(task: RuntimeTask, page: TaskCardPage): void {
+  for (const consumption of page.timelineConsumption) {
+    if (consumption.kind === 'tool') {
+      if (consumption.toolKey && consumption.text) {
+        const delivered = task.deliveredToolFallbackByKey.get(consumption.toolKey) ?? '';
+        task.deliveredToolFallbackByKey.set(consumption.toolKey, `${delivered}${consumption.text}`);
+      }
+      for (const itemId of consumption.itemIds ?? []) {
+        task.deliveredToolItemIds.add(itemId);
+      }
+      continue;
+    }
+    if (!consumption.itemId || !consumption.text) {
+      continue;
+    }
+    const delivered = task.deliveredReasoningByItemId.get(consumption.itemId) ?? '';
+    task.deliveredReasoningByItemId.set(consumption.itemId, `${delivered}${consumption.text}`);
+  }
+  pruneDeliveredTimeline(task);
+  task.answerOffset += page.finalAnswer.length;
+  task.deliveredAnswerPrefix += page.finalAnswer;
+}
+
+function reconcileAnswerCursor(task: RuntimeTask): void {
+  const answer = projectedTaskAnswer(task);
+  if (answer.startsWith(task.deliveredAnswerPrefix)) {
+    return;
+  }
+  // Frozen draft pages cannot be retracted. A divergent terminal snapshot is
+  // therefore delivered from the beginning as an explicitly labelled revision.
+  task.answerOffset = 0;
+  task.deliveredAnswerPrefix = '';
+  task.answerRevision = true;
+}
+
+function pruneDeliveredTimeline(task: RuntimeTask): void {
+  for (let index = task.timeline.length - 1; index >= 0; index -= 1) {
+    const entry = task.timeline[index];
+    if (!entry) {
+      continue;
+    }
+    if (entry.kind === 'tool' && task.deliveredToolItemIds.has(entry.itemId)) {
+      task.timeline.splice(index, 1);
+      continue;
+    }
+    if (entry.kind !== 'reasoning' || !entry.text) {
+      continue;
+    }
+    const visibleText = removeDesktopInternalProgress(entry.text) ?? '';
+    const delivered = task.deliveredReasoningByItemId.get(entry.itemId) ?? '';
+    if (!visibleText || delivered === visibleText || (delivered && !visibleText.startsWith(delivered))) {
+      task.timeline.splice(index, 1);
+    }
+  }
+}
+
+function projectedTaskAnswer(task: RuntimeTask): string {
+  const answer = task.status === 'FAILED' && !task.finalAnswer.trim() && task.tools.trim()
+    ? task.tools
+    : task.finalAnswer;
+  return sanitizeCardMarkdown(answer);
+}
+
+function splitUtf8Text(value: string, maxBytes: number): readonly string[] {
+  if (!value) {
+    return [];
+  }
+  const chunks: string[] = [];
+  let characters: string[] = [];
+  let bytes = 0;
+  for (const character of value) {
+    const characterBytes = Buffer.byteLength(character, 'utf8');
+    if (characters.length > 0 && bytes + characterBytes > maxBytes) {
+      chunks.push(characters.join(''));
+      characters = [];
+      bytes = 0;
+    }
+    characters.push(character);
+    bytes += characterBytes;
+  }
+  if (characters.length > 0) {
+    chunks.push(characters.join(''));
+  }
+  return Object.freeze(chunks);
 }
 
 function toolGroupForExecutions(executions: readonly ToolExecution[]): CardToolGroup {
   const count = executions.reduce((total, execution) => total + execution.actionCount, 0);
+  const revised = executions.some((execution) => execution.revised);
   return Object.freeze({
-    title: sanitizeCardPlainText(`🛠️ 工具执行 · ${count} 步`, { maxLength: 100 }),
+    title: sanitizeCardPlainText(
+      `${revised ? '🛠️ 工具执行更新' : '🛠️ 工具执行'} · ${count} 步`,
+      { maxLength: 100 },
+    ),
     content: sanitizeCardMarkdown(toolExecutionContent(executions), { maxLength: 4_000 }),
     count,
     icon: 'api-app_outlined',
@@ -1532,7 +2123,9 @@ function appendToTask(
     return false;
   }
   const next = task[field] + delta;
-  task[field] = next.length > TEXT_LIMIT ? next.slice(-TEXT_LIMIT) : next;
+  task[field] = field === 'finalAnswer' || next.length <= TEXT_LIMIT
+    ? next
+    : next.slice(-TEXT_LIMIT);
   return true;
 }
 
@@ -1673,6 +2266,7 @@ function appendStartedTool(task: RuntimeTask, params: Record<string, unknown>, n
     outputTail: '',
     completed: false,
     failed: false,
+    revised: false,
   };
   task.toolExecutions.push(execution);
   task.timeline.push({
@@ -1687,6 +2281,7 @@ function appendToolOutput(
   task: RuntimeTask,
   params: Record<string, unknown>,
   delta: string | null,
+  nowMs: number,
 ): void {
   const itemId = stringField(params.itemId);
   if (!itemId || !delta) {
@@ -1700,9 +2295,10 @@ function appendToolOutput(
   execution.outputTail = output.length <= MAX_TOOL_OUTPUT_CHARS
     ? output
     : output.slice(-MAX_TOOL_OUTPUT_CHARS);
+  reopenDeliveredTool(task, execution, nowMs);
 }
 
-function completeTool(task: RuntimeTask, params: Record<string, unknown>): void {
+function completeTool(task: RuntimeTask, params: Record<string, unknown>, nowMs: number): void {
   const item = recordField(params.item);
   if (!item || !toolDescriptor(item)) {
     return;
@@ -1718,6 +2314,27 @@ function completeTool(task: RuntimeTask, params: Record<string, unknown>): void 
   execution.completed = true;
   const exitCode = numberField(item.exitCode);
   execution.failed = (exitCode !== null && exitCode !== 0) || item.status === 'failed';
+  reopenDeliveredTool(task, execution, nowMs);
+}
+
+function reopenDeliveredTool(task: RuntimeTask, execution: ToolExecution, nowMs: number): void {
+  if (!task.deliveredToolItemIds.delete(execution.itemId)) {
+    return;
+  }
+  execution.revised = true;
+  for (const key of task.deliveredToolFallbackByKey.keys()) {
+    if (key.split('\u0000').includes(execution.itemId)) {
+      task.deliveredToolFallbackByKey.delete(key);
+    }
+  }
+  if (!task.timeline.some((entry) => entry.kind === 'tool' && entry.itemId === execution.itemId)) {
+    task.timeline.push({
+      kind: 'tool',
+      itemId: execution.itemId,
+      occurredAtMs: nowMs,
+      execution,
+    });
+  }
 }
 
 function toolDescriptor(item: Record<string, unknown> | null): {
