@@ -1,4 +1,5 @@
 import { randomUUID, timingSafeEqual } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 
 import { deriveTaskCancelToken } from './action-tokens';
 import type { ChatThreadBinding } from './binding-store';
@@ -23,7 +24,7 @@ import type {
   CardToolGroup,
   TaskStatus,
 } from './domain';
-import type { InboundTextMessage } from './lark/intake';
+import { MAX_INBOUND_IMAGES, type InboundMessage } from './lark/intake';
 import type { RuntimeTaskHealth } from './runtime-health';
 import { ThreadTaskScheduler } from './task-scheduler';
 
@@ -84,6 +85,8 @@ export interface InMemoryOrchestratorOptions {
   readonly onRuntimeHealthChanged?: () => void;
   /** Reports content-free Desktop delivery outcomes for logs and runtime health. */
   readonly onDesktopDeliveryOutcome?: (outcome: DesktopDeliveryOutcome) => void;
+  /** Releases process-owned image files after Codex no longer needs them. */
+  readonly releaseInboundImages?: (paths: readonly string[]) => void;
 }
 
 export type DesktopDeliveryOperation = 'start' | 'steer' | 'interrupt';
@@ -104,6 +107,8 @@ export type InMemoryInboundOutcome =
   | 'queued'
   | 'steered'
   | 'duplicate'
+  | 'abandoned'
+  | 'rejected_image_limit'
   | 'rejected_queue_full';
 
 export interface RuntimeApprovalContext {
@@ -115,7 +120,7 @@ export interface RuntimeApprovalContext {
 
 interface RuntimeTask {
   readonly id: string;
-  readonly message: InboundTextMessage;
+  readonly message: InboundMessage;
   readonly binding: ChatThreadBinding;
   cardId: string;
   cardMessageId: string;
@@ -160,6 +165,7 @@ interface RuntimeTask {
   pendingCardId: string | null;
   readonly pendingFreezes: PendingCardFreeze[];
   readonly staleCardMessageIds: Set<string>;
+  readonly localImagePaths: Set<string>;
 }
 
 interface PendingCardFreeze {
@@ -246,9 +252,10 @@ export class InMemoryOrchestrator {
   private readonly onActiveThreadsChanged: () => void;
   private readonly onRuntimeHealthChanged: () => void;
   private readonly onDesktopDeliveryOutcome: (outcome: DesktopDeliveryOutcome) => void;
+  private readonly releaseInboundImages: (paths: readonly string[]) => void;
   private readonly tasksById = new Map<string, RuntimeTask>();
   private readonly scheduler = new ThreadTaskScheduler<RuntimeTask, {
-    readonly message: InboundTextMessage;
+    readonly message: InboundMessage;
     readonly binding: ChatThreadBinding;
   }>();
   private readonly terminalByTurnKey = new Map<string, RuntimeTask>();
@@ -257,6 +264,7 @@ export class InMemoryOrchestrator {
   private readonly startingDesktopTurnKeys = new Set<string>();
   private readonly processedMessageKeys = new Map<string, number>();
   private readonly inboundLocks = new Map<string, Promise<unknown>>();
+  private runtimeGeneration = 0;
 
   public constructor(
     private readonly config: BridgeConfig,
@@ -274,6 +282,7 @@ export class InMemoryOrchestrator {
     this.onActiveThreadsChanged = options.onActiveThreadsChanged ?? (() => undefined);
     this.onRuntimeHealthChanged = options.onRuntimeHealthChanged ?? (() => undefined);
     this.onDesktopDeliveryOutcome = options.onDesktopDeliveryOutcome ?? (() => undefined);
+    this.releaseInboundImages = options.releaseInboundImages ?? (() => undefined);
     this.cardRetryDelayMs = options.cardRetryDelayMs ?? CARD_RETRY_BASE_DELAY_MS;
   }
 
@@ -314,22 +323,35 @@ export class InMemoryOrchestrator {
   }
 
   public async handleInbound(
-    message: InboundTextMessage,
+    message: InboundMessage,
     binding: ChatThreadBinding,
   ): Promise<InMemoryInboundOutcome> {
-    return this.runExclusive(binding.threadId, () => this.handleInboundLocked(message, binding));
+    const generation = this.runtimeGeneration;
+    return this.runExclusive(binding.threadId, async () => {
+      if (generation !== this.runtimeGeneration) {
+        this.releaseMessageImages(message);
+        return 'abandoned';
+      }
+      return this.handleInboundLocked(message, binding, generation);
+    });
   }
 
   private async handleInboundLocked(
-    message: InboundTextMessage,
+    message: InboundMessage,
     binding: ChatThreadBinding,
+    generation: number,
   ): Promise<InMemoryInboundOutcome> {
     this.pruneDedupe();
     const dedupeKey = JSON.stringify([message.eventId, message.messageId]);
     if (this.processedMessageKeys.has(dedupeKey)) {
+      this.releaseMessageImages(message);
       return 'duplicate';
     }
     ({ message, binding } = await this.resolveInlineSkill(message, binding));
+    if (generation !== this.runtimeGeneration) {
+      this.releaseMessageImages(message);
+      return 'abandoned';
+    }
     const active = this.scheduler.active(binding.threadId);
     let outcome: InMemoryInboundOutcome;
     if (
@@ -337,29 +359,40 @@ export class InMemoryOrchestrator {
       && !TERMINAL.has(active.status)
       && active.message.rootMessageId === message.rootMessageId
     ) {
-      try {
-        await this.desktop.steerTurnTracked(buildSteer(active, message, binding), () => undefined);
-        this.reportDesktopDelivery('steer', 'succeeded', active, message.messageId);
-      } catch (error) {
-        this.reportDesktopDelivery('steer', 'failed', active, message.messageId, error);
-        active.tools = deliveryFailureText(error, '补充消息');
-        this.requestCardUpdate(active, true);
+      const addedImagePaths = this.addSteerImagePaths(active, message);
+      if (active.localImagePaths.size > MAX_INBOUND_IMAGES) {
+        this.releaseSteerImagePaths(active, addedImagePaths);
+        outcome = 'rejected_image_limit';
+      } else {
+        try {
+          await this.desktop.steerTurnTracked(buildSteer(active, message, binding), () => undefined);
+          this.reportDesktopDelivery('steer', 'succeeded', active, message.messageId);
+        } catch (error) {
+          this.reportDesktopDelivery('steer', 'failed', active, message.messageId, error);
+          if (deliveryWasConfirmedNotUsed(error)) {
+            this.releaseSteerImagePaths(active, addedImagePaths);
+          }
+          active.tools = deliveryFailureText(error, '补充消息');
+          this.requestCardUpdate(active, true);
+        }
+        outcome = 'steered';
       }
-      outcome = 'steered';
     } else if (active) {
       outcome = this.enqueue(message, binding);
     } else {
-      outcome = await this.start(message, binding);
+      outcome = await this.start(message, binding, generation);
     }
-    this.processedMessageKeys.set(dedupeKey, this.now());
+    if (outcome !== 'rejected_queue_full' && outcome !== 'rejected_image_limit') {
+      this.processedMessageKeys.set(dedupeKey, this.now());
+    }
     this.onRuntimeHealthChanged();
     return outcome;
   }
 
   private async resolveInlineSkill(
-    message: InboundTextMessage,
+    message: InboundMessage,
     binding: ChatThreadBinding,
-  ): Promise<{ readonly message: InboundTextMessage; readonly binding: ChatThreadBinding }> {
+  ): Promise<{ readonly message: InboundMessage; readonly binding: ChatThreadBinding }> {
     if (binding.activeSkill || !message.text.includes('@') || !this.readSkills) {
       return { message, binding };
     }
@@ -523,6 +556,11 @@ export class InMemoryOrchestrator {
 
   /** Ends all local state on Desktop loss; it never retries or replays a turn. */
   abandonAll(): void {
+    this.runtimeGeneration += 1;
+    const queued = this.scheduler.drainQueued();
+    for (const item of queued) {
+      this.releaseMessageImages(item.message);
+    }
     for (const task of this.tasksById.values()) {
       if (task.updateTimer) {
         clearTimeout(task.updateTimer);
@@ -533,6 +571,7 @@ export class InMemoryOrchestrator {
       if (task.cardRetryTimer) {
         clearTimeout(task.cardRetryTimer);
       }
+      this.releaseTaskImages(task);
     }
     this.tasksById.clear();
     const hadActiveThreads = this.scheduler.clear();
@@ -562,14 +601,19 @@ export class InMemoryOrchestrator {
   }
 
   private async start(
-    message: InboundTextMessage,
+    message: InboundMessage,
     binding: ChatThreadBinding,
+    generation: number = this.runtimeGeneration,
   ): Promise<InMemoryInboundOutcome> {
     const taskBinding = await this.bindingWithTitle(binding);
+    if (generation !== this.runtimeGeneration) {
+      this.releaseMessageImages(message);
+      return 'abandoned';
+    }
     const id = randomUUID();
     const startedAtMs = this.now();
     const initialCard = taskCard(
-      message.text,
+      displayTaskPrompt(message),
       'CARD_CREATING',
       '',
       [],
@@ -581,7 +625,15 @@ export class InMemoryOrchestrator {
       taskBinding,
     );
     const cardId = await this.cards.createCard(initialCard);
+    if (generation !== this.runtimeGeneration) {
+      this.releaseMessageImages(message);
+      return 'abandoned';
+    }
     const cardMessageId = await this.cards.sendCard(message.chatId, cardId, `task:${id}`);
+    if (generation !== this.runtimeGeneration) {
+      this.releaseMessageImages(message);
+      return 'abandoned';
+    }
     const task: RuntimeTask = {
       id,
       message,
@@ -629,6 +681,7 @@ export class InMemoryOrchestrator {
       pendingCardId: null,
       pendingFreezes: [],
       staleCardMessageIds: new Set(),
+      localImagePaths: new Set(message.localImagePaths ?? []),
     };
     this.tasksById.set(id, task);
     this.activateTask(task);
@@ -804,6 +857,7 @@ export class InMemoryOrchestrator {
       pendingCardId: null,
       pendingFreezes: [],
       staleCardMessageIds: new Set(),
+      localImagePaths: new Set(),
     };
     this.tasksById.set(id, task);
     this.activateTask(task);
@@ -814,8 +868,9 @@ export class InMemoryOrchestrator {
     }
   }
 
-  private enqueue(message: InboundTextMessage, binding: ChatThreadBinding): InMemoryInboundOutcome {
+  private enqueue(message: InboundMessage, binding: ChatThreadBinding): InMemoryInboundOutcome {
     if (!this.scheduler.enqueue(binding.threadId, { message, binding }, this.config.maxQueuedTasks)) {
+      this.releaseMessageImages(message);
       return 'rejected_queue_full';
     }
     return 'queued';
@@ -1108,6 +1163,7 @@ export class InMemoryOrchestrator {
     if (task.updateTimer) {
       clearTimeout(task.updateTimer);
     }
+    this.releaseTaskImages(task);
     let activeTaskRemoved = false;
     activeTaskRemoved = this.scheduler.release(task.binding.threadId, task);
     if (task.turnId) {
@@ -1136,7 +1192,11 @@ export class InMemoryOrchestrator {
     // Keep the Desktop follower subscription stable while ownership passes to
     // the next queued task for the same thread. Its activation will publish the
     // refreshed active-thread snapshot after the new turn starts.
-    void this.runExclusive(next.binding.threadId, () => this.start(next.message, next.binding))
+    const generation = this.runtimeGeneration;
+    void this.runExclusive(
+      next.binding.threadId,
+      () => this.start(next.message, next.binding, generation),
+    )
       .catch((error: unknown) => this.onCardError(toError(error)));
   }
 
@@ -1218,13 +1278,49 @@ export class InMemoryOrchestrator {
       this.inboundLocks.delete(threadId);
     }
   }
+
+  private releaseMessageImages(message: InboundMessage): void {
+    if (message.localImagePaths?.length) {
+      this.releaseInboundImages(message.localImagePaths);
+    }
+  }
+
+  private releaseTaskImages(task: RuntimeTask): void {
+    if (task.localImagePaths.size === 0) {
+      return;
+    }
+    const paths = [...task.localImagePaths];
+    task.localImagePaths.clear();
+    this.releaseInboundImages(paths);
+  }
+
+  private addSteerImagePaths(task: RuntimeTask, message: InboundMessage): readonly string[] {
+    const addedPaths: string[] = [];
+    for (const path of message.localImagePaths ?? []) {
+      if (!task.localImagePaths.has(path)) {
+        task.localImagePaths.add(path);
+        addedPaths.push(path);
+      }
+    }
+    return addedPaths;
+  }
+
+  private releaseSteerImagePaths(task: RuntimeTask, paths: readonly string[]): void {
+    if (paths.length === 0) {
+      return;
+    }
+    for (const path of paths) {
+      task.localImagePaths.delete(path);
+    }
+    this.releaseInboundImages(paths);
+  }
 }
 
 function buildStart(task: RuntimeTask): TurnStartParams {
   return {
     threadId: task.binding.threadId,
     clientUserMessageId: task.message.messageId,
-    input: taskInput(task.message.text, task.binding),
+    input: taskInput(task.message.text, task.binding, task.message.localImagePaths),
     cwd: task.binding.workspaceId,
     approvalPolicy: 'on-request',
     approvalsReviewer: 'user',
@@ -1239,14 +1335,14 @@ function buildStart(task: RuntimeTask): TurnStartParams {
 
 function buildSteer(
   task: RuntimeTask,
-  message: InboundTextMessage,
+  message: InboundMessage,
   binding: ChatThreadBinding,
 ): TurnSteerParams {
   return {
     threadId: task.binding.threadId,
     expectedTurnId: task.turnId as string,
     clientUserMessageId: message.messageId,
-    input: taskInput(message.text, binding),
+    input: taskInput(message.text, binding, message.localImagePaths),
   };
 }
 
@@ -1339,7 +1435,7 @@ function taskPageCard(
     ? task.status
     : TERMINAL.has(task.status) ? 'COMPLETING' : task.status;
   return taskCard(
-    task.message.text,
+    displayTaskPrompt(task.message),
     status,
     '',
     task.toolExecutions,
@@ -2432,32 +2528,56 @@ function threadItemText(item: Turn['items'][number]): string {
 }
 
 function desktopPrompt(turn: Turn): string | null {
-  const inputPrompt = (turn.input ?? [])
-    .filter((input) => input.type === 'text')
-    .map((input) => input.text)
-    .join('\n')
-    .trim();
-  if (inputPrompt) {
-    return inputPrompt;
+  const inputs = desktopTurnInputs(turn);
+  const localImagePaths = [...new Set(inputs.flatMap((input) => (
+    typeof input !== 'string' && input.type === 'localImage' ? [input.path] : []
+  )))];
+  const text = inputs.map((input) => (
+    typeof input === 'string' ? input : input.type === 'text' ? input.text : ''
+  )).filter(Boolean).join('\n');
+  const prompt = stripDesktopAttachmentEnvelope(text, localImagePaths.length > 0);
+  const images = localImagePaths.map((path, index) => (
+    `![输入图片 ${index + 1}](${pathToFileURL(path).href})`
+  ));
+  const projected = [prompt, ...images].filter(Boolean).join('\n\n').trim();
+  return projected || null;
+}
+
+function desktopTurnInputs(turn: Turn): readonly (UserInput | string)[] {
+  if (turn.input?.length) {
+    return turn.input;
   }
   for (const item of turn.items) {
     if (item.type !== 'userMessage' && item.type !== 'user_message') {
       continue;
     }
+    if (Array.isArray(item.content) && item.content.length > 0) {
+      return item.content;
+    }
     if (item.text?.trim()) {
-      return item.text.trim();
-    }
-    if (!Array.isArray(item.content)) {
-      continue;
-    }
-    const prompt = item.content.map((content) => (
-      typeof content === 'string' ? content : content.type === 'text' ? content.text : ''
-    )).join('\n').trim();
-    if (prompt) {
-      return prompt;
+      return [item.text];
     }
   }
-  return null;
+  return [];
+}
+
+function stripDesktopAttachmentEnvelope(text: string, hasLocalImages: boolean): string {
+  const trimmed = text.trim();
+  if (!hasLocalImages || !trimmed) {
+    return trimmed;
+  }
+  const filesHeader = /^#\s+Files mentioned by the user:\s*$/m.exec(trimmed);
+  const requestHeader = /^##\s+My request for Codex:\s*$/m.exec(trimmed);
+  const request = filesHeader?.index === 0
+    && requestHeader?.index !== undefined
+    && requestHeader.index > filesHeader.index
+    ? trimmed.slice(requestHeader.index + requestHeader[0].length)
+    : trimmed;
+  return request
+    .split(/\r?\n/)
+    .filter((line) => !/^<\/?image(?:\s[^>]*)?>\s*$/.test(line.trim()))
+    .join('\n')
+    .trim();
 }
 
 function desktopMessage(
@@ -2466,7 +2586,7 @@ function desktopMessage(
   prompt: string,
   cardMessageId: string,
   createdAtMs: number,
-): InboundTextMessage {
+): InboundMessage {
   return {
     tenantKey: binding.tenantKey,
     eventId: `desktop:${binding.threadId}:${turn.id}`,
@@ -2480,18 +2600,34 @@ function desktopMessage(
   };
 }
 
-function taskInput(prompt: string, binding: ChatThreadBinding): UserInput[] {
+function taskInput(
+  prompt: string,
+  binding: ChatThreadBinding,
+  localImagePaths: readonly string[] = [],
+): UserInput[] {
   const text = { type: 'text' as const, text: prompt, text_elements: [] };
+  const images: UserInput[] = localImagePaths.map((path) => ({ type: 'localImage', path }));
+  const textInput: UserInput[] = prompt ? [text] : [];
   if (!binding.activeSkill) {
-    return [text];
+    return textInput.length > 0 || images.length > 0 ? [...textInput, ...images] : [text];
   }
   if (!binding.activeSkillPath) {
-    return [{ ...text, text: `@${binding.activeSkill} ${prompt}` }];
+    return [{ ...text, text: `@${binding.activeSkill}${prompt ? ` ${prompt}` : ''}` }, ...images];
   }
   return [
     { type: 'skill', name: binding.activeSkill, path: binding.activeSkillPath },
-    text,
+    ...textInput,
+    ...images,
   ];
+}
+
+function displayTaskPrompt(message: InboundMessage): string {
+  if (message.text.trim()) {
+    return message.text;
+  }
+  return (message.localImagePaths?.length ?? 0) > 0
+    ? '🖼️ 仅图片，未填写任务描述'
+    : '';
 }
 
 interface InlineSkillMatch {
@@ -2572,6 +2708,11 @@ function deliveryFailureText(error: unknown, operation: string): string {
     return `${operation}被 ChatGPT Desktop 明确拒绝（${deliveryFailureCode(error)}）；Bridge 不会重试。`;
   }
   return `${operation}的 Desktop 送达结果无法确认（${deliveryFailureCode(error)}）；为避免重复执行，Bridge 不会自动重试。`;
+}
+
+function deliveryWasConfirmedNotUsed(error: unknown): boolean {
+  return !(error instanceof DesktopIpcRequestError)
+    || error.disposition !== 'OUTCOME_UNKNOWN';
 }
 
 function deliveryFailureCode(error: DesktopIpcRequestError): string {

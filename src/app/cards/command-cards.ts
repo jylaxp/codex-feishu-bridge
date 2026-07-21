@@ -24,9 +24,23 @@ export interface StatusCardInput {
   readonly goal: unknown;
 }
 
-/** Returns the original application's help card without changing its copy or layout. */
+/** Extends the original help card with the Bridge image-input workflow. */
 export function createHelpCard(_allowedShellCommands: readonly string[]): CardKitJson {
-  return createOriginalHelpCard() as CardKitJson;
+  const card = createOriginalHelpCard() as MutableCard;
+  card.body.elements.push({
+    tag: 'div',
+    text: {
+      tag: 'lark_md',
+      content: '🖼️ **图片任务**\n'
+        + '- 图文消息会作为一个任务直接提交。\n'
+        + '- 单独发送的图片会暂存，可继续追加图片。\n'
+        + '- 在图片回执卡片中填写可选任务描述，再点击“提交图片”；留空时仅提交图片。\n'
+        + '- 使用图片回执卡片的“取消”按钮可清除当前批次。\n'
+        + '- 兼容指令：`/image-run` 提交，`/image-cancel` 取消。\n'
+        + '- 每个任务最多 8 张图片，支持 JPG、PNG、WebP，单张不超过 20 MB。',
+    },
+  });
+  return card as unknown as CardKitJson;
 }
 
 /** Returns the original model picker; only the invisible option values use opaque action tokens. */

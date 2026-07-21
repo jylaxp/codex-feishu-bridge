@@ -224,6 +224,42 @@ test('Desktop IPC initializes the epoch before handling an immediate restored sn
   }
 });
 
+test('Desktop stream normalization preserves structured local image inputs', () => {
+  const normalizer = new DesktopThreadStreamNormalizer(() => 100);
+  const notifications = normalizer.handle({
+    type: 'broadcast',
+    method: 'thread-stream-state-changed',
+    sourceClientId: 'desktop-owner',
+    version: DESKTOP_THREAD_STREAM_PROTOCOL_VERSION,
+    params: {
+      conversationId: binding.threadId,
+      change: {
+        type: 'snapshot',
+        conversationState: {
+          turns: [{
+            id: 'turn-with-image',
+            status: 'inProgress',
+            input: [
+              { type: 'text', text: '分析图片' },
+              { type: 'localImage', path: '/private/tmp/desktop-image.png' },
+            ],
+            items: [],
+          }],
+        },
+      },
+    },
+  });
+  const started = notifications.find((notification) => notification.method === 'turn/started') as
+    | Extract<ServerNotification, { readonly method: 'turn/started' }>
+    | undefined;
+
+  assert.ok(started);
+  assert.deepEqual(started.params.turn.input, [
+    { type: 'text', text: '分析图片', text_elements: [] },
+    { type: 'localImage', path: '/private/tmp/desktop-image.png' },
+  ]);
+});
+
 test('Desktop supervisor restores followers after an actual socket loss', async () => {
   const mock = createMockTransport((message, socket) => {
     if (message.method === 'initialize') {
@@ -317,6 +353,247 @@ test('orchestrator uses App Server callbacks only for metadata and never replays
   assert.deepEqual(activeThreadSnapshots.at(-1), []);
   orchestrator.abandonAll();
 });
+
+test('orchestrator projects Desktop image attachments and removes the attachment envelope', async () => {
+  const desktop = new RecordingDesktopTurnClient();
+  const cards = new RecordingCards();
+  const orchestrator = new InMemoryOrchestrator(config, desktop, cards, {
+    resolveBindingByThreadId: (threadId) => threadId === binding.threadId ? binding : undefined,
+  });
+  const localImagePath = '/private/tmp/codex-clipboard-image.png';
+  const turn: Turn = {
+    id: 'turn-desktop-image',
+    input: [
+      {
+        type: 'text',
+        text: '# Files mentioned by the user:\n\n'
+          + `## codex-clipboard-image.png: ${localImagePath}\n\n`
+          + '## My request for Codex:\n请查看并分析这张图片。',
+        text_elements: [],
+      },
+      { type: 'localImage', path: localImagePath },
+    ],
+    items: [],
+    itemsView: 'full',
+    status: 'inProgress',
+    error: null,
+    startedAt: 1,
+    completedAt: null,
+    durationMs: null,
+  };
+
+  orchestrator.handleNotification({
+    method: 'turn/started',
+    params: { threadId: binding.threadId, turn },
+  });
+  await waitFor(() => cards.sentCardIds.length === 1);
+
+  const card = JSON.stringify(cards.card('card-1'));
+  assert.match(card, /请查看并分析这张图片/);
+  assert.match(card, /!\[输入图片 1\]\(file:\/\/\/private\/tmp\/codex-clipboard-image\.png\)/);
+  assert.doesNotMatch(card, /Files mentioned by the user|My request for Codex/);
+  orchestrator.abandonAll();
+});
+
+test('orchestrator sends local images to Desktop and releases them after completion', async () => {
+  const desktop = new RecordingDesktopTurnClient();
+  const cards = new RecordingCards();
+  const released: string[][] = [];
+  const orchestrator = new InMemoryOrchestrator(config, desktop, cards, {
+    releaseInboundImages: (paths) => released.push([...paths]),
+  });
+  const message: InboundTextMessage = {
+    ...inbound('image', ''),
+    messageType: 'image',
+    hasExplicitText: false,
+    imageKey: 'img_v3_key',
+    localImagePaths: ['/private/tmp/inbound-image.png'],
+  };
+
+  assert.equal(await orchestrator.handleInbound(message, binding), 'started');
+  assert.deepEqual(desktop.starts[0]?.input, [
+    { type: 'localImage', path: '/private/tmp/inbound-image.png' },
+  ]);
+  assert.match(JSON.stringify(cards.card('card-1')), /仅图片，未填写任务描述/);
+  const followUp: InboundTextMessage = {
+    ...inbound('image-follow-up', '继续查看第二张图片。', message.rootMessageId),
+    messageType: 'image',
+    imageKey: 'img_v3_follow_up',
+    localImagePaths: ['/private/tmp/inbound-image-2.png'],
+  };
+  assert.equal(await orchestrator.handleInbound(followUp, binding), 'steered');
+  assert.deepEqual(desktop.steers[0]?.input, [
+    { type: 'text', text: '继续查看第二张图片。', text_elements: [] },
+    { type: 'localImage', path: '/private/tmp/inbound-image-2.png' },
+  ]);
+
+  orchestrator.handleNotification(completedNotification('turn-1', '已识别图片'));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(released, [[
+    '/private/tmp/inbound-image.png',
+    '/private/tmp/inbound-image-2.png',
+  ]]);
+  orchestrator.abandonAll();
+});
+
+test('orchestrator rejects images beyond the active task total', async () => {
+  const desktop = new RecordingDesktopTurnClient();
+  const cards = new RecordingCards();
+  const released: string[][] = [];
+  const orchestrator = new InMemoryOrchestrator(config, desktop, cards, {
+    releaseInboundImages: (paths) => released.push([...paths]),
+  });
+  const firstPaths = Array.from({ length: 8 }, (_value, index) => `/private/tmp/image-${index}.png`);
+  const first: InboundTextMessage = {
+    ...inbound('eight-images', '分析八张图片'),
+    localImagePaths: firstPaths,
+  };
+  assert.equal(await orchestrator.handleInbound(first, binding), 'started');
+
+  const ninth: InboundTextMessage = {
+    ...inbound('ninth-image', '补充第九张', first.rootMessageId),
+    localImagePaths: ['/private/tmp/image-9.png'],
+  };
+  assert.equal(await orchestrator.handleInbound(ninth, binding), 'rejected_image_limit');
+  assert.equal(desktop.steers.length, 0);
+  assert.deepEqual(released, [['/private/tmp/image-9.png']]);
+
+  orchestrator.handleNotification(completedNotification('turn-1', '已完成'));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(released[1], firstPaths);
+  orchestrator.abandonAll();
+});
+
+test('orchestrator rejects inbound work queued before a Desktop abandon generation', async () => {
+  const desktop = new DeferredStartDesktopTurnClient();
+  const cards = new RecordingCards();
+  const released: string[][] = [];
+  const orchestrator = new InMemoryOrchestrator(config, desktop, cards, {
+    releaseInboundImages: (paths) => released.push([...paths]),
+  });
+  const first: InboundTextMessage = {
+    ...inbound('generation-first', '第一个任务'),
+    localImagePaths: ['/private/tmp/generation-first.png'],
+  };
+  const second: InboundTextMessage = {
+    ...inbound('generation-second', '第二个任务'),
+    localImagePaths: ['/private/tmp/generation-second.png'],
+  };
+
+  const firstOutcome = orchestrator.handleInbound(first, binding);
+  await waitFor(() => desktop.starts.length === 1);
+  const secondOutcome = orchestrator.handleInbound(second, binding);
+  orchestrator.abandonAll();
+  desktop.completeStart();
+
+  assert.equal(await firstOutcome, 'started');
+  assert.equal(await secondOutcome, 'abandoned');
+  assert.deepEqual(released, [
+    ['/private/tmp/generation-first.png'],
+    ['/private/tmp/generation-second.png'],
+  ]);
+  orchestrator.abandonAll();
+});
+
+test('orchestrator rechecks the Desktop generation after asynchronous pre-start metadata', async () => {
+  const desktop = new RecordingDesktopTurnClient();
+  const cards = new RecordingCards();
+  const released: string[][] = [];
+  let resolveTitle!: (title: string) => void;
+  let titleRequested = false;
+  const title = new Promise<string>((resolve) => { resolveTitle = resolve; });
+  const orchestrator = new InMemoryOrchestrator(config, desktop, cards, {
+    readThreadTitle: () => {
+      titleRequested = true;
+      return title;
+    },
+    releaseInboundImages: (paths) => released.push([...paths]),
+  });
+  const message: InboundTextMessage = {
+    ...inbound('metadata-generation', '等待标题'),
+    localImagePaths: ['/private/tmp/metadata-generation.png'],
+  };
+
+  const outcome = orchestrator.handleInbound(message, { ...binding, threadTitle: undefined });
+  await waitFor(() => titleRequested);
+  orchestrator.abandonAll();
+  resolveTitle('迟到标题');
+
+  assert.equal(await outcome, 'abandoned');
+  assert.equal(desktop.starts.length, 0);
+  assert.deepEqual(released, [['/private/tmp/metadata-generation.png']]);
+  orchestrator.abandonAll();
+});
+
+for (const scenario of [
+  {
+    name: 'releases steered images after a provably unsent Desktop failure',
+    error: new DesktopIpcRequestError(
+      'DESKTOP_IPC_REMOTE_REJECTED',
+      'PROVABLY_UNSENT',
+      7,
+      'thread-follower-steer-turn',
+    ),
+    releaseImmediately: true,
+  },
+  {
+    name: 'releases steered images after a definitive Desktop failure',
+    error: new DesktopIpcRequestError(
+      'DESKTOP_IPC_REMOTE_REJECTED',
+      'DEFINITIVE_FAILURE',
+      7,
+      'thread-follower-steer-turn',
+    ),
+    releaseImmediately: true,
+  },
+  {
+    name: 'releases steered images after a local unsent failure',
+    error: new Error('local Desktop request setup failed'),
+    releaseImmediately: true,
+  },
+  {
+    name: 'retains steered images after an unknown Desktop delivery outcome',
+    error: new DesktopIpcRequestError(
+      'DESKTOP_IPC_CONNECTION_LOST',
+      'OUTCOME_UNKNOWN',
+      7,
+      'thread-follower-steer-turn',
+    ),
+    releaseImmediately: false,
+  },
+] as const) {
+  test(`orchestrator ${scenario.name}`, async () => {
+    const desktop = new SteerRejectingDesktopTurnClient(scenario.error);
+    const released: string[][] = [];
+    const orchestrator = new InMemoryOrchestrator(config, desktop, new RecordingCards(), {
+      releaseInboundImages: (paths) => released.push([...paths]),
+    });
+    const firstImagePath = '/private/tmp/inbound-image-start.png';
+    const followUpImagePath = '/private/tmp/inbound-image-follow-up.png';
+    const first = {
+      ...inbound('steer-release-start', '请查看第一张图片。'),
+      localImagePaths: [firstImagePath],
+    };
+    const followUp = {
+      ...inbound('steer-release-follow-up', '请查看第二张图片。', first.rootMessageId),
+      localImagePaths: [followUpImagePath],
+    };
+
+    assert.equal(await orchestrator.handleInbound(first, binding), 'started');
+    assert.equal(await orchestrator.handleInbound(followUp, binding), 'steered');
+    assert.deepEqual(released, scenario.releaseImmediately ? [[followUpImagePath]] : []);
+
+    orchestrator.handleNotification(completedNotification('turn-1', '图片任务完成'));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(
+      released,
+      scenario.releaseImmediately
+        ? [[followUpImagePath], [firstImagePath]]
+        : [[firstImagePath, followUpImagePath]],
+    );
+    orchestrator.abandonAll();
+  });
+}
 
 test('orchestrator exposes an unavailable Desktop owner in health callbacks and the failure card', async () => {
   const desktop = new RejectingDesktopTurnClient();
@@ -414,8 +691,9 @@ test('orchestrator rejects a message when the per-thread queue is full', async (
 
   assert.equal(await orchestrator.handleInbound(inbound('full-1', 'first'), binding), 'started');
   assert.equal(await orchestrator.handleInbound(inbound('full-2', 'second'), binding), 'queued');
+  const retryable = inbound('full-3', 'must not disappear');
   assert.equal(
-    await orchestrator.handleInbound(inbound('full-3', 'must not disappear'), binding),
+    await orchestrator.handleInbound(retryable, binding),
     'rejected_queue_full',
   );
 
@@ -426,6 +704,9 @@ test('orchestrator rejects a message when the per-thread queue is full', async (
   orchestrator.handleNotification(completedNotification('turn-2', 'second result'));
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(desktop.starts.length, 2);
+
+  assert.equal(await orchestrator.handleInbound(retryable, binding), 'started');
+  assert.equal(desktop.starts.length, 3);
   orchestrator.abandonAll();
 });
 
@@ -803,6 +1084,35 @@ class RecordingDesktopTurnClient implements DesktopTurnClient {
   }
 }
 
+class DeferredStartDesktopTurnClient extends RecordingDesktopTurnClient {
+  private resolveStart: ((turn: Turn) => void) | undefined;
+
+  override async startTurnTracked(params: TurnStartParams): Promise<Turn> {
+    this.starts.push(params);
+    return new Promise((resolve) => {
+      this.resolveStart = resolve;
+    });
+  }
+
+  completeStart(): void {
+    const resolve = this.resolveStart;
+    if (!resolve) {
+      throw new Error('No pending Desktop start');
+    }
+    this.resolveStart = undefined;
+    resolve({
+      id: 'turn-1',
+      items: [],
+      itemsView: 'notLoaded',
+      status: 'inProgress',
+      error: null,
+      startedAt: null,
+      completedAt: null,
+      durationMs: null,
+    });
+  }
+}
+
 class RejectingDesktopTurnClient extends RecordingDesktopTurnClient {
   override async startTurnTracked(params: TurnStartParams): Promise<Turn> {
     this.starts.push(params);
@@ -815,6 +1125,17 @@ class RejectingDesktopTurnClient extends RecordingDesktopTurnClient {
       undefined,
       'no-client-found',
     );
+  }
+}
+
+class SteerRejectingDesktopTurnClient extends RecordingDesktopTurnClient {
+  public constructor(private readonly steerError: Error) {
+    super();
+  }
+
+  override async steerTurnTracked(params: TurnSteerParams): Promise<string> {
+    this.steers.push(params);
+    throw this.steerError;
   }
 }
 

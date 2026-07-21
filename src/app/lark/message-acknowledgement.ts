@@ -1,4 +1,4 @@
-import type { InboundTextMessage } from './intake';
+import type { InboundMessage } from './intake';
 
 export interface LarkMessageAcknowledgementApi {
   readonly im: {
@@ -33,7 +33,7 @@ export class LarkMessageAcknowledgement {
     private readonly logger: LarkMessageAcknowledgementLogger | undefined = undefined,
   ) {}
 
-  public async ack(message: InboundTextMessage): Promise<void> {
+  public async ack(message: InboundMessage): Promise<void> {
     try {
       await this.api.im.messageReaction.create({
         path: { message_id: message.messageId },

@@ -83,6 +83,181 @@ export function createQueueFullCard(maxQueuedTasks: number): CardKitJson {
   };
 }
 
+/** Builds a safe user-facing reply when an inbound image cannot be prepared. */
+export function createImageInputErrorCard(): CardKitJson {
+  return {
+    schema: '2.0',
+    config: { wide_screen_mode: true },
+    header: {
+      template: 'orange',
+      title: { tag: 'plain_text', content: '⚠️ 图片未接收' },
+    },
+    body: {
+      elements: [{
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: '图片下载失败、超过 20 MB，或格式不受支持。'
+            + '请发送 JPG、PNG 或 WebP 图片后重试。',
+        },
+      }],
+    },
+  };
+}
+
+/** Tells the user that image metadata is held in memory and exposes one-shot actions. */
+export function createImagePendingCard(_imageCount: number, actionToken: string): CardKitJson {
+  return imageBatchActionCard(
+    'blue',
+    '🖼️ 图片已接收',
+    '图片已暂存。可以继续发送图片，也可以填写可选任务描述后直接提交。',
+    actionToken,
+  );
+}
+
+function imageBatchActionCard(
+  template: string,
+  title: string,
+  content: string,
+  actionToken: string,
+  initialTaskDescription?: string,
+): CardKitJson {
+  return {
+    schema: '2.0',
+    config: { wide_screen_mode: true },
+    header: {
+      template,
+      title: { tag: 'plain_text', content: title },
+    },
+    body: {
+      elements: [
+        {
+          tag: 'div',
+          text: {
+            tag: 'lark_md',
+            content,
+          },
+        },
+        {
+          tag: 'form',
+          name: 'image_task_form',
+          elements: [
+            {
+              tag: 'input',
+              name: 'task_description',
+              label: { tag: 'plain_text', content: '任务描述（可选）' },
+              label_position: 'top',
+              placeholder: {
+                tag: 'plain_text',
+                content: '例如：比较这些图片并给出修改建议',
+              },
+              max_length: 1_000,
+              ...(initialTaskDescription
+                ? { default_value: initialTaskDescription }
+                : {}),
+            },
+            {
+              tag: 'button',
+              name: 'submit',
+              action_type: 'form_submit',
+              type: 'primary',
+              width: 'fill',
+              text: { tag: 'plain_text', content: '提交图片' },
+              value: { action: 'image-run', token: actionToken },
+            },
+          ],
+        },
+        {
+          tag: 'button',
+          type: 'default',
+          width: 'fill',
+          text: { tag: 'plain_text', content: '取消' },
+          value: { action: 'image-cancel', token: actionToken },
+          confirm: {
+            title: { tag: 'plain_text', content: '确认取消？' },
+            text: { tag: 'plain_text', content: '取消后，当前暂存的图片不会发送给 Codex。' },
+          },
+        },
+      ],
+    },
+  };
+}
+
+/** Confirms that an in-memory image batch was discarded before Codex execution. */
+export function createImageBatchCancelledCard(): CardKitJson {
+  return imageNoticeCard('grey', '已取消图片任务', '待提交图片已清除，没有发送给 Codex。');
+}
+
+/** Confirms that the pending image batch was accepted for background dispatch. */
+export function createImageBatchSubmittedCard(): CardKitJson {
+  return imageNoticeCard('green', '图片任务已提交', '图片正在发送给 Codex，请等待任务卡片更新。');
+}
+
+/** Explains that an image-batch command had no pending images to operate on. */
+export function createImageBatchEmptyCard(): CardKitJson {
+  return imageNoticeCard('grey', '当前没有待提交图片', '请先发送图片，再发送任务描述或 `/image-run`。');
+}
+
+/** Reports a failed button submission and offers a retry only when the batch was restored. */
+export function createImageSubmissionFailedCard(
+  imageCount: number,
+  retryToken: string | null,
+  taskDescription?: string,
+): CardKitJson {
+  if (!retryToken) {
+    return imageNoticeCard(
+      'orange',
+      '⚠️ 图片任务提交失败',
+      '本批图片未能提交；当前会话已经收到新的图片批次，请重新发送本批图片。',
+    );
+  }
+  return imageBatchActionCard(
+    'orange',
+    '⚠️ 图片任务提交失败',
+    taskDescription
+      ? `已保留 ${imageCount} 张图片和任务描述，请确认后点击“提交图片”重试。`
+      : `已保留 ${imageCount} 张图片，请点击“提交图片”重试。`,
+    retryToken,
+    taskDescription,
+  );
+}
+
+/** Rejects an image batch before any resource download begins. */
+export function createImageCountErrorCard(maximumImages: number): CardKitJson {
+  return imageNoticeCard(
+    'orange',
+    '⚠️ 图片数量已达上限',
+    `一个任务最多接收 ${maximumImages} 张图片。`
+      + '请先发送任务描述，或点击图片回执卡片中的“提交图片”。',
+  );
+}
+
+/** Rejects an excessive burst without allowing the per-conversation promise chain to grow forever. */
+export function createImageInputOverloadedCard(): CardKitJson {
+  return imageNoticeCard(
+    'orange',
+    '⚠️ 图片消息处理繁忙',
+    '当前会话短时间内输入过多。请等待现有消息处理完成后，再发送未处理的内容。',
+  );
+}
+
+function imageNoticeCard(template: string, title: string, content: string): CardKitJson {
+  return {
+    schema: '2.0',
+    config: { wide_screen_mode: true },
+    header: {
+      template,
+      title: { tag: 'plain_text', content: title },
+    },
+    body: {
+      elements: [{
+        tag: 'div',
+        text: { tag: 'lark_md', content },
+      }],
+    },
+  };
+}
+
 function markdown(content: SanitizedCardText | string, elementId?: string): Record<string, unknown> {
   return {
     tag: 'markdown',

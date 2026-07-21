@@ -1,9 +1,21 @@
 import { randomUUID } from 'node:crypto';
+import { homedir } from 'node:os';
+import { resolve } from 'node:path';
 
 import { BindingStore } from './binding-store';
 import { CardKitClient, type LarkReplyApi } from './cards/cardkit-client';
 import { CardImageRenderer, type LarkImageApi } from './cards/card-image-renderer';
-import { createQueueFullCard } from './cards/layouts';
+import {
+  createImageBatchCancelledCard,
+  createImageBatchEmptyCard,
+  createImageBatchSubmittedCard,
+  createImageCountErrorCard,
+  createImageInputErrorCard,
+  createImageInputOverloadedCard,
+  createImagePendingCard,
+  createImageSubmissionFailedCard,
+  createQueueFullCard,
+} from './cards/layouts';
 import { AppServerClient, type AppServerTransportOptions } from './codex/app-server-client';
 import {
   AppServerControlPlane,
@@ -16,6 +28,7 @@ import { DesktopIpcSupervisor } from './codex/desktop-ipc-supervisor';
 import type { DesktopIpcSupervisorState } from './codex/desktop-ipc-supervisor';
 import { DesktopThreadStreamNormalizer } from './codex/desktop-thread-stream-normalizer';
 import { CodexAppNavigationAdapter } from './codex/app-navigation-adapter';
+import type { ServerNotification } from './codex/protocol';
 import { verifyCodexRuntimeContract } from './codex/runtime-contract';
 import { parseEnvironment } from './config';
 import { loadBridgeEnvironment } from './config-file';
@@ -34,7 +47,15 @@ import {
 } from './lark/message-acknowledgement';
 import { OutputFileUploader, type FileUploadApi } from './lark/output-file-uploader';
 import { LarkEventServer, toast } from './lark/event-server';
-import type { InboundTextMessage } from './lark/intake';
+import { isTextOnlyInboundMessage, type InboundMessage } from './lark/intake';
+import {
+  InboundImageStore,
+  type LarkMessageResourceApi,
+} from './lark/inbound-image-store';
+import {
+  InboundMessageAggregator,
+  MAX_INBOUND_IMAGES,
+} from './lark/inbound-message-aggregator';
 import { LarkScopeConfigStore } from './lark/scope-config-store';
 import { BridgeLogger } from './logger';
 import { runPreflight } from './preflight';
@@ -118,6 +139,8 @@ export async function startBridge(
   const desktop = new DesktopIpcClient();
   await desktop.syncFollowedThreads(bindings.list().map((binding) => binding.threadId));
   let orchestrator: InMemoryOrchestrator | undefined;
+  let messageAggregator: InboundMessageAggregator | undefined;
+  let inboundGeneration = 0;
   const healthStore = new RuntimeHealthStore(preflight.configHome);
   let runtimeStarted = false;
   let runtimeStopped = false;
@@ -250,7 +273,10 @@ export async function startBridge(
       publishHealth();
     },
   });
-  const cardImages = new CardImageRenderer(lark.api as unknown as LarkImageApi);
+  const cardImages = new CardImageRenderer(
+    lark.api as unknown as LarkImageApi,
+    [config.codexCwd, resolveCodexVisualizationsRoot(effectiveEnv)],
+  );
   const cards = new CardKitClient(
     new CachedTenantTokenProvider(config.larkAppId, config.larkAppSecret),
     lark.api as unknown as LarkReplyApi,
@@ -261,6 +287,10 @@ export async function startBridge(
   const acknowledgements = new LarkMessageAcknowledgement(
     lark.api as unknown as LarkMessageAcknowledgementApi,
     logger,
+  );
+  const inboundImages = new InboundImageStore(
+    lark.api as unknown as LarkMessageResourceApi,
+    preflight.runtimeDirectory.temporaryDir,
   );
   const rateLimits = new RateLimitCache(
     () => appServerControlPlane.request('account/rateLimits/read', {}),
@@ -286,6 +316,12 @@ export async function startBridge(
       updateDesktopDeliveryHealth(outcome);
       publishHealth();
     },
+    releaseInboundImages: (paths) => {
+      cardImages.revoke(paths);
+      void inboundImages.release(paths).catch((error: unknown) => {
+        logger.error('lark_inbound_image_cleanup_failed', toError(error), { count: paths.length });
+      });
+    },
   });
   const approvals = new DesktopApprovalService(config, desktop, cards, orchestrator);
   const conversationBindings = new ConversationBindingServiceV3(
@@ -304,6 +340,7 @@ export async function startBridge(
         return false;
       }
       for (const notification of notifications) {
+        cardImages.approve(notificationLocalImagePaths(notification));
         orchestrator.handleNotification(notification);
       }
       return true;
@@ -331,6 +368,7 @@ export async function startBridge(
       publishHealth();
     },
     onDisconnected: async (epoch) => {
+      inboundGeneration += 1;
       desktopState = 'RECONNECTING';
       desktopEpoch = epoch;
       desktopRouteState = 'unknown';
@@ -339,27 +377,83 @@ export async function startBridge(
       normalizer.reset();
       approvals.abandonAll();
       orchestrator.abandonAll();
+      messageAggregator?.close();
       logger.warn('desktop_ipc_abandoned_runtime', { epoch });
       publishHealth();
     },
     onReconnectError: (error) => logger.error('desktop_ipc_reconnect_failed', error),
   });
-  const processInboundMessage = async (message: InboundTextMessage): Promise<void> => {
-    if (await commands.handle(message)) {
-      await syncDesktopThreadFollowing();
-      return;
-    }
-    if (await conversationBindings.handleCommand(message)) {
-      await syncDesktopThreadFollowing();
-      return;
+  const processInboundMessage = async (message: InboundMessage): Promise<boolean> => {
+    const generation = inboundGeneration;
+    if (isTextOnlyInboundMessage(message)) {
+      if (await commands.handle(message)) {
+        await syncDesktopThreadFollowing();
+        return true;
+      }
+      if (await conversationBindings.handleCommand(message)) {
+        await syncDesktopThreadFollowing();
+        return true;
+      }
     }
     const binding = conversationBindings.getBinding(message.tenantKey, message.chatId);
     if (!binding) {
       await conversationBindings.ensureBoundOrPrompt(message);
-      return;
+      return false;
     }
     await syncDesktopThreadFollowing();
-    const outcome = await orchestrator.handleInbound(message, binding);
+    if (generation !== inboundGeneration) {
+      return false;
+    }
+    const imageReferences = message.imageReferences
+      ?? (message.imageKey ? [{ messageId: message.messageId, imageKey: message.imageKey }] : []);
+    if (imageReferences.length > MAX_INBOUND_IMAGES) {
+      const cardId = await cards.createCard(createImageCountErrorCard(MAX_INBOUND_IMAGES));
+      await cards.replyCard(message.rootMessageId, cardId, `image-count:${message.eventId}`);
+      return false;
+    }
+    let preparedMessage = message;
+    if (imageReferences.length > 0) {
+      const paths: string[] = [];
+      try {
+        for (const reference of imageReferences) {
+          paths.push(await inboundImages.download(reference.messageId, reference.imageKey));
+          if (generation !== inboundGeneration) {
+            await inboundImages.release(paths);
+            return false;
+          }
+        }
+        cardImages.approve(paths);
+        preparedMessage = { ...message, localImagePaths: Object.freeze(paths) };
+      } catch (error) {
+        await inboundImages.release(paths);
+        if (generation !== inboundGeneration) {
+          return false;
+        }
+        logger.error('lark_inbound_image_prepare_failed', toError(error), {
+          chatId: message.chatId,
+          messageId: message.messageId,
+        });
+        const cardId = await cards.createCard(createImageInputErrorCard());
+        await cards.replyCard(message.rootMessageId, cardId, `image-error:${message.eventId}`);
+        return false;
+      }
+    }
+    let outcome;
+    try {
+      outcome = await orchestrator.handleInbound(preparedMessage, binding);
+    } catch (error) {
+      cardImages.revoke(preparedMessage.localImagePaths ?? []);
+      await inboundImages.release(preparedMessage.localImagePaths ?? []);
+      throw error;
+    }
+    if (generation !== inboundGeneration || outcome === 'abandoned') {
+      return false;
+    }
+    if (outcome === 'rejected_image_limit') {
+      const cardId = await cards.createCard(createImageCountErrorCard(MAX_INBOUND_IMAGES));
+      await cards.replyCard(message.rootMessageId, cardId, `image-count:${message.eventId}`);
+      return false;
+    }
     if (outcome === 'rejected_queue_full') {
       const cardId = await cards.createCard(createQueueFullCard(config.maxQueuedTasks));
       await cards.replyCard(
@@ -367,22 +461,102 @@ export async function startBridge(
         cardId,
         `queue-full:${message.eventId}`,
       );
-      return;
+      return false;
     }
     if (binding.activeSkill && outcome !== 'duplicate') {
-      await commands.consumeActiveSkill(binding);
+      try {
+        await commands.consumeActiveSkill(binding);
+      } catch (error) {
+        logger.error('active_skill_cleanup_failed', toError(error), {
+          chatId: message.chatId,
+          threadId: binding.threadId,
+        });
+      }
     }
+    return true;
   };
+  const replyImageState = async (
+    message: InboundMessage,
+    card: Readonly<Record<string, unknown>>,
+    operation: string,
+  ): Promise<string> => {
+    const cardId = await cards.createCard(card);
+    return cards.replyCard(message.rootMessageId, cardId, `${operation}:${message.eventId}`);
+  };
+  messageAggregator = new InboundMessageAggregator(processInboundMessage, {
+    onPending: (message, imageCount, actionToken) => replyImageState(
+      message,
+      createImagePendingCard(imageCount, actionToken),
+      'image-pending',
+    ),
+    onCancelled: async (message) => {
+      await replyImageState(message, createImageBatchCancelledCard(), 'image-cancelled');
+    },
+    onTooManyImages: async (message, maximumImages) => {
+      await replyImageState(message, createImageCountErrorCard(maximumImages), 'image-count');
+    },
+    onEmptyBatch: async (message) => {
+      await replyImageState(message, createImageBatchEmptyCard(), 'image-empty');
+    },
+    onOverloaded: async (message) => {
+      await replyImageState(message, createImageInputOverloadedCard(), 'image-overloaded');
+    },
+    onSubmitted: async (_message, cardMessageId) => {
+      if (cardMessageId) {
+        await cards.patchMessage(cardMessageId, createImageBatchSubmittedCard());
+      }
+    },
+    onActionDispatchFailed: async (
+      message,
+      imageCount,
+      retryToken,
+      error,
+      taskDescription,
+      originalCardMessageId,
+    ) => {
+      logger.error('lark_image_button_dispatch_failed', error, {
+        chatId: message.chatId,
+        messageId: message.messageId,
+        restored: retryToken !== null,
+      });
+      const failureCard = createImageSubmissionFailedCard(
+        imageCount,
+        retryToken,
+        taskDescription,
+      );
+      if (originalCardMessageId) {
+        try {
+          await cards.patchMessage(originalCardMessageId, failureCard);
+          return originalCardMessageId;
+        } catch (patchError) {
+          logger.error('lark_image_retry_card_patch_failed', toError(patchError), {
+            chatId: message.chatId,
+            messageId: originalCardMessageId,
+          });
+        }
+      }
+      return replyImageState(
+        message,
+        failureCard,
+        `image-button-failed:${retryToken ?? 'not-restored'}`,
+      );
+    },
+    onBackgroundError: (message, error) => logger.error('lark_image_background_failed', error, {
+      chatId: message.chatId,
+      messageId: message.messageId,
+    }),
+  });
   const eventServer = new LarkEventServer(lark.websocket, config, {
     onMessage: async (message) => {
-      logger.info('lark_text_message_accepted', {
+      logger.info('lark_message_accepted', {
         tenantKey: message.tenantKey,
         chatId: message.chatId,
         messageId: message.messageId,
         eventId: message.eventId,
+        messageType: message.messageType ?? 'text',
       });
       void acknowledgements.ack(message);
-      void processInboundMessage(message).catch((error: unknown) => {
+      void messageAggregator.accept(message).catch((error: unknown) => {
         logger.error('lark_async_message_failed', toError(error), {
           chatId: message.chatId,
           messageId: message.messageId,
@@ -400,6 +574,35 @@ export async function startBridge(
       }
       if (action.action === 'model' || action.action === 'skill') {
         return commands.handleCardAction(action);
+      }
+      if (action.action === 'image-run' || action.action === 'image-cancel') {
+        if (!config.authorizedUsers.includes(action.operatorOpenId)) {
+          return toast('你没有操作当前图片任务的权限', 'warning');
+        }
+        const result = await messageAggregator.handleImageBatchAction({
+          tenantKey: action.tenantKey,
+          chatId: action.chatId,
+          senderOpenId: action.operatorOpenId,
+          action: action.action,
+          token: action.token,
+          ...(action.taskDescription !== undefined
+            ? { taskDescription: action.taskDescription }
+            : {}),
+        });
+        if (result === 'submitted') {
+          return toast('图片任务已提交', 'success');
+        }
+        if (result === 'cancelled') {
+          void cards.patchMessage(action.messageId, createImageBatchCancelledCard()).catch((error: unknown) => {
+            logger.error('lark_image_action_card_patch_failed', toError(error), {
+              chatId: action.chatId,
+              messageId: action.messageId,
+              action: action.action,
+            });
+          });
+          return toast('待提交图片已取消', 'success');
+        }
+        return toast('图片操作已失效，请重新发送图片', 'warning');
       }
       if (action.action === 'cancel') {
         if (!config.authorizedUsers.includes(action.operatorOpenId)) {
@@ -425,6 +628,7 @@ export async function startBridge(
   const unsubscribeDesktop = desktop.onThreadStreamStateChanged((message, epoch) => {
     normalizer.beginEpoch(epoch);
     for (const notification of normalizer.handle(message)) {
+      cardImages.approve(notificationLocalImagePaths(notification));
       orchestrator.handleNotification(notification);
     }
   });
@@ -454,6 +658,7 @@ export async function startBridge(
       runtimeInstance: randomUUID().slice(0, 8),
     });
   } catch (error) {
+    inboundGeneration += 1;
     runtimeStopped = true;
     appServerState = 'stopped';
     desktopState = 'STOPPED';
@@ -467,6 +672,8 @@ export async function startBridge(
       unsubscribeDesktop,
       unsubscribeApproval,
       approvals,
+      inboundImages,
+      messageAggregator,
       processLock,
     );
     healthPublisher.flush();
@@ -481,6 +688,7 @@ export async function startBridge(
         return;
       }
       stopped = true;
+      inboundGeneration += 1;
       runtimeStopped = true;
       appServerState = 'stopped';
       desktopState = 'STOPPED';
@@ -494,12 +702,39 @@ export async function startBridge(
         unsubscribeDesktop,
         unsubscribeApproval,
         approvals,
+        inboundImages,
+        messageAggregator,
         processLock,
       );
       healthPublisher.flush();
       logger.info('bridge_stopped');
     },
   });
+}
+
+function notificationLocalImagePaths(notification: ServerNotification): readonly string[] {
+  if (notification.method !== 'turn/started') {
+    return [];
+  }
+  const params = asRecord(notification.params);
+  const turn = asRecord(params?.turn);
+  const input = Array.isArray(turn?.input) ? turn.input : [];
+  return input.flatMap((candidate) => {
+    const item = asRecord(candidate);
+    return item?.type === 'localImage' && typeof item.path === 'string'
+      ? [item.path]
+      : [];
+  });
+}
+
+/** Resolves the generated-image directory from the same environment used by Codex. */
+export function resolveCodexVisualizationsRoot(env: NodeJS.ProcessEnv): string {
+  const configuredCodexHome = env.CODEX_HOME?.trim();
+  if (configuredCodexHome) {
+    return resolve(configuredCodexHome, 'visualizations');
+  }
+  const configuredHome = env.HOME?.trim();
+  return resolve(configuredHome || homedir(), '.codex', 'visualizations');
 }
 
 function appServerTransport(
@@ -537,6 +772,8 @@ async function stopResources(
   unsubscribeDesktop: () => void,
   unsubscribeApproval: () => void,
   approvals: DesktopApprovalService,
+  inboundImages: InboundImageStore,
+  messageAggregator: InboundMessageAggregator,
   processLock: BridgeProcessLock,
 ): Promise<void> {
   const errors: Error[] = [];
@@ -548,6 +785,12 @@ async function stopResources(
   unsubscribeDesktop();
   unsubscribeApproval();
   approvals.abandonAll();
+  messageAggregator.close();
+  try {
+    await inboundImages.close();
+  } catch (error) {
+    errors.push(toError(error));
+  }
   try {
     await desktopSupervisor.stop();
   } catch (error) {

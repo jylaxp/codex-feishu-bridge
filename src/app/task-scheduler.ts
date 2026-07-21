@@ -65,6 +65,12 @@ export class ThreadTaskScheduler<TTask, TQueued> {
     return next;
   }
 
+  public drainQueued(): readonly TQueued[] {
+    const queued = [...this.queuesByThreadId.values()].flat();
+    this.queuesByThreadId.clear();
+    return queued;
+  }
+
   public clear(): boolean {
     const hadActive = this.activeByThreadId.size > 0;
     this.activeByThreadId.clear();

@@ -81,7 +81,12 @@ export interface SkillUserInput {
   path: string;
 }
 
-export type UserInput = TextUserInput | SkillUserInput;
+export interface LocalImageUserInput {
+  type: 'localImage';
+  path: string;
+}
+
+export type UserInput = TextUserInput | SkillUserInput | LocalImageUserInput;
 
 export type ApprovalPolicy =
   | 'untrusted'

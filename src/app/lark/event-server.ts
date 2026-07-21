@@ -3,7 +3,7 @@ import * as Lark from '@larksuiteoapi/node-sdk';
 import { BridgeConfig } from '../domain';
 import { createRedactedLarkSdkLogger, type LarkSdkLogSink } from './client';
 import {
-  InboundTextMessage,
+  InboundMessage,
   normalizeInboundMessage,
   RawMessageEvent,
 } from './intake';
@@ -12,7 +12,15 @@ import type { LarkScope } from './scope-config-store';
 const MAX_OPAQUE_ACTION_TOKEN_LENGTH = 256;
 const MAX_SIGNED_BINDING_TOKEN_LENGTH = 1024;
 
-export type CardActionKind = 'approval' | 'binding' | 'cancel' | 'open' | 'model' | 'skill';
+export type CardActionKind =
+  | 'approval'
+  | 'binding'
+  | 'cancel'
+  | 'open'
+  | 'model'
+  | 'skill'
+  | 'image-run'
+  | 'image-cancel';
 
 type CardActionOption = string | { readonly value?: unknown };
 
@@ -23,6 +31,7 @@ export interface InboundCardAction {
   readonly operatorOpenId: string;
   readonly action: CardActionKind;
   readonly token: string;
+  readonly taskDescription?: string;
 }
 
 export interface RawCardActionEvent {
@@ -39,11 +48,12 @@ export interface RawCardActionEvent {
      * Keep the object variant for older callback envelopes.
      */
     readonly option?: CardActionOption;
+    readonly form_value?: Readonly<Record<string, unknown>>;
   };
 }
 
 export interface LarkEventHandlers {
-  readonly onMessage: (message: InboundTextMessage) => Promise<void>;
+  readonly onMessage: (message: InboundMessage) => Promise<void>;
   readonly onCardAction: (action: InboundCardAction) => Promise<unknown>;
   readonly onRejectedEvent?: (reason: string) => void;
   readonly onHandlerError?: (kind: 'message' | 'card_action', error: Error) => void;
@@ -119,11 +129,28 @@ export function normalizeCardAction(
       && action !== 'open'
       && action !== 'model'
       && action !== 'skill'
+      && action !== 'image-run'
+      && action !== 'image-cancel'
     )
     || !token
     || token.length > maxTokenLength
     || !tokenPattern.test(token)
   ) {
+    return null;
+  }
+
+  const rawTaskDescription = event.action?.form_value?.task_description;
+  if (
+    action === 'image-run'
+    && rawTaskDescription !== undefined
+    && typeof rawTaskDescription !== 'string'
+  ) {
+    return null;
+  }
+  const taskDescription = action === 'image-run' && typeof rawTaskDescription === 'string'
+    ? rawTaskDescription.trim()
+    : undefined;
+  if (taskDescription !== undefined && taskDescription.length > config.maxTextLength) {
     return null;
   }
 
@@ -134,6 +161,7 @@ export function normalizeCardAction(
     operatorOpenId,
     action,
     token,
+    ...(taskDescription !== undefined ? { taskDescription } : {}),
   });
 }
 

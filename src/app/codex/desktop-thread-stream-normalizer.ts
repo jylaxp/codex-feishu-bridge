@@ -1,3 +1,5 @@
+import { isAbsolute } from 'node:path';
+
 import type {
   DesktopJsonPatch,
   DesktopThreadStreamBroadcast,
@@ -509,14 +511,19 @@ function normalizeUserInputs(value: readonly unknown[]): readonly UserInput[] {
   const inputs: UserInput[] = [];
   for (const input of value) {
     const record = asRecord(input);
-    if (record?.type !== 'text' || typeof record.text !== 'string') {
-      continue;
+    if (record?.type === 'text' && typeof record.text === 'string') {
+      inputs.push({
+        type: 'text',
+        text: record.text,
+        text_elements: [],
+      });
+    } else if (
+      record?.type === 'localImage'
+      && typeof record.path === 'string'
+      && isAbsolute(record.path)
+    ) {
+      inputs.push({ type: 'localImage', path: record.path });
     }
-    inputs.push({
-      type: 'text',
-      text: record.text,
-      text_elements: [],
-    });
   }
   return inputs;
 }
