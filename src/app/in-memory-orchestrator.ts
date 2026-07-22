@@ -75,6 +75,8 @@ export interface InMemoryOrchestratorOptions {
   readonly cardRetryDelayMs?: number;
   /** Resolves one unambiguous Feishu chat for a Desktop-originated turn. */
   readonly resolveBindingByThreadId?: (threadId: string) => ChatThreadBinding | undefined;
+  /** Confirms that a task's Feishu chat still targets the same Desktop thread. */
+  readonly isBindingCurrent?: (binding: ChatThreadBinding) => boolean;
   /** Reads the App Server skill catalog for the original inline @skill interaction. */
   readonly readSkills?: (cwd: string) => Promise<unknown>;
   /** Reads a ChatGPT thread title for existing bindings that predate stored titles. */
@@ -250,6 +252,7 @@ export class InMemoryOrchestrator {
   private readonly resolveBindingByThreadId:
     | ((threadId: string) => ChatThreadBinding | undefined)
     | undefined;
+  private readonly isBindingCurrent: (binding: ChatThreadBinding) => boolean;
   private readonly readSkills: ((cwd: string) => Promise<unknown>) | undefined;
   private readonly readThreadTitle: ((threadId: string) => Promise<string | null>) | undefined;
   private readonly onActiveThreadsChanged: () => void;
@@ -280,6 +283,7 @@ export class InMemoryOrchestrator {
     this.readRateLimits = options.readRateLimits;
     this.uploadOutputFiles = options.uploadOutputFiles;
     this.resolveBindingByThreadId = options.resolveBindingByThreadId;
+    this.isBindingCurrent = options.isBindingCurrent ?? (() => true);
     this.readSkills = options.readSkills;
     this.readThreadTitle = options.readThreadTitle;
     this.onActiveThreadsChanged = options.onActiveThreadsChanged ?? (() => undefined);
@@ -524,7 +528,12 @@ export class InMemoryOrchestrator {
   /** Returns the source conversation for a still-live, exact Desktop turn. */
   public approvalContext(threadId: string, turnId: string | null): RuntimeApprovalContext | undefined {
     const task = this.scheduler.active(threadId);
-    if (!task || TERMINAL.has(task.status) || (turnId && task.turnId !== turnId)) {
+    if (
+      !task
+      || TERMINAL.has(task.status)
+      || (turnId && task.turnId !== turnId)
+      || !this.isTaskProjectionCurrent(task)
+    ) {
       return undefined;
     }
     return Object.freeze({
@@ -609,7 +618,7 @@ export class InMemoryOrchestrator {
     generation: number = this.runtimeGeneration,
   ): Promise<InMemoryInboundOutcome> {
     const taskBinding = await this.bindingWithTitle(binding);
-    if (generation !== this.runtimeGeneration) {
+    if (generation !== this.runtimeGeneration || !this.isBindingCurrent(taskBinding)) {
       this.releaseMessageImages(message);
       return 'abandoned';
     }
@@ -628,12 +637,12 @@ export class InMemoryOrchestrator {
       taskBinding,
     );
     const cardId = await this.cards.createCard(initialCard);
-    if (generation !== this.runtimeGeneration) {
+    if (generation !== this.runtimeGeneration || !this.isBindingCurrent(taskBinding)) {
       this.releaseMessageImages(message);
       return 'abandoned';
     }
     const cardMessageId = await this.cards.sendCard(message.chatId, cardId, `task:${id}`);
-    if (generation !== this.runtimeGeneration) {
+    if (generation !== this.runtimeGeneration || !this.isBindingCurrent(taskBinding)) {
       this.releaseMessageImages(message);
       return 'abandoned';
     }
@@ -798,6 +807,9 @@ export class InMemoryOrchestrator {
     prompt: string,
   ): Promise<void> {
     const taskBinding = await this.bindingWithTitle(binding);
+    if (!this.isBindingCurrent(taskBinding)) {
+      return;
+    }
     const id = randomUUID();
     const startedAtMs = this.now();
     const cardId = await this.cards.createCard(taskCard(
@@ -812,7 +824,13 @@ export class InMemoryOrchestrator {
       undefined,
       taskBinding,
     ));
+    if (!this.isBindingCurrent(taskBinding)) {
+      return;
+    }
     const cardMessageId = await this.cards.sendCard(taskBinding.chatId, cardId, `desktop:${id}`);
+    if (!this.isBindingCurrent(taskBinding)) {
+      return;
+    }
     const task: RuntimeTask = {
       id,
       message: desktopMessage(taskBinding, turn, prompt, cardMessageId, startedAtMs),
@@ -973,6 +991,11 @@ export class InMemoryOrchestrator {
       clearTimeout(task.updateTimer);
       task.updateTimer = undefined;
     }
+    if (!this.isTaskProjectionCurrent(task)) {
+      task.cardDeliveryPending = false;
+      this.onRuntimeHealthChanged();
+      return;
+    }
     if (immediate) {
       void this.flushCard(task, TERMINAL.has(task.status));
       return;
@@ -991,6 +1014,15 @@ export class InMemoryOrchestrator {
   }
 
   private async flushCard(task: RuntimeTask, terminal: boolean): Promise<void> {
+    if (!this.isTaskProjectionCurrent(task)) {
+      if (task.cardRetryTimer) {
+        clearTimeout(task.cardRetryTimer);
+        task.cardRetryTimer = undefined;
+      }
+      task.cardDeliveryPending = false;
+      this.onRuntimeHealthChanged();
+      return;
+    }
     const write = task.cardWrite.then(
       () => this.writeCard(task, terminal),
       () => this.writeCard(task, terminal),
@@ -1000,7 +1032,9 @@ export class InMemoryOrchestrator {
   }
 
   private async writeCard(task: RuntimeTask, terminal: boolean): Promise<void> {
-    if (!this.tasksById.has(task.id)) {
+    if (!this.tasksById.has(task.id) || !this.isTaskProjectionCurrent(task)) {
+      task.cardDeliveryPending = false;
+      this.onRuntimeHealthChanged();
       return;
     }
     task.cardDeliveryPending = true;
@@ -1008,6 +1042,11 @@ export class InMemoryOrchestrator {
     try {
       reconcileAnswerCursor(task);
       let pages = await taskCardPages(task, this.cards);
+      if (!this.isTaskProjectionCurrent(task)) {
+        task.cardDeliveryPending = false;
+        this.onRuntimeHealthChanged();
+        return;
+      }
       while (pages.length > 1) {
         const currentPage = pages[0];
         const nextPage = pages[1];
@@ -1159,6 +1198,10 @@ export class InMemoryOrchestrator {
     task.cardRetryTimer.unref();
   }
 
+  private isTaskProjectionCurrent(task: RuntimeTask): boolean {
+    return this.isBindingCurrent(task.binding);
+  }
+
   private finish(task: RuntimeTask): void {
     if (!TERMINAL.has(task.status)) {
       return;
@@ -1184,7 +1227,11 @@ export class InMemoryOrchestrator {
       }
       this.tasksById.delete(task.id);
     }
-    const next = this.scheduler.takeNext(task.binding.threadId);
+    let next = this.scheduler.takeNext(task.binding.threadId);
+    while (next && !this.isBindingCurrent(next.binding)) {
+      this.releaseMessageImages(next.message);
+      next = this.scheduler.takeNext(task.binding.threadId);
+    }
     this.onRuntimeHealthChanged();
     if (!next) {
       if (activeTaskRemoved) {
@@ -1245,7 +1292,12 @@ export class InMemoryOrchestrator {
   }
 
   private async uploadFilesForSuccessfulTask(task: RuntimeTask): Promise<void> {
-    if (task.status !== 'SUCCEEDED' || task.outputFilesUploaded || !this.uploadOutputFiles) {
+    if (
+      task.status !== 'SUCCEEDED'
+      || task.outputFilesUploaded
+      || !this.uploadOutputFiles
+      || !this.isTaskProjectionCurrent(task)
+    ) {
       return;
     }
     task.outputFilesUploaded = true;

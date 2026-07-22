@@ -134,6 +134,12 @@ interface PendingRequest {
   readonly timeout: NodeJS.Timeout;
 }
 
+interface ThreadFollowingWaiter {
+  readonly epoch: number;
+  readonly resolve: (available: boolean) => void;
+  readonly timeout: NodeJS.Timeout;
+}
+
 interface SendRequestOptions {
   readonly method: string;
   readonly params: unknown;
@@ -190,6 +196,7 @@ export class DesktopIpcClient {
   private readonly followedThreadIds = new Set<string>();
   private readonly confirmedFollowedThreadIds = new Set<string>();
   private readonly followingRetryTimers = new Map<string, NodeJS.Timeout>();
+  private readonly threadFollowingWaiters = new Map<string, Set<ThreadFollowingWaiter>>();
   private socket: Socket | undefined;
   private startPromise: Promise<DesktopIpcHandshake> | undefined;
   private handshake: DesktopIpcHandshake | undefined;
@@ -348,6 +355,38 @@ export class DesktopIpcClient {
     for (const threadId of addedThreadIds) {
       await this.beginThreadFollowing(threadId);
     }
+  }
+
+  /**
+   * Waits until the Desktop owner confirms one followed thread with a full
+   * snapshot in the current connection epoch. Patches alone are insufficient
+   * because they cannot prove whether a Desktop-owned turn is still active.
+   */
+  public waitForThreadFollowingSnapshot(threadId: string, timeoutMs: number): Promise<boolean> {
+    const normalizedThreadId = requireThreadId(threadId);
+    const normalizedTimeoutMs = positiveTimeout(timeoutMs, 'timeoutMs');
+    if (
+      this.currentState !== 'READY'
+      || !this.followedThreadIds.has(normalizedThreadId)
+    ) {
+      return Promise.resolve(false);
+    }
+    if (this.confirmedFollowedThreadIds.has(normalizedThreadId)) {
+      return Promise.resolve(true);
+    }
+    const epoch = this.epoch;
+    return new Promise<boolean>((resolve) => {
+      const waiters = this.threadFollowingWaiters.get(normalizedThreadId) ?? new Set();
+      const waiter: ThreadFollowingWaiter = {
+        epoch,
+        resolve,
+        timeout: setTimeout(() => {
+          this.settleThreadFollowingWaiter(normalizedThreadId, waiter, false);
+        }, normalizedTimeoutMs),
+      };
+      waiters.add(waiter);
+      this.threadFollowingWaiters.set(normalizedThreadId, waiters);
+    });
   }
 
   /** Implements the tracked execution contract consumed by TaskOrchestrator. */
@@ -643,15 +682,16 @@ export class DesktopIpcClient {
         this.failProtocol(epoch);
         return;
       }
-      if (record.params.change.type === 'snapshot') {
-        this.confirmThreadFollowing(record.params.conversationId);
-      }
       try {
         for (const listener of this.threadStreamListeners) {
           listener(record, epoch);
         }
       } catch {
         this.failProtocol(epoch);
+        return;
+      }
+      if (record.params.change.type === 'snapshot') {
+        this.confirmThreadFollowing(record.params.conversationId);
       }
       return;
     }
@@ -855,6 +895,7 @@ export class DesktopIpcClient {
       clearTimeout(timer);
       this.followingRetryTimers.delete(threadId);
     }
+    this.settleThreadFollowingWaiters(threadId, this.epoch, true);
   }
 
   private clearThreadFollowingRecovery(threadId: string): void {
@@ -864,6 +905,7 @@ export class DesktopIpcClient {
       clearTimeout(timer);
       this.followingRetryTimers.delete(threadId);
     }
+    this.settleThreadFollowingWaiters(threadId, undefined, false);
   }
 
   private clearAllThreadFollowingRecovery(): void {
@@ -872,6 +914,42 @@ export class DesktopIpcClient {
       clearTimeout(timer);
     }
     this.followingRetryTimers.clear();
+    for (const threadId of this.threadFollowingWaiters.keys()) {
+      this.settleThreadFollowingWaiters(threadId, undefined, false);
+    }
+  }
+
+  private settleThreadFollowingWaiters(
+    threadId: string,
+    epoch: number | undefined,
+    available: boolean,
+  ): void {
+    const waiters = this.threadFollowingWaiters.get(threadId);
+    if (!waiters) {
+      return;
+    }
+    for (const waiter of [...waiters]) {
+      if (epoch !== undefined && waiter.epoch !== epoch) {
+        continue;
+      }
+      this.settleThreadFollowingWaiter(threadId, waiter, available);
+    }
+  }
+
+  private settleThreadFollowingWaiter(
+    threadId: string,
+    waiter: ThreadFollowingWaiter,
+    available: boolean,
+  ): void {
+    const waiters = this.threadFollowingWaiters.get(threadId);
+    if (!waiters?.delete(waiter)) {
+      return;
+    }
+    clearTimeout(waiter.timeout);
+    if (waiters.size === 0) {
+      this.threadFollowingWaiters.delete(threadId);
+    }
+    waiter.resolve(available);
   }
 
   private sendThreadFollowing(threadId: string, following: boolean): Promise<void> {

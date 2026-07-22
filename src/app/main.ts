@@ -77,6 +77,8 @@ export interface BridgeRuntime {
   stop(): Promise<void>;
 }
 
+const BINDING_DESKTOP_SNAPSHOT_TIMEOUT_MS = 5_000;
+
 /**
  * Starts the ephemeral Desktop-follower Bridge. The only business file loaded
  * here is bindings.json; an interrupted process never recovers or replays a
@@ -306,6 +308,9 @@ export async function startBridge(
       outputFileUploader.uploadMarkdownFiles(answer, rootMessageId, taskId)
     ),
     resolveBindingByThreadId: (threadId) => bindings.getUniqueByThreadId(threadId),
+    isBindingCurrent: (candidate) => (
+      bindings.get(candidate.tenantKey, candidate.chatId)?.threadId === candidate.threadId
+    ),
     readThreadTitle: (threadId) => readThreadTitle(appServerControlPlane, threadId),
     readSkills: (cwd) => appServerControlPlane.request('skills/list', { cwds: [cwd] }),
     onActiveThreadsChanged: () => {
@@ -335,6 +340,14 @@ export async function startBridge(
     undefined,
     () => rateLimits.get(),
     async (binding) => {
+      await syncDesktopThreadFollowing();
+      const snapshotAvailable = await desktop.waitForThreadFollowingSnapshot(
+        binding.threadId,
+        BINDING_DESKTOP_SNAPSHOT_TIMEOUT_MS,
+      );
+      if (!snapshotAvailable || !normalizer.hasThreadSnapshot(binding.threadId)) {
+        throw new Error('Desktop thread snapshot is unavailable for binding projection');
+      }
       const notifications = normalizer.activeTurnSnapshot(binding.threadId);
       if (notifications.length === 0) {
         return false;

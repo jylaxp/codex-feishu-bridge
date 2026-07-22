@@ -104,6 +104,11 @@ export class DesktopThreadStreamNormalizer {
     return this.activeEpoch;
   }
 
+  /** Returns whether the Desktop owner supplied a state snapshot for this thread. */
+  public hasThreadSnapshot(threadId: string): boolean {
+    return this.statesByThreadId.has(threadId);
+  }
+
   /**
    * Replays the current live Desktop snapshot for its in-flight turn only.
    * This lets a newly bound Feishu chat attach to a turn that started before

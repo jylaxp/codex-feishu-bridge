@@ -226,6 +226,67 @@ test('Desktop IPC initializes the epoch before handling an immediate restored sn
   }
 });
 
+test('Desktop IPC waits for an authoritative follower snapshot instead of accepting patches', async () => {
+  const snapshot = threadSnapshotBroadcast(
+    'thread-bound',
+    'turn-restored',
+    'Restored Desktop state',
+  );
+  const mock = createMockTransport((message, socket) => {
+    if (message.method === 'initialize') {
+      respond(socket, message, { clientId: 'bridge-client' });
+      return;
+    }
+    if (
+      message.method === 'thread-stream-following-changed'
+      && nestedBoolean(message, 'params', 'following') === true
+    ) {
+      socket.sendToClient(threadPatchesBroadcast('thread-bound'));
+      setTimeout(() => socket.sendToClient(snapshot), 10);
+    }
+  });
+  const endpoint: DesktopIpcEndpoint = { transport: 'unix_socket', address: 'mock-desktop' };
+  const client = new DesktopIpcClient({
+    endpoint,
+    platformAdapter: trustedTestPlatform(endpoint),
+    connectSocket: mock.connect,
+  });
+
+  try {
+    await client.start();
+    await client.syncFollowedThreads(['thread-bound']);
+
+    assert.equal(await client.waitForThreadFollowingSnapshot('thread-bound', 100), true);
+  } finally {
+    await client.stop();
+    await mock.close();
+  }
+});
+
+test('Desktop IPC reports an unavailable follower snapshot after the bounded wait', async () => {
+  const mock = createMockTransport((message, socket) => {
+    if (message.method === 'initialize') {
+      respond(socket, message, { clientId: 'bridge-client' });
+    }
+  });
+  const endpoint: DesktopIpcEndpoint = { transport: 'unix_socket', address: 'mock-desktop' };
+  const client = new DesktopIpcClient({
+    endpoint,
+    platformAdapter: trustedTestPlatform(endpoint),
+    connectSocket: mock.connect,
+  });
+
+  try {
+    await client.start();
+    await client.syncFollowedThreads(['thread-bound']);
+
+    assert.equal(await client.waitForThreadFollowingSnapshot('thread-bound', 5), false);
+  } finally {
+    await client.stop();
+    await mock.close();
+  }
+});
+
 test('Desktop stream normalization preserves structured local image inputs', () => {
   const normalizer = new DesktopThreadStreamNormalizer(() => 100);
   const notifications = normalizer.handle({
@@ -1187,6 +1248,91 @@ test('unrelated Desktop thread broadcasts do not update the bound task card', as
     orchestrator.handleNotification(notification);
   }
   await waitFor(() => /Bound Desktop output/.test(JSON.stringify(cards.replacements)));
+  orchestrator.abandonAll();
+});
+
+test('orchestrator stops updating a task after its Feishu chat binds another Desktop thread', async () => {
+  const desktop = new RecordingDesktopTurnClient();
+  const cards = new RecordingCards();
+  const oldBinding: ChatThreadBinding = {
+    ...binding,
+    threadId: 'thread-old',
+    threadTitle: 'Old task',
+  };
+  const newBinding: ChatThreadBinding = {
+    ...binding,
+    threadId: 'thread-new',
+    threadTitle: 'New task',
+    revision: 2,
+  };
+  let currentBinding = oldBinding;
+  let staleOutputUploads = 0;
+  const orchestrator = new InMemoryOrchestrator(config, desktop, cards, {
+    resolveBindingByThreadId: (threadId) => (
+      currentBinding.threadId === threadId ? currentBinding : undefined
+    ),
+    isBindingCurrent: (candidate) => candidate.threadId === currentBinding.threadId,
+    uploadOutputFiles: async () => {
+      staleOutputUploads += 1;
+    },
+  });
+
+  assert.equal(await orchestrator.handleInbound(inbound('old-task', 'old task'), oldBinding), 'started');
+  await waitFor(() => cards.replacements.length > 0);
+  assert.equal(
+    await orchestrator.handleInbound(inbound('old-queued', 'old queued task'), oldBinding),
+    'queued',
+  );
+  currentBinding = newBinding;
+  const replacementsAfterRebinding = cards.replacements.length;
+  assert.equal(orchestrator.approvalContext(oldBinding.threadId, 'turn-1'), undefined);
+
+  orchestrator.handleNotification({
+    method: 'item/reasoning/textDelta',
+    params: {
+      threadId: oldBinding.threadId,
+      turnId: 'turn-1',
+      itemId: 'old-late-output',
+      delta: '旧会话不应继续推送',
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  assert.equal(cards.replacements.length, replacementsAfterRebinding);
+  assert.doesNotMatch(JSON.stringify(cards.replacements), /旧会话不应继续推送/);
+
+  orchestrator.handleNotification({
+    method: 'turn/completed',
+    params: {
+      threadId: oldBinding.threadId,
+      turn: {
+        id: 'turn-1',
+        status: 'completed',
+        items: [{
+          id: 'old-answer',
+          type: 'agentMessage',
+          phase: 'final_answer',
+          text: '旧会话最终输出',
+        }],
+      },
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(staleOutputUploads, 0);
+  assert.equal(desktop.starts.length, 1);
+  assert.equal(cards.sentCardIds.length, 1);
+
+  assert.equal(await orchestrator.handleInbound(inbound('new-task', 'new task'), newBinding), 'started');
+  orchestrator.handleNotification({
+    method: 'item/reasoning/textDelta',
+    params: {
+      threadId: newBinding.threadId,
+      turnId: 'turn-2',
+      itemId: 'new-live-output',
+      delta: '新会话继续推送',
+    },
+  });
+  await waitFor(() => /新会话继续推送/.test(JSON.stringify(cards.replacements)));
   orchestrator.abandonAll();
 });
 
