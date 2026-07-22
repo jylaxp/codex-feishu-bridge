@@ -1,0 +1,83 @@
+docs/app-server-upgrade-runbook.md
+  s_c54cf697e76a51::t_43668889b91916 162-164
+README.md
+  s_c54cf697e76a51::t_9839af384e3095 20-22
+src/app/cards/layouts.ts
+  s_c54cf697e76a51::t_3b67e4cefc8b98 25-26,463-468
+test/app/protocol-version-config.test.ts
+  s_c54cf697e76a51::t_176b495b2749dc 18,57-78,80-96,98-99,101-104,109-117
+  s_c54cf697e76a51::t_8cd0e0a4a194b4 79,97
+  s_c54cf697e76a51::t_c9888ff7b3bf00 27-32,186-192,202
+  s_c54cf697e76a51::t_9839af384e3095 25,33-38,48-56,100,105-108,139-145,193-201,203
+src/app/codex/runtime-contract.ts
+  s_c54cf697e76a51::t_594599c9bca039 26,174-204
+test/fixtures/app-server/0.145.0-alpha.18/artifacts.json
+  s_c54cf697e76a51::t_9839af384e3095 30-38
+  s_c54cf697e76a51::t_c9888ff7b3bf00 6,15,21-29
+src/app/in-memory-orchestrator.ts
+  s_c54cf697e76a51::t_8263f609542ef6 1402,1467-1469
+  s_c54cf697e76a51::t_3b67e4cefc8b98 1393,1421
+  s_c54cf697e76a51::t_def9be082c174f 234-237
+  s_c54cf697e76a51::t_c618330fa8ea2f 1470-1471
+test/app/runtime-contract.test.ts
+  s_c54cf697e76a51::t_594599c9bca039 269-279
+  s_c54cf697e76a51::t_176b495b2749dc 118,120,122-123,143-150,160
+  s_c54cf697e76a51::t_e6b48e38f6ffd2 32,119,129-130,137,288-297,305-307,322,594,600-610,619,630,633-635,639-644,648-668
+  s_c54cf697e76a51::t_9839af384e3095 131-136,138-142,151-159,320
+  s_c54cf697e76a51::t_c5bdb8a898af7a 669
+test/app/desktop-ipc-regression.test.ts
+  s_c54cf697e76a51::t_c38f5c97db6f07 319-320,322-340,344-351,353-368,370-371,373-375,413-416
+  s_c54cf697e76a51::t_935425c2dc1803 1097
+  s_c54cf697e76a51::t_594599c9bca039 321,341-343,352,376-412
+  s_c54cf697e76a51::t_ae95b76f3ad845 977,988-990
+  s_c54cf697e76a51::t_3b67e4cefc8b98 991-992
+  s_c54cf697e76a51::t_8263f609542ef6 912-913,971,1807-1808
+  s_c54cf697e76a51::t_e0b20238f3d76c 1733-1748,1812
+  s_c54cf697e76a51::t_37987a51ee5aaf 369,372
+  s_c54cf697e76a51::t_533519eca5e9d0 417-473,1519,1536-1538,1550-1553
+  s_c54cf697e76a51::t_7f71404c5743ee 1809-1811
+  s_c54cf697e76a51::t_def9be082c174f 72-73,951-953,1127-1129,1402
+  s_c54cf697e76a51::t_646db3c6cf2d59 1813
+src/app/codex/protocol-version-config.ts
+  s_c54cf697e76a51::t_9839af384e3095 50-55
+  s_c54cf697e76a51::t_176b495b2749dc 101,176-181,218-235
+  s_c54cf697e76a51::t_c9888ff7b3bf00 14,35-49,56-59,309
+  s_7f9bbfdc76bea6::t_b7a041ae279c48 236-237
+test/app/app-server-control-plane.test.ts
+  s_c54cf697e76a51::t_791b989be5417d 2,20,23-26,325,328-334,337,344
+test/app/local-version-command.test.ts
+  s_c54cf697e76a51::t_43668889b91916 55-59,61,65-68,74-80,82-83
+  s_c54cf697e76a51::t_9839af384e3095 60,81
+src/app/codex/desktop-ipc-client.ts
+  s_c54cf697e76a51::t_594599c9bca039 114-115,186,225-231,646-648,803,811-812,839-843
+  s_c54cf697e76a51::t_f41f75d25bc193 155-162,191-192,269,309,319,349,594,784,786-791,793,795-796,802,804-810,813-817,819-823,829,832-837,844,846-872,874
+  s_c54cf697e76a51::t_7b9924c2020568 339-341,792,794,797-801,818,824-828,830-831,845
+docs/app-server-support-matrix.md
+  s_c54cf697e76a51::t_c9888ff7b3bf00 12,16
+  s_c54cf697e76a51::t_9839af384e3095 13-14
+  s_c54cf697e76a51::t_176b495b2749dc 36-38
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "52276cef536efd684c630d4dc78d8ca70074c745",
+  "prompts": {},
+  "sessions": {
+    "s_7f9bbfdc76bea6": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ed5e9-08fc-7be2-b700-0d1ce316ec68",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    },
+    "s_c54cf697e76a51": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5e80-7c30-7a71-a434-09aeae22cce8",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    }
+  }
+}
