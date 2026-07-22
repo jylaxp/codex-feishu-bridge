@@ -13,7 +13,6 @@ import type { BridgeConfig } from '../domain';
 import {
   type AppServerProtocolProfile,
   parseCodexCliVersion,
-  selectAppServerProtocolProfile,
 } from './app-server-protocol-registry';
 import { inspectChatGptAppVersion } from './chatgpt-app-version';
 import { buildCodexEnvironment } from './environment';
@@ -24,6 +23,7 @@ import {
 } from './runtime-artifact';
 import {
   assessProtocolCompatibility,
+  BUILT_IN_SUPPORTED_PROTOCOL_VERSIONS,
   profileForSupportedVersion,
   ProtocolVersionConfigStore,
   type CompatibilityAssessment,
@@ -171,7 +171,37 @@ export function assertCompatibleCodexRuntime(
   codexVersion: string,
   schemaDigest: string,
 ): AppServerProtocolProfile {
-  return selectAppServerProtocolProfile(parseCodexCliVersion(codexVersion), schemaDigest);
+  const parsedVersion = parseCodexCliVersion(codexVersion);
+  const versionMatch = BUILT_IN_SUPPORTED_PROTOCOL_VERSIONS.find(
+    (entry) => entry.codexVersion === parsedVersion.version,
+  );
+  const digestMatch = BUILT_IN_SUPPORTED_PROTOCOL_VERSIONS.find(
+    (entry) => entry.schemaDigest === schemaDigest,
+  );
+  if (versionMatch !== undefined && versionMatch.schemaDigest === schemaDigest) {
+    return profileForSupportedVersion(versionMatch);
+  }
+  if (
+    versionMatch !== undefined
+    && digestMatch !== undefined
+    && versionMatch.adapterProfileId !== digestMatch.adapterProfileId
+  ) {
+    throw new Error(
+      'Configured Codex CLI version and App Server schema digest '
+        + 'identify different supported profiles',
+    );
+  }
+  if (versionMatch !== undefined) {
+    throw new Error(
+      'Configured Codex App Server schema digest does not match the registered CLI profile',
+    );
+  }
+  if (digestMatch !== undefined) {
+    throw new Error(
+      'Configured Codex CLI version does not match the registered App Server schema profile',
+    );
+  }
+  throw new Error('Configured Codex App Server protocol profile is unsupported');
 }
 
 /** Digests generated schemas independently of nondeterministic JSON object key order. */

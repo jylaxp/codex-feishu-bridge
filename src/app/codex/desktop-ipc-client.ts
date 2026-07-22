@@ -111,6 +111,8 @@ export interface DesktopIpcClientOptions {
   readonly requestIdFactory?: () => string;
   /** Test seam for framed transport behavior; production always uses createConnection. */
   readonly connectSocket?: (address: string) => Socket;
+  /** Test seam for follower recovery timing; production uses the bounded backoff schedule. */
+  readonly followingRetryDelaysMs?: readonly number[];
 }
 
 export interface DesktopApprovalResponse {
@@ -150,6 +152,14 @@ const DEFAULT_CONNECT_TIMEOUT_MS = 5_000;
 const DEFAULT_INITIALIZE_TIMEOUT_MS = 5_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_FRAME_BYTES = 256 * 1024 * 1024;
+const THREAD_FOLLOWING_RETRY_DELAYS_MS = Object.freeze([
+  500,
+  1_000,
+  2_000,
+  4_000,
+  8_000,
+  16_000,
+]);
 const MIN_TIMEOUT_MS = 1;
 
 /**
@@ -173,10 +183,13 @@ export class DesktopIpcClient {
   private readonly maxFrameBytes: number;
   private readonly requestIdFactory: () => string;
   private readonly connectSocket: (address: string) => Socket;
+  private readonly followingRetryDelaysMs: readonly number[];
   private readonly pendingRequests = new Map<string, PendingRequest>();
   private readonly threadStreamListeners = new Set<ThreadStreamListener>();
   private readonly connectionLossListeners = new Set<ConnectionLossListener>();
   private readonly followedThreadIds = new Set<string>();
+  private readonly confirmedFollowedThreadIds = new Set<string>();
+  private readonly followingRetryTimers = new Map<string, NodeJS.Timeout>();
   private socket: Socket | undefined;
   private startPromise: Promise<DesktopIpcHandshake> | undefined;
   private handshake: DesktopIpcHandshake | undefined;
@@ -209,6 +222,13 @@ export class DesktopIpcClient {
     );
     this.requestIdFactory = options.requestIdFactory ?? randomUUID;
     this.connectSocket = options.connectSocket ?? createConnection;
+    this.followingRetryDelaysMs = Object.freeze(
+      (options.followingRetryDelaysMs ?? THREAD_FOLLOWING_RETRY_DELAYS_MS)
+        .map((delayMs) => positiveTimeout(delayMs, 'followingRetryDelaysMs')),
+    );
+    if (this.followingRetryDelaysMs.length === 0) {
+      throw new RangeError('followingRetryDelaysMs must contain at least one delay');
+    }
   }
 
   public get state(): DesktopIpcConnectionState {
@@ -246,6 +266,7 @@ export class DesktopIpcClient {
   public async stop(): Promise<void> {
     this.stopping = true;
     this.currentState = 'CLOSING';
+    this.clearAllThreadFollowingRecovery();
     const socket = this.socket;
     this.socket = undefined;
     this.handshake = undefined;
@@ -285,7 +306,7 @@ export class DesktopIpcClient {
     const normalizedThreadId = requireThreadId(threadId);
     this.followedThreadIds.add(normalizedThreadId);
     if (this.currentState === 'READY') {
-      await this.sendThreadFollowing(normalizedThreadId, true);
+      await this.beginThreadFollowing(normalizedThreadId);
     }
   }
 
@@ -295,6 +316,7 @@ export class DesktopIpcClient {
     if (!this.followedThreadIds.delete(normalizedThreadId)) {
       return;
     }
+    this.clearThreadFollowingRecovery(normalizedThreadId);
     if (this.currentState === 'READY') {
       await this.sendThreadFollowing(normalizedThreadId, false);
     }
@@ -314,6 +336,9 @@ export class DesktopIpcClient {
     for (const threadId of desiredThreadIds) {
       this.followedThreadIds.add(threadId);
     }
+    for (const threadId of removedThreadIds) {
+      this.clearThreadFollowingRecovery(threadId);
+    }
     if (this.currentState !== 'READY') {
       return;
     }
@@ -321,7 +346,7 @@ export class DesktopIpcClient {
       await this.sendThreadFollowing(threadId, false);
     }
     for (const threadId of addedThreadIds) {
-      await this.sendThreadFollowing(threadId, true);
+      await this.beginThreadFollowing(threadId);
     }
   }
 
@@ -566,6 +591,7 @@ export class DesktopIpcClient {
       this.socket = undefined;
       this.handshake = undefined;
       this.readBuffer = Buffer.alloc(0);
+      this.clearAllThreadFollowingRecovery();
       this.rejectPending(
         'DESKTOP_IPC_CONNECTION_LOST',
         (pending) => pending.sent ? 'OUTCOME_UNKNOWN' : 'PROVABLY_UNSENT',
@@ -616,6 +642,9 @@ export class DesktopIpcClient {
       ) {
         this.failProtocol(epoch);
         return;
+      }
+      if (record.params.change.type === 'snapshot') {
+        this.confirmThreadFollowing(record.params.conversationId);
       }
       try {
         for (const listener of this.threadStreamListeners) {
@@ -752,9 +781,97 @@ export class DesktopIpcClient {
   }
 
   private async restoreThreadFollowing(): Promise<void> {
+    this.clearAllThreadFollowingRecovery();
     for (const threadId of this.followedThreadIds) {
-      await this.sendThreadFollowing(threadId, true);
+      await this.beginThreadFollowing(threadId);
     }
+  }
+
+  private async beginThreadFollowing(threadId: string): Promise<void> {
+    this.clearThreadFollowingRecovery(threadId);
+    const epoch = this.epoch;
+    await this.sendThreadFollowing(threadId, true);
+    this.scheduleThreadFollowingRetry(threadId, 0, epoch);
+  }
+
+  private scheduleThreadFollowingRetry(
+    threadId: string,
+    retryIndex: number,
+    epoch: number,
+  ): void {
+    if (
+      this.epoch !== epoch
+      || !this.followedThreadIds.has(threadId)
+      || this.confirmedFollowedThreadIds.has(threadId)
+      || this.currentState !== 'READY'
+      || this.followingRetryTimers.has(threadId)
+    ) {
+      return;
+    }
+    const delayIndex = Math.min(retryIndex, this.followingRetryDelaysMs.length - 1);
+    const delayMs = this.followingRetryDelaysMs[delayIndex]!;
+    const timer = setTimeout(() => {
+      if (this.followingRetryTimers.get(threadId) !== timer) {
+        return;
+      }
+      this.followingRetryTimers.delete(threadId);
+      void this.retryThreadFollowing(threadId, retryIndex + 1, epoch);
+    }, delayMs);
+    timer.unref();
+    this.followingRetryTimers.set(threadId, timer);
+  }
+
+  private async retryThreadFollowing(
+    threadId: string,
+    nextRetryIndex: number,
+    epoch: number,
+  ): Promise<void> {
+    if (
+      this.epoch !== epoch
+      || !this.followedThreadIds.has(threadId)
+      || this.confirmedFollowedThreadIds.has(threadId)
+      || this.currentState !== 'READY'
+    ) {
+      return;
+    }
+    try {
+      await this.sendThreadFollowing(threadId, true);
+    } catch (error) {
+      if (this.epoch === epoch && this.currentState === 'READY') {
+        this.socket?.destroy(error instanceof Error ? error : undefined);
+      }
+      return;
+    }
+    this.scheduleThreadFollowingRetry(threadId, nextRetryIndex, epoch);
+  }
+
+  private confirmThreadFollowing(threadId: string): void {
+    if (!this.followedThreadIds.has(threadId)) {
+      return;
+    }
+    this.confirmedFollowedThreadIds.add(threadId);
+    const timer = this.followingRetryTimers.get(threadId);
+    if (timer) {
+      clearTimeout(timer);
+      this.followingRetryTimers.delete(threadId);
+    }
+  }
+
+  private clearThreadFollowingRecovery(threadId: string): void {
+    this.confirmedFollowedThreadIds.delete(threadId);
+    const timer = this.followingRetryTimers.get(threadId);
+    if (timer) {
+      clearTimeout(timer);
+      this.followingRetryTimers.delete(threadId);
+    }
+  }
+
+  private clearAllThreadFollowingRecovery(): void {
+    this.confirmedFollowedThreadIds.clear();
+    for (const timer of this.followingRetryTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.followingRetryTimers.clear();
   }
 
   private sendThreadFollowing(threadId: string, following: boolean): Promise<void> {

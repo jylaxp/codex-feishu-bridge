@@ -3,6 +3,7 @@
   "artifacts": [
     {
       "capturedAt": "2026-07-17T23:06:52Z",
+      "codexVersion": "0.145.0-alpha.18",
       "binaryName": "codex",
       "binarySha256": "a2bc3f63b0d7ce5c065ae070e16d964fa71192bf6ceb8da82d2315227d55a6bf",
       "distribution": "ChatGPT.app",
@@ -11,11 +12,30 @@
     },
     {
       "capturedAt": "2026-07-19T08:33:48Z",
+      "codexVersion": "0.145.0-alpha.18",
       "binaryName": "codex",
       "binarySha256": "5589325247117acfd2181ec5cf1daad3b88ca46abbeaf6dc43f19c65c07727c6",
       "distribution": "ChatGPT.app",
       "appVersion": "26.715.31925",
       "appBuild": "5551"
+    },
+    {
+      "capturedAt": "2026-07-22T00:46:59Z",
+      "codexVersion": "0.145.0-alpha.27",
+      "binaryName": "codex",
+      "binarySha256": "d1c9c5d262c2cc2c58a0f330a82e16316397cc371736ff39fe5856dd1fe0227f",
+      "distribution": "ChatGPT.app",
+      "appVersion": "26.715.70719",
+      "appBuild": "5650"
+    },
+    {
+      "capturedAt": "2026-07-22T05:00:28Z",
+      "codexVersion": "0.145.0-alpha.30",
+      "binaryName": "codex",
+      "binarySha256": "9de41fd67ac24873dd7852160536cff004633f76f224fed602654457da27db02",
+      "distribution": "ChatGPT.app",
+      "appVersion": "26.715.71837",
+      "appBuild": "5702"
     }
   ]
 }

@@ -69,6 +69,8 @@ const binding: ChatThreadBinding = {
   updatedAtMs: 1,
 };
 
+const CARD_JSON_BYTE_BUDGET = 300_000;
+
 test('Desktop IPC owns start, steer, interrupt, approval, and live protocol v11 events', async () => {
   const followedThreads = new Set<string>();
   const broadcast: DesktopThreadStreamBroadcast = {
@@ -309,6 +311,161 @@ test('Desktop supervisor restores followers after an actual socket loss', async 
       ],
     );
   } finally {
+    await supervisor.stop();
+    await mock.close();
+  }
+});
+
+test('Desktop follower retries until the reconnected owner confirms the thread snapshot', async () => {
+  const snapshot = threadSnapshotBroadcast('thread-bound', 'turn-restored', 'restored');
+  const patch = threadPatchesBroadcast('thread-bound');
+  let connectionCount = 0;
+  let reconnectFollowAttempts = 0;
+  const mock = createMockTransport((message, socket) => {
+    if (message.method === 'initialize') {
+      connectionCount += 1;
+      respond(socket, message, { clientId: `bridge-client-${connectionCount}` });
+      return;
+    }
+    if (
+      message.method !== 'thread-stream-following-changed'
+      || nestedBoolean(message, 'params', 'following') !== true
+    ) {
+      return;
+    }
+    if (connectionCount === 1) {
+      socket.sendToClient(snapshot);
+      return;
+    }
+    reconnectFollowAttempts += 1;
+    if (reconnectFollowAttempts === 1) {
+      socket.sendToClient(patch);
+    } else if (reconnectFollowAttempts === 2) {
+      socket.sendToClient(snapshot);
+    }
+  });
+  const endpoint: DesktopIpcEndpoint = { transport: 'unix_socket', address: 'mock-desktop' };
+  const client = new DesktopIpcClient({
+    endpoint,
+    platformAdapter: trustedTestPlatform(endpoint),
+    connectSocket: mock.connect,
+    followingRetryDelaysMs: [5, 10],
+  });
+  const receivedEpochs: number[] = [];
+  const unsubscribe = client.onThreadStreamStateChanged((_message, epoch) => {
+    receivedEpochs.push(epoch);
+  });
+  const supervisor = new DesktopIpcSupervisor(client, {
+    reconnectInitialDelayMs: 1,
+    reconnectMaximumDelayMs: 1,
+    onDisconnected: () => undefined,
+  });
+
+  try {
+    await client.syncFollowedThreads(['thread-bound']);
+    await supervisor.start();
+    mock.disconnect();
+    await waitFor(() => client.connectionEpoch === 2);
+    await waitFor(() => reconnectFollowAttempts === 2, 100);
+
+    assert.equal(reconnectFollowAttempts, 2);
+    assert.equal(receivedEpochs.filter((epoch) => epoch === 2).length, 2);
+  } finally {
+    unsubscribe();
+    await supervisor.stop();
+    await mock.close();
+  }
+});
+
+test('Desktop follower keeps a bounded retry rate until confirmation and stops after unfollow', async () => {
+  let followAttempts = 0;
+  const mock = createMockTransport((message, socket) => {
+    if (message.method === 'initialize') {
+      respond(socket, message, { clientId: 'bridge-client' });
+      return;
+    }
+    if (
+      message.method === 'thread-stream-following-changed'
+      && nestedBoolean(message, 'params', 'following') === true
+    ) {
+      followAttempts += 1;
+    }
+  });
+  const endpoint: DesktopIpcEndpoint = { transport: 'unix_socket', address: 'mock-desktop' };
+  const client = new DesktopIpcClient({
+    endpoint,
+    platformAdapter: trustedTestPlatform(endpoint),
+    connectSocket: mock.connect,
+    followingRetryDelaysMs: [1, 2],
+  });
+
+  try {
+    await client.syncFollowedThreads(['thread-bound']);
+    await client.start();
+    await waitFor(() => followAttempts >= 4, 100);
+
+    await client.unfollowThread('thread-bound');
+    const attemptsAfterUnfollow = followAttempts;
+    await new Promise((resolve) => setTimeout(resolve, 8));
+    assert.equal(followAttempts, attemptsAfterUnfollow);
+  } finally {
+    await client.stop();
+    await mock.close();
+  }
+});
+
+test('Desktop follower reconnects when a confirmation retry write fails', async () => {
+  const snapshot = threadSnapshotBroadcast('thread-bound', 'turn-restored', 'restored');
+  let connectionCount = 0;
+  let secondEpochFollowAttempts = 0;
+  const mock = createMockTransport((message, socket) => {
+    if (message.method === 'initialize') {
+      connectionCount += 1;
+      respond(socket, message, { clientId: `bridge-client-${connectionCount}` });
+      return;
+    }
+    if (
+      message.method !== 'thread-stream-following-changed'
+      || nestedBoolean(message, 'params', 'following') !== true
+    ) {
+      return;
+    }
+    if (connectionCount === 1 || connectionCount === 3) {
+      socket.sendToClient(snapshot);
+      return;
+    }
+    secondEpochFollowAttempts += 1;
+    if (secondEpochFollowAttempts === 2) {
+      socket.failCurrentWrite(new Error('simulated follower write failure'));
+    }
+  });
+  const endpoint: DesktopIpcEndpoint = { transport: 'unix_socket', address: 'mock-desktop' };
+  const client = new DesktopIpcClient({
+    endpoint,
+    platformAdapter: trustedTestPlatform(endpoint),
+    connectSocket: mock.connect,
+    followingRetryDelaysMs: [2],
+  });
+  const receivedEpochs: number[] = [];
+  const unsubscribe = client.onThreadStreamStateChanged((_message, epoch) => {
+    receivedEpochs.push(epoch);
+  });
+  const supervisor = new DesktopIpcSupervisor(client, {
+    reconnectInitialDelayMs: 1,
+    reconnectMaximumDelayMs: 1,
+    onDisconnected: () => undefined,
+  });
+
+  try {
+    await client.syncFollowedThreads(['thread-bound']);
+    await supervisor.start();
+    mock.disconnect();
+    await waitFor(() => client.connectionEpoch === 3, 100);
+    await waitFor(() => receivedEpochs.includes(3), 100);
+
+    assert.equal(secondEpochFollowAttempts, 2);
+  } finally {
+    unsubscribe();
     await supervisor.stop();
     await mock.close();
   }
@@ -752,6 +909,8 @@ test('orchestrator continues an oversized timeline and final answer across new c
   await waitFor(() => cards.sentCardIds.length >= 2);
   const firstPage = cards.card('card-1');
   const activeTimelinePage = cards.card(cards.sentCardIds.at(-1) as string);
+  assert.equal(cardTitle(firstPage), 'Codex 任务');
+  assert.equal(cardTitle(cards.card('card-2')), 'Codex 任务 · 续 1');
   assert.doesNotMatch(JSON.stringify(firstPage), /停止任务/);
   assert.match(JSON.stringify(activeTimelinePage), /停止任务/);
   assert.equal(await orchestrator.cancel({
@@ -789,7 +948,9 @@ test('orchestrator continues an oversized timeline and final answer across new c
     1,
   );
   for (const cardId of cards.sentCardIds) {
-    assert.ok(Buffer.byteLength(JSON.stringify(cards.card(cardId)), 'utf8') <= 28 * 1024);
+    assert.ok(
+      Buffer.byteLength(JSON.stringify(cards.card(cardId)), 'utf8') <= CARD_JSON_BYTE_BUDGET,
+    );
   }
   const finalPage = cards.card(cards.sentCardIds.at(-1) as string);
   assert.doesNotMatch(JSON.stringify(finalPage), /停止任务/);
@@ -807,12 +968,13 @@ test('orchestrator keeps a short answer on the current card and preserves answer
   shortTask.handleNotification(completedNotification('turn-1', '简短答案'));
   await waitFor(() => cardAnswer(shortCards.card('card-1')) === '简短答案');
   assert.deepEqual(shortCards.sentCardIds, ['card-1']);
+  assert.equal(cardTitle(shortCards.card('card-1')), 'Codex 任务');
   shortTask.abandonAll();
 
   const longCards = new RecordingCards();
   const longTask = new InMemoryOrchestrator(config, desktop, longCards);
   assert.equal(await longTask.handleInbound(inbound('large-delta', 'large answer'), binding), 'started');
-  const longAnswer = `[开始]${'x'.repeat(150 * 1024)}[结束]`;
+  const longAnswer = `[开始]${'x'.repeat(650 * 1024)}[结束]`;
   longTask.handleNotification(deltaNotification('turn-2', longAnswer));
   await waitFor(() => longCards.sentCardIds.length >= 2);
   await waitFor(() => (
@@ -823,6 +985,11 @@ test('orchestrator keeps a short answer on the current card and preserves answer
     longCards.sentCardIds.map((cardId) => cardAnswer(longCards.card(cardId))).join(''),
     longAnswer,
   );
+  assert.equal(cardTitle(longCards.card('card-1')), 'Codex 任务');
+  assert.equal(cardTitle(longCards.card('card-2')), 'Codex 任务 · 续 1');
+  assert.equal(cardTitle(longCards.card('card-3')), 'Codex 任务 · 续 2');
+  assert.match(JSON.stringify(longCards.card('card-1')), /本页已满，后续内容见第 2 张卡片/);
+  assert.doesNotMatch(JSON.stringify(longCards.card('card-1')), /本页内容已完整展示/);
   const activeCardId = longCards.sentCardIds.at(-1) as string;
   assert.equal(await longTask.cancel({
     chatId: 'chat',
@@ -927,7 +1094,7 @@ test('a divergent terminal answer is sent as an explicit authoritative revision'
   const orchestrator = new InMemoryOrchestrator(config, desktop, cards);
 
   assert.equal(await orchestrator.handleInbound(inbound('answer-revision', 'answer revision'), binding), 'started');
-  orchestrator.handleNotification(deltaNotification('turn-1', `流式草稿${'x'.repeat(80 * 1024)}`));
+  orchestrator.handleNotification(deltaNotification('turn-1', `流式草稿${'x'.repeat(350 * 1024)}`));
   await waitFor(() => cards.sentCardIds.length >= 2);
   const authoritative = `权威最终答案${'y'.repeat(60 * 1024)}`;
   orchestrator.handleNotification(completedNotification('turn-1', authoritative));
@@ -957,7 +1124,9 @@ test('an oversized rendered timeline entry is split before any continuation card
   assert.deepEqual(errors.map((error) => error.message), []);
   await waitFor(() => cards.sentCardIds.map((cardId) => cardReasoning(cards.card(cardId))).join('') === reasoning);
   for (const cardId of cards.sentCardIds) {
-    assert.ok(Buffer.byteLength(JSON.stringify(cards.card(cardId)), 'utf8') <= 28 * 1024);
+    assert.ok(
+      Buffer.byteLength(JSON.stringify(cards.card(cardId)), 'utf8') <= CARD_JSON_BYTE_BUDGET,
+    );
   }
   orchestrator.abandonAll();
 });
@@ -1230,7 +1399,7 @@ class ProportionalRenderCards extends RecordingCards {
       .map((element) => String(element.content ?? ''))
       .join('');
     if (timelineText) {
-      body.elements.push({ tag: 'markdown', content: `rendered:${timelineText.repeat(8)}` });
+      body.elements.push({ tag: 'markdown', content: `rendered:${timelineText.repeat(64)}` });
     }
     return rendered;
   }
@@ -1347,6 +1516,7 @@ function createMockTransport(
 
 class MockDesktopSocket extends Duplex {
   private readonly reader = new FrameReader();
+  private currentWriteError: Error | undefined;
 
   constructor(private readonly onMessage: (message: WireMessage) => void) {
     super();
@@ -1363,7 +1533,9 @@ class MockDesktopSocket extends Duplex {
     callback: (error?: Error | null) => void,
   ): void {
     for (const message of this.reader.push(chunk)) this.onMessage(message);
-    callback();
+    const error = this.currentWriteError;
+    this.currentWriteError = undefined;
+    callback(error);
   }
 
   override _final(callback: (error?: Error | null) => void): void {
@@ -1374,6 +1546,10 @@ class MockDesktopSocket extends Duplex {
 
   sendToClient(message: WireMessage): void {
     this.push(encodeFrame(message));
+  }
+
+  failCurrentWrite(error: Error): void {
+    this.currentWriteError = error;
   }
 }
 
@@ -1554,6 +1730,22 @@ function threadSnapshotBroadcast(
   };
 }
 
+function threadPatchesBroadcast(threadId: string): DesktopThreadStreamBroadcast {
+  return {
+    type: 'broadcast',
+    method: 'thread-stream-state-changed',
+    sourceClientId: 'desktop-owner',
+    version: DESKTOP_THREAD_STREAM_PROTOCOL_VERSION,
+    params: {
+      conversationId: threadId,
+      change: {
+        type: 'patches',
+        patches: [{ op: 'replace', path: ['turns'], value: [] }],
+      },
+    },
+  };
+}
+
 async function waitFor(predicate: () => boolean, timeoutMs = 500): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!predicate()) {
@@ -1610,6 +1802,13 @@ function cardAnswer(card: CardKitJson): string {
     }
   }
   return '';
+}
+
+function cardTitle(card: CardKitJson): string {
+  const header = card.header as { title?: { content?: unknown } };
+  const content = header.title?.content;
+  assert.equal(typeof content, 'string');
+  return content as string;
 }
 
 function cardReasoning(card: CardKitJson): string {

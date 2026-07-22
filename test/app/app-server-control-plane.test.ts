@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -16,8 +17,13 @@ import {
   APP_SERVER_PROTOCOL_PROFILE_0_144_3,
   APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18,
   parseAppServerUserAgentVersion,
+  parseCodexCliVersion,
   type AppServerProtocolProfile,
 } from '../../src/app/codex/app-server-protocol-registry';
+import {
+  builtInProtocolVersionConfig,
+  profileForSupportedVersion,
+} from '../../src/app/codex/protocol-version-config';
 import { APP_SERVER_PROTOCOL_V144 } from '../../src/app/codex/app-server-protocol-v144';
 import { APP_SERVER_PROTOCOL_V145 } from '../../src/app/codex/app-server-protocol-v145';
 
@@ -316,19 +322,26 @@ test('exact 145 owned stdio proves the isolated non-model control-plane matrix',
   const codexBin = process.env.CODEX_145_BIN
     ?? '/Applications/ChatGPT.app/Contents/Resources/codex';
   if (!existsSync(codexBin)) {
-    t.skip('configured or ChatGPT bundled Codex 0.145.0-alpha.18 binary is unavailable');
+    t.skip('configured or ChatGPT bundled Codex 0.145 binary is unavailable');
     return;
   }
+  const cliVersion = execFileSync(codexBin, ['--version'], { encoding: 'utf8' }).trim();
+  const codexVersion = parseCodexCliVersion(cliVersion).version;
+  const supportedVersion = builtInProtocolVersionConfig().supportedVersions.find(
+    (entry) => entry.codexVersion === codexVersion,
+  );
+  assert.ok(supportedVersion, `${cliVersion} is not built into the support catalog`);
+  const protocolProfile = profileForSupportedVersion(supportedVersion);
   const result = await runOwnedStdioControlPlaneSmoke({
     codexBin,
-    protocolProfile: APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18,
+    protocolProfile,
     adapter: APP_SERVER_PROTOCOL_V145,
     temporaryPrefix: 'bridge-app-server-145-smoke-',
   });
   assert.deepEqual(result.provenMethods, REQUIRED_REAL_SMOKE_METHODS);
   assert.match(result.rateLimitsCapability, /^(available|unavailable:(REQUEST_FAILED|INVALID_RESPONSE))$/);
   assert.equal(result.compactCapability, 'not-attempted:model-operation-prohibited');
-  t.diagnostic(`145 rateLimits=${result.rateLimitsCapability}`);
+  t.diagnostic(`${codexVersion} rateLimits=${result.rateLimitsCapability}`);
 });
 
 test('exact 144 owned stdio proves the isolated non-model control-plane matrix', async (t) => {

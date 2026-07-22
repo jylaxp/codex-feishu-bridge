@@ -29,6 +29,7 @@ import {
   inspectCodexCompatibility,
   verifyCodexRuntimeContract,
 } from '../../src/app/codex/runtime-contract';
+import { builtInProtocolVersionConfig } from '../../src/app/codex/protocol-version-config';
 
 const execFileAsync = promisify(execFile);
 const projectRoot = resolve(__dirname, '../../..');
@@ -114,14 +115,49 @@ test('one protocol contract records multiple independently verified runtime arti
   const evidence = readJson(join(fixtureRoot, 'artifacts.json')) as {
     readonly protocolContractId: string;
     readonly artifacts: ReadonlyArray<{
+      readonly capturedAt: string;
+      readonly codexVersion: string;
+      readonly binaryName: string;
       readonly binarySha256: string;
+      readonly distribution: string;
+      readonly appVersion: string | null;
       readonly appBuild: string | null;
     }>;
   };
 
   assert.equal(evidence.protocolContractId, APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18.id);
-  assert.deepEqual(evidence.artifacts.map((artifact) => artifact.appBuild), [null, '5551']);
-  assert.equal(new Set(evidence.artifacts.map((artifact) => artifact.binarySha256)).size, 2);
+  assert.deepEqual(
+    evidence.artifacts.map((artifact) => artifact.codexVersion),
+    [
+      '0.145.0-alpha.18',
+      '0.145.0-alpha.18',
+      '0.145.0-alpha.27',
+      '0.145.0-alpha.30',
+    ],
+  );
+  assert.deepEqual(
+    evidence.artifacts.map((artifact) => artifact.appBuild),
+    [null, '5551', '5650', '5702'],
+  );
+  assert.equal(new Set(evidence.artifacts.map((artifact) => artifact.binarySha256)).size, 4);
+  assert.deepEqual(evidence.artifacts[2], {
+    capturedAt: '2026-07-22T00:46:59Z',
+    codexVersion: '0.145.0-alpha.27',
+    binaryName: 'codex',
+    binarySha256: 'd1c9c5d262c2cc2c58a0f330a82e16316397cc371736ff39fe5856dd1fe0227f',
+    distribution: 'ChatGPT.app',
+    appVersion: '26.715.70719',
+    appBuild: '5650',
+  });
+  assert.deepEqual(evidence.artifacts[3], {
+    capturedAt: '2026-07-22T05:00:28Z',
+    codexVersion: '0.145.0-alpha.30',
+    binaryName: 'codex',
+    binarySha256: '9de41fd67ac24873dd7852160536cff004633f76f224fed602654457da27db02',
+    distribution: 'ChatGPT.app',
+    appVersion: '26.715.71837',
+    appBuild: '5702',
+  });
 });
 
 test('144 fixture records exact binary provenance and full experimental schema digest', () => {
@@ -230,6 +266,17 @@ test('runtime contract selects the exact 0.145.0-alpha.18 profile', () => {
   assert.equal(profile, APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18);
 });
 
+test('runtime contract selects built-in 145 aliases through the base adapter', () => {
+  const schemaDigest = '7a5aaea66a649faae713d43313289ddd79b4883086c10875f9031a56ec00bd5c';
+  for (const codexVersion of ['0.145.0-alpha.27', '0.145.0-alpha.30']) {
+    const profile = assertCompatibleCodexRuntime(`codex-cli ${codexVersion}`, schemaDigest);
+
+    assert.equal(profile.id, APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18.id);
+    assert.equal(profile.codexVersion, codexVersion);
+    assert.equal(profile.schemaDigest, schemaDigest);
+  }
+});
+
 test('runtime verification reports and cleans up the selected profile', async (t) => {
   if (!existsSync(codex145Bin)) {
     t.skip('ChatGPT bundled Codex binary is not installed');
@@ -238,6 +285,16 @@ test('runtime verification reports and cleans up the selected profile', async (t
   await withTemporaryDirectoryAsync(async (root) => {
     const temporaryRoot = join(root, 'runtime');
     mkdirSync(temporaryRoot);
+    const versionResult = await execFileAsync(codex145Bin, ['--version'], {
+      env: { ...process.env, HOME: root, CODEX_HOME: join(root, 'codex-home'), TMPDIR: root },
+    });
+    const expectedCodexVersion = parseCodexCliVersion(versionResult.stdout.trim()).version;
+    assert.equal(
+      builtInProtocolVersionConfig().supportedVersions.some(
+        (entry) => entry.codexVersion === expectedCodexVersion,
+      ),
+      true,
+    );
 
     const report = await verifyCodexRuntimeContract(
       minimalConfig(codex145Bin, root),
@@ -245,8 +302,9 @@ test('runtime verification reports and cleans up the selected profile', async (t
       temporaryRoot,
     );
 
-    assert.equal(report.codexVersion, 'codex-cli 0.145.0-alpha.18');
-    assert.equal(report.protocolProfile, APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18);
+    assert.equal(report.codexVersion, `codex-cli ${expectedCodexVersion}`);
+    assert.equal(report.protocolProfile.id, APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18.id);
+    assert.equal(report.protocolProfile.codexVersion, expectedCodexVersion);
     assert.equal(report.schemaDigest, report.protocolProfile.schemaDigest);
     assert.equal(report.runtimeArtifact.protocolContractId, report.protocolProfile.id);
     assert.match(report.runtimeArtifact.binarySha256, /^[a-f0-9]{64}$/);
@@ -259,9 +317,9 @@ test('runtime verification reports and cleans up the selected profile', async (t
     };
     assert.deepEqual(
       versionConfig.supportedVersions.map((entry) => entry.codexVersion),
-      ['0.144.3', '0.145.0-alpha.18'],
+      ['0.144.3', '0.145.0-alpha.18', '0.145.0-alpha.27', '0.145.0-alpha.30'],
     );
-    assert.equal(versionConfig.lastDetection.codexVersion, '0.145.0-alpha.18');
+    assert.equal(versionConfig.lastDetection.codexVersion, expectedCodexVersion);
     assert.deepEqual(
       versionConfig.lastDetection.compatibility,
       {
@@ -533,12 +591,23 @@ test('capture requires exact matching SemVer identities from CLI and userAgent',
   });
 });
 
-test('bundled 145 binary reproduces the committed manifest digest when available', async (t) => {
+test('bundled supported 145 binary reproduces the committed protocol contract', async (t) => {
   if (!existsSync(codex145Bin)) {
     t.skip('ChatGPT bundled Codex binary is not installed');
     return;
   }
   await withTemporaryDirectoryAsync(async (root) => {
+    const versionResult = await execFileAsync(codex145Bin, ['--version'], {
+      env: { ...process.env, HOME: root, CODEX_HOME: join(root, 'codex-home'), TMPDIR: root },
+    });
+    const cliVersion = versionResult.stdout.trim();
+    const codexVersion = parseCodexCliVersion(cliVersion).version;
+    assert.equal(
+      builtInProtocolVersionConfig().supportedVersions.some(
+        (entry) => entry.codexVersion === codexVersion,
+      ),
+      true,
+    );
     const output = join(root, 'fixture');
     await execFileAsync(process.execPath, [
       captureScript,
@@ -547,7 +616,7 @@ test('bundled 145 binary reproduces the committed manifest digest when available
       '--captured-at', '2026-07-17T23:06:52Z',
       '--distribution', 'ChatGPT.app',
       '--server-user-agent',
-      'Codex Desktop/0.145.0-alpha.18 (Mac OS 15.6.1; arm64) '
+      `Codex Desktop/${codexVersion} (Mac OS 15.6.1; arm64) `
         + 'dumb (bridge_contract_capture; 2.0.0)',
     ]);
     const expectedManifest = JSON.parse(
@@ -558,18 +627,45 @@ test('bundled 145 binary reproduces the committed manifest digest when available
     ) as Record<string, unknown>;
     const expectedMessages = JSON.parse(
       readFileSync(join(fixtureRoot, 'representative-messages.json'), 'utf8'),
-    ) as unknown;
+    ) as RepresentativeMessages;
     const actualMessages = JSON.parse(
       readFileSync(join(output, 'representative-messages.json'), 'utf8'),
-    ) as unknown;
-    assert.equal(actualManifest.profileId, expectedManifest.profileId);
-    assert.equal(actualManifest.cliVersion, expectedManifest.cliVersion);
+    ) as RepresentativeMessages;
+    assert.equal(actualManifest.profileId, `app-server-${codexVersion}`);
+    assert.equal(actualManifest.cliVersion, cliVersion);
     assert.equal(actualManifest.schemaDigest, expectedManifest.schemaDigest);
     assert.deepEqual(actualManifest.schemaGeneration, expectedManifest.schemaGeneration);
     assert.deepEqual(actualManifest.evidence, expectedManifest.evidence);
-    assert.deepEqual(actualMessages, expectedMessages);
+    assert.match(actualMessages.initializeResponse.result.userAgent, new RegExp(`/${codexVersion} `));
+    assert.equal(actualMessages.threadListResponse.result.data[0]?.cliVersion, codexVersion);
+    assert.deepEqual(
+      withoutRepresentativeRuntimeIdentity(actualMessages),
+      withoutRepresentativeRuntimeIdentity(expectedMessages),
+    );
   });
 });
+
+interface RepresentativeMessages {
+  readonly initializeResponse: {
+    readonly result: { readonly userAgent: string };
+  };
+  readonly threadListResponse: {
+    readonly result: { readonly data: ReadonlyArray<{ readonly cliVersion: string }> };
+  };
+  readonly [key: string]: unknown;
+}
+
+function withoutRepresentativeRuntimeIdentity(value: RepresentativeMessages): unknown {
+  const comparable = structuredClone(value) as {
+    initializeResponse: { result: { userAgent: string } };
+    threadListResponse: { result: { data: Array<{ cliVersion: string }> } };
+  } & Record<string, unknown>;
+  comparable.initializeResponse.result.userAgent = '<runtime-user-agent>';
+  if (comparable.threadListResponse.result.data[0] !== undefined) {
+    comparable.threadListResponse.result.data[0].cliVersion = '<runtime-cli-version>';
+  }
+  return comparable;
+}
 
 function createFakeCodex(
   root: string,

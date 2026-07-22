@@ -159,8 +159,9 @@ CODEX_BIN=/absolute/path/to/codex codex-feishu-bridge compatibility
 CODEX_BIN=/absolute/path/to/codex codex-feishu-bridge compatibility --approve
 ```
 
-首次运行会把内置支持目录写入 config home 的 `protocol-versions.json`，后续运行读取该文件。未知 schema
-不得使用 `--approve` 绕过。
+首次运行会把内置支持目录写入 config home 的 `protocol-versions.json`。后续 Bridge 发布新增内置版本时，
+运行会在锁内把缺失的内置项追加到该文件；已有的同版本记录和人工批准项保持不变。这个发布内置目录迁移
+不等同于把探测到的 `upgrade_available` 自动批准；未知 schema 仍不得使用 `--approve` 绕过。
 
 然后让 doctor 对已批准 binary 给出 exact profile、version、digest 和 mode：
 

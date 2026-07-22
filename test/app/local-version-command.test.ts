@@ -52,15 +52,35 @@ test('local version command resolves the real environment and persists its repor
     assert.equal(report.codexBinary, realpathSync.native(codexBinary));
     assert.equal(report.schemaDigest, schemaDigest);
     assert.equal(report.chatGptApp, null);
-    assert.deepEqual(report.supportedVersions, ['0.145.0-alpha.19']);
+    assert.deepEqual(report.supportedVersions, [
+      '0.145.0-alpha.19',
+      '0.144.3',
+      '0.145.0-alpha.18',
+      '0.145.0-alpha.27',
+      '0.145.0-alpha.30',
+    ]);
     const persisted = JSON.parse(
       readFileSync(join(root, 'protocol-versions.json'), 'utf8'),
     ) as {
+      readonly supportedVersions: ReadonlyArray<{
+        readonly codexVersion: string;
+        readonly source: string;
+      }>;
       readonly lastDetection: {
         readonly checkedAt: string;
         readonly compatibility: { readonly status: string };
       };
     };
+    assert.deepEqual(
+      persisted.supportedVersions.map((entry) => [entry.codexVersion, entry.source]),
+      [
+        ['0.145.0-alpha.19', 'approved'],
+        ['0.144.3', 'builtin'],
+        ['0.145.0-alpha.18', 'builtin'],
+        ['0.145.0-alpha.27', 'builtin'],
+        ['0.145.0-alpha.30', 'builtin'],
+      ],
+    );
     assert.equal(persisted.lastDetection.checkedAt, '2026-07-19T09:30:00.000Z');
     assert.equal(persisted.lastDetection.compatibility.status, 'supported');
   } finally {

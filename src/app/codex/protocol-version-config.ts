@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { BridgeProcessLock } from '../process-lock';
 import {
   APP_SERVER_PROTOCOL_PROFILES,
+  APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18,
   parseCodexCliVersion,
   type AppServerProtocolProfile,
   type AppServerProtocolProfileId,
@@ -30,6 +31,31 @@ export interface SupportedProtocolVersion {
   readonly adapterProfileId: AppServerProtocolProfileId;
   readonly source: ProtocolVersionSource;
 }
+
+/** Exact versions bundled into new configurations, including reviewed adapter-compatible aliases. */
+export const BUILT_IN_SUPPORTED_PROTOCOL_VERSIONS: readonly SupportedProtocolVersion[] =
+  Object.freeze([
+    ...APP_SERVER_PROTOCOL_PROFILES.map((profile) => Object.freeze({
+      codexVersion: profile.codexVersion,
+      schemaDigest: profile.schemaDigest,
+      adapterProfileId: profile.id,
+      source: 'builtin' as const,
+    })),
+    Object.freeze({
+      codexVersion: '0.145.0-alpha.27',
+      schemaDigest: APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18.schemaDigest,
+      adapterProfileId: APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18.id,
+      source: 'builtin' as const,
+    }),
+    Object.freeze({
+      codexVersion: '0.145.0-alpha.30',
+      schemaDigest: APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18.schemaDigest,
+      adapterProfileId: APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18.id,
+      source: 'builtin' as const,
+    }),
+  ]);
+
+assertSupportedVersions(BUILT_IN_SUPPORTED_PROTOCOL_VERSIONS);
 
 export interface ChatGptAppVersion {
   readonly appPath: string;
@@ -72,11 +98,8 @@ export class ProtocolVersionConfigStore {
     this.filePath = join(configHome, CONFIG_FILE_NAME);
   }
 
-  /** Seeds the built-in catalog once; later starts read the persisted catalog. */
+  /** Seeds the catalog and adds newly shipped built-ins without replacing operator approvals. */
   public loadOrCreate(): ProtocolVersionConfig {
-    if (existsSync(this.filePath)) {
-      return this.load();
-    }
     return this.withMutationLock(() => this.loadOrCreateUnlocked());
   }
 
@@ -150,7 +173,12 @@ export class ProtocolVersionConfigStore {
 
   private loadOrCreateUnlocked(): ProtocolVersionConfig {
     if (existsSync(this.filePath)) {
-      return this.load();
+      const persisted = this.load();
+      const merged = mergeMissingBuiltInVersions(persisted);
+      if (merged !== persisted) {
+        this.write(merged);
+      }
+      return merged;
     }
     const initial = builtInProtocolVersionConfig();
     this.write(initial);
@@ -185,6 +213,26 @@ export class ProtocolVersionConfigStore {
       }
     }
   }
+}
+
+function mergeMissingBuiltInVersions(config: ProtocolVersionConfig): ProtocolVersionConfig {
+  const persistedVersions = new Set(config.supportedVersions.map((entry) => entry.codexVersion));
+  const missingBuiltIns = BUILT_IN_SUPPORTED_PROTOCOL_VERSIONS.filter(
+    (entry) => !persistedVersions.has(entry.codexVersion),
+  );
+  if (missingBuiltIns.length === 0) {
+    return config;
+  }
+  const supportedVersions = Object.freeze([
+    ...config.supportedVersions,
+    ...missingBuiltIns,
+  ]);
+  assertSupportedVersions(supportedVersions);
+  return freezeConfig({
+    schemaVersion: CONFIG_SCHEMA_VERSION,
+    supportedVersions,
+    lastDetection: config.lastDetection,
+  });
 }
 
 function detectionWithAssessment(
@@ -258,12 +306,7 @@ export function profileForSupportedVersion(
 export function builtInProtocolVersionConfig(): ProtocolVersionConfig {
   return freezeConfig({
     schemaVersion: CONFIG_SCHEMA_VERSION,
-    supportedVersions: Object.freeze(APP_SERVER_PROTOCOL_PROFILES.map((profile) => Object.freeze({
-      codexVersion: profile.codexVersion,
-      schemaDigest: profile.schemaDigest,
-      adapterProfileId: profile.id,
-      source: 'builtin' as const,
-    }))),
+    supportedVersions: BUILT_IN_SUPPORTED_PROTOCOL_VERSIONS,
     lastDetection: null,
   });
 }

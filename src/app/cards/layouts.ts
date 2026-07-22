@@ -22,6 +22,8 @@ export interface TaskCardOptions {
   readonly showFinalAnswer?: boolean;
   /** Dedicated answer volumes omit the reasoning placeholder. */
   readonly showReasoning?: boolean;
+  /** Full continuation volumes omit the redundant status footer. */
+  readonly showFooter?: boolean;
   readonly continuationText?: SanitizedCardText;
   /** The orchestrator already byte-sized this volume, so terminal rendering must preserve it. */
   readonly contentFitsCard?: boolean;
@@ -458,10 +460,12 @@ export function createTaskCard(options: TaskCardOptions): CardKitJson {
       markdown(`✨ **最终结果输出**\n${answer}`, live ? 'codex_output' : undefined),
     );
   }
-  elements.push(
-    { tag: 'hr' },
-    markdown(`📊 ${payload.footer}`, live ? 'codex_footer' : undefined),
-  );
+  if (options.showFooter !== false) {
+    elements.push(
+      { tag: 'hr' },
+      markdown(`📊 ${payload.footer}`, live ? 'codex_footer' : undefined),
+    );
+  }
   if (options.continuationText) {
     elements.push({ tag: 'hr' }, markdown(options.continuationText));
   }

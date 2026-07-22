@@ -231,7 +231,10 @@ const CARD_RETRY_BASE_DELAY_MS = 250;
 const MAX_PENDING_NOTIFICATIONS = 512;
 const MAX_TOOL_OUTPUT_CHARS = 1_000;
 const MAX_TIMELINE_CARD_ENTRIES = 36;
-const MAX_CARD_JSON_BYTES = 28 * 1024;
+// CardKit create and full-update calls were probed against Feishu on 2026-07-22.
+// Both accepted 304,089 UTF-8 bytes of rendered card JSON and rejected 304,090
+// with API code 200860. Keep a small margin for server-side representation drift.
+const MAX_CARD_JSON_BYTES = 300_000;
 const MAX_TIMELINE_REASONING_BYTES = 6 * 1024;
 
 /**
@@ -1387,6 +1390,7 @@ function taskCard(
     showPrompt: view?.showPrompt,
     showFinalAnswer: view?.showFinalAnswer,
     showReasoning: view?.showReasoning,
+    showFooter: !(view && !view.active),
     contentFitsCard: Boolean(view),
     continuationText: view?.answerRevision
       ? sanitizeCardMarkdown('⚠️ **最终结果修订版**：此前流式草稿无法撤回，请以本页及后续修订版卡片为准。')
@@ -1395,7 +1399,7 @@ function taskCard(
         : undefined,
     payload: Object.freeze({
       title: sanitizeCardText(
-        `${taskCardTitle(usage?.binding ?? binding)} · 第 ${view?.pageNumber ?? 1} 页`,
+        taskPageTitle(usage?.binding ?? binding, view?.pageNumber ?? 1),
         { maxLength: 80 },
       ),
       prompt: sanitizeCardMarkdown(prompt, { maxLength: 4_000 }),
@@ -1414,9 +1418,7 @@ function taskCard(
         maxLength: view ? undefined : 10_000,
       }),
       footer: sanitizeCardPlainText(
-        view && !view.active
-          ? `📚 本页内容已完整展示 · 第 ${view.pageNumber} 页`
-          : `${formatFooter(status, startedAtMs, usage)} · 第 ${view?.pageNumber ?? 1} 页`,
+        `${formatFooter(status, startedAtMs, usage)} · 第 ${view?.pageNumber ?? 1} 页`,
         { maxLength: 500 },
       ),
       terminal,
@@ -1460,6 +1462,11 @@ function taskPageCard(
 
 function taskCardTitle(binding: ChatThreadBinding | undefined): string {
   return truncateDisplayWidth(binding?.threadTitle?.trim() || 'Codex 任务', 24);
+}
+
+function taskPageTitle(binding: ChatThreadBinding | undefined, pageNumber: number): string {
+  const title = taskCardTitle(binding);
+  return pageNumber > 1 ? `${title} · 续 ${pageNumber - 1}` : title;
 }
 
 function truncateDisplayWidth(value: string, maxWidth: number): string {
