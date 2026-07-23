@@ -1,0 +1,35 @@
+test/app/desktop-ipc-regression.test.ts
+  s_c54cf697e76a51::t_474dc44ae7ce69 290-325
+  s_c54cf697e76a51::t_940ec8220f0015 659-676
+  s_c54cf697e76a51::t_b983ae6de89ab1 611-628,633-658
+  s_c54cf697e76a51::t_6feaf2f8394c2b 629-632
+  s_c54cf697e76a51::t_f2662075df8621 1950-1979
+src/app/main.ts
+  s_c54cf697e76a51::t_8dcf1605342bea 314
+src/app/codex/desktop-ipc-client.ts
+  s_c54cf697e76a51::t_0ca1d1a83273b9 392-408
+src/app/in-memory-orchestrator.ts
+  s_c54cf697e76a51::t_1bce5bd9a5a2ed 153-154,161,240,260-263,306-310,462-463,486,520,601-603,696-697,704,884-885,892
+  s_c54cf697e76a51::t_df3bcae33ce1d6 551,568,1323-1326,1615
+  s_c54cf697e76a51::t_5fc86d43da849a 76-79
+  s_c54cf697e76a51::t_c0006da7d1ef01 974-984,1013,1018-1022,1028-1097
+  s_c54cf697e76a51::t_dcc262cff57cb5 1098,2692-2705,2874-2876
+  s_c54cf697e76a51::t_8db9e5361d606f 1099
+  s_c54cf697e76a51::t_6f43d45dd5a7bd 2877
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "d478c04726b486974654df1605ddc98e22cdcbdd",
+  "prompts": {},
+  "sessions": {
+    "s_c54cf697e76a51": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5e80-7c30-7a71-a434-09aeae22cce8",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    }
+  }
+}
