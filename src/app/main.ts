@@ -311,6 +311,7 @@ export async function startBridge(
     isBindingCurrent: (candidate) => (
       bindings.get(candidate.tenantKey, candidate.chatId)?.threadId === candidate.threadId
     ),
+    requestThreadSnapshot: (threadId) => desktop.requestThreadFollowingSnapshot(threadId),
     readThreadTitle: (threadId) => readThreadTitle(appServerControlPlane, threadId),
     readSkills: (cwd) => appServerControlPlane.request('skills/list', { cwds: [cwd] }),
     onActiveThreadsChanged: () => {

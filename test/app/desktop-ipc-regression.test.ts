@@ -287,6 +287,42 @@ test('Desktop IPC reports an unavailable follower snapshot after the bounded wai
   }
 });
 
+test('Desktop IPC can request a fresh snapshot for an already confirmed follower', async () => {
+  let followRequests = 0;
+  const snapshot = threadSnapshotBroadcast('thread-bound', 'turn-restored', 'restored');
+  const mock = createMockTransport((message, socket) => {
+    if (message.method === 'initialize') {
+      respond(socket, message, { clientId: 'bridge-client' });
+      return;
+    }
+    if (
+      message.method === 'thread-stream-following-changed'
+      && nestedBoolean(message, 'params', 'following') === true
+    ) {
+      followRequests += 1;
+      socket.sendToClient(snapshot);
+    }
+  });
+  const endpoint: DesktopIpcEndpoint = { transport: 'unix_socket', address: 'mock-desktop' };
+  const client = new DesktopIpcClient({
+    endpoint,
+    platformAdapter: trustedTestPlatform(endpoint),
+    connectSocket: mock.connect,
+  });
+
+  try {
+    await client.start();
+    await client.syncFollowedThreads(['thread-bound']);
+    await waitFor(() => followRequests === 1);
+
+    await client.requestThreadFollowingSnapshot('thread-bound');
+    await waitFor(() => followRequests === 2);
+  } finally {
+    await client.stop();
+    await mock.close();
+  }
+});
+
 test('Desktop stream normalization preserves structured local image inputs', () => {
   const normalizer = new DesktopThreadStreamNormalizer(() => 100);
   const notifications = normalizer.handle({
@@ -569,6 +605,72 @@ test('orchestrator uses App Server callbacks only for metadata and never replays
   await new Promise((resolve) => setImmediate(resolve));
   assert.match(JSON.stringify(cards.replacements.at(-1)), /Desktop final answer/);
   assert.deepEqual(activeThreadSnapshots.at(-1), []);
+  orchestrator.abandonAll();
+});
+
+test('orchestrator waits for the final Desktop item before closing an answerless completed turn', async () => {
+  const desktop = new RecordingDesktopTurnClient();
+  const cards = new RecordingCards();
+  const snapshotRequests: string[] = [];
+  const orchestrator = new InMemoryOrchestrator(config, desktop, cards, {
+    terminalConvergenceTimeoutMs: 100,
+    requestThreadSnapshot: async (threadId) => {
+      snapshotRequests.push(threadId);
+    },
+  });
+
+  assert.equal(await orchestrator.handleInbound(inbound('terminal-wait', 'wait for final'), binding), 'started');
+  orchestrator.handleNotification(answerlessCompletedNotification('turn-1'));
+  await waitFor(() => snapshotRequests.length === 1);
+
+  assert.deepEqual(snapshotRequests, ['thread-bound']);
+  assert.equal(orchestrator.runtimeTaskHealth().active, 1);
+  assert.deepEqual(cards.closedCardIds, []);
+  await waitFor(() => (
+    cards.replacements.length > 0
+    && !/停止任务/.test(JSON.stringify(cards.replacements.at(-1)))
+  ));
+  assert.doesNotMatch(JSON.stringify(cards.replacements.at(-1)), /停止任务/);
+
+  orchestrator.handleNotification(finalAgentCompletedNotification('turn-1', '延迟到达的最终输出'));
+  await waitFor(() => cards.closedCardIds.length === 1);
+  assert.equal(orchestrator.runtimeTaskHealth().active, 0);
+  assert.match(JSON.stringify(cards.replacements.at(-1)), /延迟到达的最终输出/);
+  orchestrator.abandonAll();
+});
+
+test('orchestrator closes a genuinely textless completed turn after the convergence timeout', async () => {
+  const desktop = new RecordingDesktopTurnClient();
+  const cards = new RecordingCards();
+  const orchestrator = new InMemoryOrchestrator(config, desktop, cards, {
+    terminalConvergenceTimeoutMs: 5,
+    requestThreadSnapshot: async () => undefined,
+  });
+
+  assert.equal(await orchestrator.handleInbound(inbound('textless-terminal', 'textless task'), binding), 'started');
+  orchestrator.handleNotification(answerlessCompletedNotification('turn-1'));
+
+  await waitFor(() => cards.closedCardIds.length === 1);
+  assert.equal(orchestrator.runtimeTaskHealth().active, 0);
+  assert.doesNotMatch(JSON.stringify(cards.replacements.at(-1)), /停止任务/);
+  orchestrator.abandonAll();
+});
+
+test('orchestrator applies an authoritative final item that arrives after terminal fallback', async () => {
+  const desktop = new RecordingDesktopTurnClient();
+  const cards = new RecordingCards();
+  const orchestrator = new InMemoryOrchestrator(config, desktop, cards, {
+    terminalConvergenceTimeoutMs: 5,
+    requestThreadSnapshot: async () => undefined,
+  });
+
+  assert.equal(await orchestrator.handleInbound(inbound('late-terminal', 'late final'), binding), 'started');
+  orchestrator.handleNotification(answerlessCompletedNotification('turn-1'));
+  await waitFor(() => cards.closedCardIds.length === 1);
+
+  orchestrator.handleNotification(finalAgentCompletedNotification('turn-1', '超时后到达的权威最终输出'));
+  await waitFor(() => /超时后到达的权威最终输出/.test(JSON.stringify(cards.replacements.at(-1))));
+  assert.equal(orchestrator.runtimeTaskHealth().active, 0);
   orchestrator.abandonAll();
 });
 
@@ -1840,6 +1942,36 @@ function completedNotification(turnId: string, answer: string): ServerNotificati
         id: turnId,
         status: 'completed',
         items: [{ id: 'answer', type: 'agentMessage', phase: 'final_answer', text: answer }],
+      },
+    },
+  };
+}
+
+function answerlessCompletedNotification(turnId: string): ServerNotification {
+  return {
+    method: 'turn/completed',
+    params: {
+      threadId: 'thread-bound',
+      turn: {
+        id: turnId,
+        status: 'completed',
+        items: [],
+      },
+    },
+  };
+}
+
+function finalAgentCompletedNotification(turnId: string, answer: string): ServerNotification {
+  return {
+    method: 'item/completed',
+    params: {
+      threadId: 'thread-bound',
+      turnId,
+      item: {
+        id: 'answer',
+        type: 'agentMessage',
+        phase: 'final_answer',
+        text: answer,
       },
     },
   };

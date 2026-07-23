@@ -73,6 +73,10 @@ export interface InMemoryOrchestratorOptions {
   readonly uploadOutputFiles?: (answer: string, rootMessageId: string, taskId: string) => Promise<void>;
   /** Testable base backoff for transient CardKit update failures. */
   readonly cardRetryDelayMs?: number;
+  /** Maximum wait for a terminal Desktop snapshot to receive its final content. */
+  readonly terminalConvergenceTimeoutMs?: number;
+  /** Requests a fresh authoritative Desktop snapshot after terminal status is observed. */
+  readonly requestThreadSnapshot?: (threadId: string) => Promise<void>;
   /** Resolves one unambiguous Feishu chat for a Desktop-originated turn. */
   readonly resolveBindingByThreadId?: (threadId: string) => ChatThreadBinding | undefined;
   /** Confirms that a task's Feishu chat still targets the same Desktop thread. */
@@ -146,12 +150,15 @@ interface RuntimeTask {
   rateLimitText: string | null;
   cardSequence: number;
   completedAtMs: number | null;
+  pendingTerminalStatus: TaskStatus | null;
+  finalAnswerCompleted: boolean;
   streamingClosed: boolean;
   cancelRequested: boolean;
   cardWrite: Promise<void>;
   cardRetryCount: number;
   cardRetryTimer: NodeJS.Timeout | undefined;
   terminalCleanupTimer: NodeJS.Timeout | undefined;
+  terminalConvergenceTimer: NodeJS.Timeout | undefined;
   updateTimer: NodeJS.Timeout | undefined;
   outputFilesUploaded: boolean;
   cardDeliveryPending: boolean;
@@ -230,6 +237,7 @@ const PENDING_TERMINAL_CARD_RETENTION_MS = 30 * 60_000;
 const TEXT_LIMIT = 128 * 1024;
 const MAX_CARD_RETRY_ATTEMPTS = 3;
 const CARD_RETRY_BASE_DELAY_MS = 250;
+const TERMINAL_CONVERGENCE_TIMEOUT_MS = 2_000;
 const MAX_PENDING_NOTIFICATIONS = 512;
 const MAX_TOOL_OUTPUT_CHARS = 1_000;
 const MAX_TIMELINE_CARD_ENTRIES = 36;
@@ -249,6 +257,10 @@ export class InMemoryOrchestrator {
   private readonly readRateLimits: (() => Promise<unknown>) | undefined;
   private readonly uploadOutputFiles: ((answer: string, rootMessageId: string, taskId: string) => Promise<void>) | undefined;
   private readonly cardRetryDelayMs: number;
+  private readonly terminalConvergenceTimeoutMs: number;
+  private readonly requestThreadSnapshot:
+    | ((threadId: string) => Promise<void>)
+    | undefined;
   private readonly resolveBindingByThreadId:
     | ((threadId: string) => ChatThreadBinding | undefined)
     | undefined;
@@ -291,6 +303,11 @@ export class InMemoryOrchestrator {
     this.onDesktopDeliveryOutcome = options.onDesktopDeliveryOutcome ?? (() => undefined);
     this.releaseInboundImages = options.releaseInboundImages ?? (() => undefined);
     this.cardRetryDelayMs = options.cardRetryDelayMs ?? CARD_RETRY_BASE_DELAY_MS;
+    this.terminalConvergenceTimeoutMs = Math.max(
+      1,
+      options.terminalConvergenceTimeoutMs ?? TERMINAL_CONVERGENCE_TIMEOUT_MS,
+    );
+    this.requestThreadSnapshot = options.requestThreadSnapshot;
   }
 
   /** Returns the threads whose live cards still depend on Desktop state events. */
@@ -442,7 +459,8 @@ export class InMemoryOrchestrator {
     if (task.turnId !== identity.turnId) {
       return;
     }
-    if (TERMINAL.has(task.status) && notification.method !== 'thread/tokenUsage/updated') {
+    if (TERMINAL.has(task.status)) {
+      this.applyPostTerminalNotification(task, notification);
       return;
     }
     this.applyNotification(task, notification);
@@ -465,7 +483,7 @@ export class InMemoryOrchestrator {
         || candidate.staleCardMessageIds.has(action.messageId)
       )
       && secureTokenEquals(candidate.cancelToken, action.token)
-      && !TERMINAL.has(candidate.status)
+      && isCancellableTask(candidate)
     ));
     if (!task) {
       return false;
@@ -499,7 +517,7 @@ export class InMemoryOrchestrator {
   /** Cancels the current task for an authorized chat command without a card token. */
   public async cancelCurrent(chatId: string, threadId: string): Promise<boolean> {
     const task = this.scheduler.active(threadId);
-    if (!task || task.message.chatId !== chatId || TERMINAL.has(task.status)) {
+    if (!task || task.message.chatId !== chatId || !isCancellableTask(task)) {
       return false;
     }
     if (!task.turnId) {
@@ -530,7 +548,7 @@ export class InMemoryOrchestrator {
     const task = this.scheduler.active(threadId);
     if (
       !task
-      || TERMINAL.has(task.status)
+      || !isCancellableTask(task)
       || (turnId && task.turnId !== turnId)
       || !this.isTaskProjectionCurrent(task)
     ) {
@@ -547,7 +565,7 @@ export class InMemoryOrchestrator {
   /** Marks an exact live turn as waiting for an in-process approval response. */
   public setAwaitingApproval(threadId: string, turnId: string | null, waiting: boolean): boolean {
     const task = this.scheduler.active(threadId);
-    if (!task || TERMINAL.has(task.status) || (turnId && task.turnId !== turnId)) {
+    if (!task || !isCancellableTask(task) || (turnId && task.turnId !== turnId)) {
       return false;
     }
     task.status = waiting ? 'AWAITING_APPROVAL' : 'RUNNING';
@@ -579,6 +597,9 @@ export class InMemoryOrchestrator {
       }
       if (task.terminalCleanupTimer) {
         clearTimeout(task.terminalCleanupTimer);
+      }
+      if (task.terminalConvergenceTimer) {
+        clearTimeout(task.terminalConvergenceTimer);
       }
       if (task.cardRetryTimer) {
         clearTimeout(task.cardRetryTimer);
@@ -672,12 +693,15 @@ export class InMemoryOrchestrator {
       rateLimitText: null,
       cardSequence: 0,
       completedAtMs: null,
+      pendingTerminalStatus: null,
+      finalAnswerCompleted: false,
       streamingClosed: false,
       cancelRequested: false,
       cardWrite: Promise.resolve(),
       cardRetryCount: 0,
       cardRetryTimer: undefined,
       terminalCleanupTimer: undefined,
+      terminalConvergenceTimer: undefined,
       updateTimer: undefined,
       outputFilesUploaded: false,
       cardDeliveryPending: false,
@@ -857,12 +881,15 @@ export class InMemoryOrchestrator {
       rateLimitText: null,
       cardSequence: 0,
       completedAtMs: null,
+      pendingTerminalStatus: null,
+      finalAnswerCompleted: false,
       streamingClosed: false,
       cancelRequested: false,
       cardWrite: Promise.resolve(),
       cardRetryCount: 0,
       cardRetryTimer: undefined,
       terminalCleanupTimer: undefined,
+      terminalConvergenceTimer: undefined,
       updateTimer: undefined,
       outputFilesUploaded: false,
       cardDeliveryPending: false,
@@ -944,6 +971,17 @@ export class InMemoryOrchestrator {
     } else if (notification.method === 'item/completed') {
       completeTool(task, params, this.now());
       completeAgentMessage(task, params, this.now());
+      const finalMessage = completedFinalAgentMessage(params);
+      if (finalMessage) {
+        task.finalAnswerCompleted = true;
+        if (finalMessage.text) {
+          task.finalAnswer = finalMessage.text;
+        }
+        if (task.status === 'COMPLETING' && task.pendingTerminalStatus) {
+          this.finalizeTask(task, task.pendingTerminalStatus);
+          return;
+        }
+      }
     } else if (notification.method === 'item/agentMessage/delta') {
       const phase = stringField(params.phase);
       const delta = stringField(params.delta);
@@ -972,18 +1010,91 @@ export class InMemoryOrchestrator {
       appendToTask(task, 'tools', stringField((params.error as Record<string, unknown> | undefined)?.message));
     } else if (notification.method === 'turn/completed') {
       const turn = params.turn as Turn;
-      task.status = terminalStatus(turn.status);
+      const nextStatus = terminalStatus(turn.status);
       const terminalAnswer = finalAnswerFromTurn(turn);
       if (terminalAnswer) {
         task.finalAnswer = terminalAnswer;
       }
-      task.completedAtMs = this.now();
-      void this.refreshRateLimits(task);
-      void this.uploadFilesForSuccessfulTask(task);
-      void this.flushCard(task, true).finally(() => this.finish(task));
+      if (nextStatus === 'SUCCEEDED' && !terminalAnswer && !task.finalAnswerCompleted) {
+        this.beginTerminalConvergence(task, nextStatus);
+        return;
+      }
+      this.finalizeTask(task, nextStatus);
       return;
     }
     this.requestCardUpdate(task, false);
+  }
+
+  private beginTerminalConvergence(task: RuntimeTask, terminalStatusValue: TaskStatus): void {
+    task.status = 'COMPLETING';
+    task.pendingTerminalStatus = terminalStatusValue;
+    if (task.terminalConvergenceTimer) {
+      clearTimeout(task.terminalConvergenceTimer);
+    }
+    task.terminalConvergenceTimer = setTimeout(() => {
+      task.terminalConvergenceTimer = undefined;
+      if (task.status === 'COMPLETING' && task.pendingTerminalStatus) {
+        this.finalizeTask(task, task.pendingTerminalStatus);
+      }
+    }, this.terminalConvergenceTimeoutMs);
+    task.terminalConvergenceTimer.unref();
+    this.requestCardUpdate(task, true);
+    if (this.requestThreadSnapshot) {
+      void this.requestThreadSnapshot(task.binding.threadId)
+        .catch((error: unknown) => this.onCardError(toError(error)));
+    }
+  }
+
+  private finalizeTask(task: RuntimeTask, status: TaskStatus): void {
+    if (task.terminalConvergenceTimer) {
+      clearTimeout(task.terminalConvergenceTimer);
+      task.terminalConvergenceTimer = undefined;
+    }
+    task.pendingTerminalStatus = null;
+    task.status = status;
+    task.completedAtMs = this.now();
+    void this.refreshRateLimits(task);
+    void this.uploadFilesForSuccessfulTask(task);
+    void this.flushCard(task, true).finally(() => this.finish(task));
+  }
+
+  private applyPostTerminalNotification(
+    task: RuntimeTask,
+    notification: ServerNotification,
+  ): void {
+    const params = notification.params as Record<string, unknown>;
+    if (notification.method === 'thread/tokenUsage/updated') {
+      applyUsage(task, params);
+      this.requestCardUpdate(task, false);
+      return;
+    }
+    const previousAnswer = task.finalAnswer;
+    if (notification.method === 'item/agentMessage/delta') {
+      if (stringField(params.phase) !== 'commentary') {
+        appendToTask(task, 'finalAnswer', stringField(params.delta));
+      }
+    } else if (notification.method === 'item/completed') {
+      const finalMessage = completedFinalAgentMessage(params);
+      if (finalMessage?.text) {
+        task.finalAnswer = finalMessage.text;
+        task.finalAnswerCompleted = true;
+      }
+    } else if (notification.method === 'turn/completed') {
+      const turn = params.turn as Turn;
+      const terminalAnswer = finalAnswerFromTurn(turn);
+      if (terminalAnswer) {
+        task.finalAnswer = terminalAnswer;
+        task.finalAnswerCompleted = true;
+      }
+    }
+    if (task.finalAnswer === previousAnswer) {
+      return;
+    }
+    if (!previousAnswer) {
+      task.outputFilesUploaded = false;
+      void this.uploadFilesForSuccessfulTask(task);
+    }
+    void this.flushCard(task, true);
   }
 
   private requestCardUpdate(task: RuntimeTask, immediate: boolean): void {
@@ -1208,6 +1319,10 @@ export class InMemoryOrchestrator {
     }
     if (task.updateTimer) {
       clearTimeout(task.updateTimer);
+    }
+    if (task.terminalConvergenceTimer) {
+      clearTimeout(task.terminalConvergenceTimer);
+      task.terminalConvergenceTimer = undefined;
     }
     this.releaseTaskImages(task);
     let activeTaskRemoved = false;
@@ -1497,7 +1612,7 @@ function taskPageCard(
     page.finalAnswer,
     task.startedAtMs,
     task,
-    active && !terminal && !TERMINAL.has(task.status) ? task.cancelToken : undefined,
+    active && !terminal && isCancellableTask(task) ? task.cancelToken : undefined,
     undefined,
     {
       timeline: page.timeline,
@@ -2574,6 +2689,20 @@ function finalAnswerFromTurn(turn: Turn): string {
     .join('');
 }
 
+function completedFinalAgentMessage(
+  params: Record<string, unknown>,
+): { readonly text: string } | null {
+  const item = recordField(params.item);
+  if (
+    !item
+    || item.type !== 'agentMessage'
+    || (item.phase !== undefined && item.phase !== 'final_answer')
+  ) {
+    return null;
+  }
+  return { text: threadItemText(item as Turn['items'][number]) };
+}
+
 function threadItemText(item: Turn['items'][number]): string {
   if (item.text?.trim()) {
     return item.text;
@@ -2740,6 +2869,10 @@ function isMentionBoundary(value: string): boolean {
 
 function terminalStatus(status: Turn['status']): TaskStatus {
   return status === 'completed' ? 'SUCCEEDED' : status === 'interrupted' ? 'INTERRUPTED' : 'FAILED';
+}
+
+function isCancellableTask(task: RuntimeTask): boolean {
+  return task.status !== 'COMPLETING' && !TERMINAL.has(task.status);
 }
 
 function secureTokenEquals(expected: string, actual: string): boolean {

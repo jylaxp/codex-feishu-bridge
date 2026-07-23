@@ -389,6 +389,23 @@ export class DesktopIpcClient {
     });
   }
 
+  /** Requests a new authoritative snapshot without changing follower ownership. */
+  public requestThreadFollowingSnapshot(threadId: string): Promise<void> {
+    const normalizedThreadId = requireThreadId(threadId);
+    if (
+      this.currentState !== 'READY'
+      || !this.followedThreadIds.has(normalizedThreadId)
+    ) {
+      return Promise.reject(new DesktopIpcRequestError(
+        'DESKTOP_IPC_NOT_READY',
+        'PROVABLY_UNSENT',
+        this.epoch,
+        'thread-stream-following-changed',
+      ));
+    }
+    return this.sendThreadFollowing(normalizedThreadId, true);
+  }
+
   /** Implements the tracked execution contract consumed by TaskOrchestrator. */
   public async requestTracked<TResult>(
     method: string,
