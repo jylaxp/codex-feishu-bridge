@@ -9,6 +9,7 @@ import {
 import { join } from 'node:path';
 
 import { BridgeProcessLock } from '../process-lock';
+import { APP_SERVER_SCHEMA_DIGEST_0_146_0_ALPHA_3 } from './contract';
 import {
   APP_SERVER_PROTOCOL_PROFILES,
   APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18,
@@ -32,7 +33,7 @@ export interface SupportedProtocolVersion {
   readonly source: ProtocolVersionSource;
 }
 
-/** Exact versions bundled into new configurations, including reviewed adapter-compatible aliases. */
+/** Exact versions bundled into new configurations after adapter compatibility has been functionally verified. */
 export const BUILT_IN_SUPPORTED_PROTOCOL_VERSIONS: readonly SupportedProtocolVersion[] =
   Object.freeze([
     ...APP_SERVER_PROTOCOL_PROFILES.map((profile) => Object.freeze({
@@ -50,6 +51,14 @@ export const BUILT_IN_SUPPORTED_PROTOCOL_VERSIONS: readonly SupportedProtocolVer
     Object.freeze({
       codexVersion: '0.145.0-alpha.30',
       schemaDigest: APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18.schemaDigest,
+      adapterProfileId: APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18.id,
+      source: 'builtin' as const,
+    }),
+    // 0.146 adds unused App/audio/search schema, while the Bridge control plane
+    // remains smoke-verified through the 145 adapter.
+    Object.freeze({
+      codexVersion: '0.146.0-alpha.3',
+      schemaDigest: APP_SERVER_SCHEMA_DIGEST_0_146_0_ALPHA_3,
       adapterProfileId: APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18.id,
       source: 'builtin' as const,
     }),

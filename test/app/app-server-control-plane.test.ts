@@ -318,11 +318,11 @@ test('goal get accepts the explicit null state', async () => {
   assert.equal(await controlPlane.request('thread/goal/get', {}), response);
 });
 
-test('exact 145 owned stdio proves the isolated non-model control-plane matrix', async (t) => {
+test('supported 145-adapter owned stdio proves the isolated non-model control-plane matrix', async (t) => {
   const codexBin = process.env.CODEX_145_BIN
     ?? '/Applications/ChatGPT.app/Contents/Resources/codex';
   if (!existsSync(codexBin)) {
-    t.skip('configured or ChatGPT bundled Codex 0.145 binary is unavailable');
+    t.skip('configured or ChatGPT bundled Codex binary is unavailable');
     return;
   }
   const cliVersion = execFileSync(codexBin, ['--version'], { encoding: 'utf8' }).trim();

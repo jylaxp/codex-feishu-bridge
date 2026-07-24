@@ -27,7 +27,7 @@ const SUPPORTED_METHODS: ReadonlySet<string> = new Set<AppServerControlPlaneMeth
 
 /**
  * Creates the shared validator proven against both exact 0.144.3 and
- * 0.145.0-alpha.18 schemas.
+ * 0.145.0-alpha.18 schemas, plus their smoke-verified adapter aliases.
  */
 export function createAppServerProtocolValidator(
   profileId: AppServerProtocolProfileId,

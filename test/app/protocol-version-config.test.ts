@@ -14,6 +14,7 @@ import { BridgeProcessLock } from '../../src/app/process-lock';
 
 const schema145 = '7a5aaea66a649faae713d43313289ddd79b4883086c10875f9031a56ec00bd5c';
 const schema144 = '3b1af113954376a68d0d2382190f4bde6ca58c02a5c9a5cfebcd01f1747e79e7';
+const schema146 = '8535b3371e916d0ea4f2bc62c28a7236323d5f37fd7652184098c90d256c738f';
 
 test('first load seeds built-ins and later loads preserve approved versions', () => {
   const root = mkdtempSync(join(tmpdir(), 'bridge-protocol-versions-'));
@@ -22,7 +23,13 @@ test('first load seeds built-ins and later loads preserve approved versions', ()
     const initial = store.loadOrCreate();
     assert.deepEqual(
       initial.supportedVersions.map((entry) => entry.codexVersion),
-      ['0.144.3', '0.145.0-alpha.18', '0.145.0-alpha.27', '0.145.0-alpha.30'],
+      [
+        '0.144.3',
+        '0.145.0-alpha.18',
+        '0.145.0-alpha.27',
+        '0.145.0-alpha.30',
+        '0.146.0-alpha.3',
+      ],
     );
     assert.deepEqual(initial.supportedVersions[2], {
       codexVersion: '0.145.0-alpha.27',
@@ -33,6 +40,12 @@ test('first load seeds built-ins and later loads preserve approved versions', ()
     assert.deepEqual(initial.supportedVersions[3], {
       codexVersion: '0.145.0-alpha.30',
       schemaDigest: schema145,
+      adapterProfileId: 'app-server-0.145.0-alpha.18',
+      source: 'builtin',
+    });
+    assert.deepEqual(initial.supportedVersions[4], {
+      codexVersion: '0.146.0-alpha.3',
+      schemaDigest: schema146,
       adapterProfileId: 'app-server-0.145.0-alpha.18',
       source: 'builtin',
     });
@@ -50,10 +63,11 @@ test('first load seeds built-ins and later loads preserve approved versions', ()
         '0.145.0-alpha.18',
         '0.145.0-alpha.27',
         '0.145.0-alpha.30',
+        '0.146.0-alpha.3',
         '0.145.0-alpha.19',
       ],
     );
-    assert.equal(reloaded.supportedVersions[4]?.source, 'approved');
+    assert.equal(reloaded.supportedVersions[5]?.source, 'approved');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -98,6 +112,7 @@ test('existing catalogs gain newly shipped built-ins without replacing approved 
         ['0.145.0-alpha.19', 'approved'],
         ['0.145.0-alpha.27', 'builtin'],
         ['0.145.0-alpha.30', 'builtin'],
+        ['0.146.0-alpha.3', 'builtin'],
       ],
     );
     assert.equal(
@@ -111,6 +126,10 @@ test('existing catalogs gain newly shipped built-ins without replacing approved 
     assert.equal(
       assessProtocolCompatibility(upgraded.supportedVersions, '0.145.0-alpha.28', schema145).status,
       'upgrade_available',
+    );
+    assert.equal(
+      assessProtocolCompatibility(upgraded.supportedVersions, '0.146.0-alpha.3', schema146).status,
+      'supported',
     );
     assert.deepEqual(
       JSON.parse(readFileSync(filePath, 'utf8')),
@@ -141,6 +160,7 @@ test('stale detection writers preserve versions approved by another store', () =
         '0.145.0-alpha.18',
         '0.145.0-alpha.27',
         '0.145.0-alpha.30',
+        '0.146.0-alpha.3',
         '0.145.0-alpha.19',
       ],
     );
@@ -199,6 +219,15 @@ test('compatibility distinguishes supported, compatible upgrade, and incompatibl
       status: 'supported',
       adapterProfileId: 'app-server-0.145.0-alpha.18',
       matchedVersion: supported[3],
+    },
+  );
+  assert.deepEqual(
+    assessProtocolCompatibility(supported, '0.146.0-alpha.3', schema146),
+    {
+      conclusion: '兼容',
+      status: 'supported',
+      adapterProfileId: 'app-server-0.145.0-alpha.18',
+      matchedVersion: supported[4],
     },
   );
   assert.deepEqual(
