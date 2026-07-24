@@ -1,0 +1,43 @@
+test/app/runtime-contract.test.ts
+  s_e980cd34574f78::t_152f3ee4ba7257 45-46,138,143,145,164-172,288-293,342-348
+  s_e980cd34574f78::t_773c29168f8415 213-219,633-636
+test/app/app-server-control-plane.test.ts
+  s_e980cd34574f78::t_7367010b46d989 321,325
+test/app/local-version-command.test.ts
+  s_e980cd34574f78::t_86ae5e503ccc81 61,83
+docs/app-server-support-matrix.md
+  s_e980cd34574f78::t_ca79019251859d 14-15,17,38-43
+  s_e980cd34574f78::t_7123424090a21a 47
+README.md
+  s_e980cd34574f78::t_045cd0e8c4883f 21-24,26
+src/app/codex/protocol-version-config.ts
+  s_e980cd34574f78::t_bb7ebe38239569 36
+  s_e980cd34574f78::t_f110efe1360136 57-58
+  s_e980cd34574f78::t_147fe2c2768c3c 12,59-61
+  s_e980cd34574f78::t_f31f1b3132ee2a 62-64
+src/app/codex/app-server-protocol-validator.ts
+  s_e980cd34574f78::t_7306da6d7b04fd 30
+test/fixtures/app-server/0.145.0-alpha.18/artifacts.json
+  s_e980cd34574f78::t_53fbd6e5d10d1f 39-47
+test/app/protocol-version-config.test.ts
+  s_e980cd34574f78::t_bdf5eb07c27a09 17,26-32,46-51,66,70,115,130-133,163,224-230
+  s_e980cd34574f78::t_f20c3e4f769ff2 231-232
+src/app/codex/contract.ts
+  s_e980cd34574f78::t_97e8aa0ce03b1a 8-11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "1f895764b0f420050f0b00293ac8530658032dcf",
+  "prompts": {},
+  "sessions": {
+    "s_e980cd34574f78": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f7eaf-8cfe-75e2-9bbd-34eae0f6e1d8",
+        "model": "gpt-5.5"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    }
+  }
+}
