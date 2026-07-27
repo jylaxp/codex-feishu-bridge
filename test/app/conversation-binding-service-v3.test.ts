@@ -150,6 +150,8 @@ async function assertCommandScansThreadListPages(command: string): Promise<void>
       savedWorkspaces: ['/Users/jiang/work/ai/codex/bridge'],
       workspaceLabels: { '/Users/jiang/work/ai/codex/bridge': 'bridge' },
       projectlessThreadIds: [],
+      localProjects: {},
+      threadProjectAssignments: {},
     }),
   );
 
@@ -170,4 +172,85 @@ async function assertCommandScansThreadListPages(command: string): Promise<void>
   assert.deepEqual(requests.map((request) => request.method), ['thread/list', 'thread/list']);
   assert.equal((requests[1]?.params as { readonly cursor?: unknown }).cursor, 'page-2');
   assert.match(JSON.stringify(createdCards[0]), /codex-feishu-bridage/);
+}
+
+for (const command of ['/l', '/ll']) {
+  test(`${command} includes threads assigned to the local project when cwd is stale`, async () => {
+    const catalog: BindingCatalogV3 = {
+      request: async <TResult>(method: string): Promise<TResult> => {
+        if (method !== 'thread/list') {
+          throw new Error(`unexpected method: ${method}`);
+        }
+        return {
+          data: [{
+            id: 'thread-bridge',
+            name: 'codex-feishu-bridage',
+            cwd: '/Users/jiang/Documents/Codex/2026-07-13/app-server-app-server-ui-codex',
+            updatedAt: 1_000,
+          }],
+          nextCursor: null,
+          backwardsCursor: null,
+        } as TResult;
+      },
+    };
+    const createdCards: CardKitJson[] = [];
+    const cards: BindingCardsV3 = {
+      createCard: async (card: CardKitJson) => {
+        createdCards.push(card);
+        return 'card';
+      },
+      replyCard: async () => 'message',
+      sendCard: async () => 'message',
+      replaceCard: async (_cardId, _card, sequence) => sequence + 1,
+    };
+    const store = {
+      get: () => undefined,
+    } as unknown as BindingStore;
+    const service = new ConversationBindingServiceV3(
+      config,
+      store,
+      catalog,
+      cards,
+      () => 1_000,
+      undefined,
+      undefined,
+      async () => ({
+        savedWorkspaces: ['/Users/jiang/work/ai/codex/bridge'],
+        workspaceLabels: {},
+        projectlessThreadIds: [],
+        localProjects: {
+          'local-bridge': {
+            id: 'local-bridge',
+            name: 'bridge',
+            rootPaths: ['/Users/jiang/work/ai/codex/bridge'],
+          },
+        },
+        threadProjectAssignments: {
+          'thread-bridge': {
+            projectKind: 'local',
+            projectId: 'local-bridge',
+            path: '/Users/jiang/work/ai/codex/bridge',
+            cwd: '/Users/jiang/work/ai/codex/bridge',
+          },
+        },
+      }),
+    );
+
+    const handled = await service.handleCommand({
+      tenantKey: 'tenant',
+      eventId: `event-${command}`,
+      messageId: 'message',
+      chatId: 'chat',
+      rootMessageId: 'message',
+      senderOpenId: 'user',
+      text: command,
+      payloadDigest: 'digest',
+      createdAtMs: 1_000,
+    });
+
+    const cardJson = JSON.stringify(createdCards[0]);
+    assert.equal(handled, true);
+    assert.match(cardJson, /codex-feishu-bridage/);
+    assert.match(cardJson, /bridge/);
+  });
 }

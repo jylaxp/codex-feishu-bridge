@@ -996,9 +996,9 @@ function visiblePickerEntries(
   const filteredEntries = entries.filter(({ choice }) => {
     if (currentBoundThreadId && choice.id === currentBoundThreadId) return true;
     if (workspaceState.projectlessThreadIds.includes(choice.id)) return true;
-    return Boolean(choice.cwd && workspaceState.savedWorkspaces.some((workspace) => (
-      pathWithinWorkspace(choice.cwd as string, workspace)
-    )));
+    return choiceWorkspaceRoots(choice, workspaceState).some((root) => (
+      workspaceState.savedWorkspaces.some((workspace) => pathWithinWorkspace(root, workspace))
+    ));
   });
   const sortedEntries = [...filteredEntries].sort((left, right) => {
     const leftGlobal = workspaceState.projectlessThreadIds.includes(left.choice.id);
@@ -1138,6 +1138,21 @@ export interface BindingWorkspaceState {
   readonly savedWorkspaces: readonly string[];
   readonly workspaceLabels: Readonly<Record<string, string>>;
   readonly projectlessThreadIds: readonly string[];
+  readonly localProjects: Readonly<Record<string, BindingLocalProject>>;
+  readonly threadProjectAssignments: Readonly<Record<string, BindingThreadProjectAssignment>>;
+}
+
+interface BindingLocalProject {
+  readonly id: string;
+  readonly name: string;
+  readonly rootPaths: readonly string[];
+}
+
+interface BindingThreadProjectAssignment {
+  readonly projectKind: string | null;
+  readonly projectId: string | null;
+  readonly path: string | null;
+  readonly cwd: string | null;
 }
 
 async function readWorkspaceState(): Promise<BindingWorkspaceState> {
@@ -1145,10 +1160,17 @@ async function readWorkspaceState(): Promise<BindingWorkspaceState> {
   try {
     if (!(await stat(statePath)).isFile()) return emptyWorkspaceState();
     const state = asRecord(JSON.parse(await readFile(statePath, 'utf8')));
+    const localProjects = localProjectRecord(state?.['local-projects']);
+    const savedWorkspaces = uniqueStrings([
+      ...stringArray(state?.['electron-saved-workspace-roots']),
+      ...Object.values(localProjects).flatMap((project) => project.rootPaths),
+    ]);
     return {
-      savedWorkspaces: stringArray(state?.['electron-saved-workspace-roots'] ?? state?.['project-order']),
+      savedWorkspaces,
       workspaceLabels: stringRecord(state?.['electron-workspace-root-labels']),
       projectlessThreadIds: stringArray(state?.['projectless-thread-ids']),
+      localProjects,
+      threadProjectAssignments: threadProjectAssignmentRecord(state?.['thread-project-assignments']),
     };
   } catch {
     return emptyWorkspaceState();
@@ -1156,13 +1178,48 @@ async function readWorkspaceState(): Promise<BindingWorkspaceState> {
 }
 
 function emptyWorkspaceState(): BindingWorkspaceState {
-  return { savedWorkspaces: [], workspaceLabels: {}, projectlessThreadIds: [] };
+  return {
+    savedWorkspaces: [],
+    workspaceLabels: {},
+    projectlessThreadIds: [],
+    localProjects: {},
+    threadProjectAssignments: {},
+  };
 }
 
 function projectName(choice: ThreadChoice, state: BindingWorkspaceState): string {
-  if (!choice.cwd) return '';
-  const workspace = state.savedWorkspaces.find((candidate) => pathWithinWorkspace(choice.cwd as string, candidate));
-  return workspace ? state.workspaceLabels[workspace] ?? basename(workspace) : basename(choice.cwd);
+  const assignedProject = assignedLocalProject(choice, state);
+  if (assignedProject?.name) {
+    return assignedProject.name;
+  }
+  const workspace = choiceWorkspaceRoots(choice, state)
+    .flatMap((root) => state.savedWorkspaces.filter((candidate) => pathWithinWorkspace(root, candidate)))
+    .at(0);
+  if (workspace) {
+    return state.workspaceLabels[workspace] ?? basename(workspace);
+  }
+  return choice.cwd ? basename(choice.cwd) : '';
+}
+
+function choiceWorkspaceRoots(choice: ThreadChoice, state: BindingWorkspaceState): readonly string[] {
+  const assignment = state.threadProjectAssignments[choice.id];
+  return uniqueStrings([
+    ...((assignment?.projectId && state.localProjects[assignment.projectId]?.rootPaths) ?? []),
+    assignment?.path,
+    assignment?.cwd,
+    choice.cwd,
+  ]);
+}
+
+function assignedLocalProject(
+  choice: ThreadChoice,
+  state: BindingWorkspaceState,
+): BindingLocalProject | undefined {
+  const assignment = state.threadProjectAssignments[choice.id];
+  if (assignment?.projectKind !== 'local' || !assignment.projectId) {
+    return undefined;
+  }
+  return state.localProjects[assignment.projectId];
 }
 
 function pathWithinWorkspace(cwd: string, workspace: string): boolean {
@@ -1181,6 +1238,47 @@ function stringRecord(value: unknown): Readonly<Record<string, string>> {
   return Object.fromEntries(Object.entries(record).filter((entry): entry is [string, string] => (
     typeof entry[1] === 'string'
   )));
+}
+
+function localProjectRecord(value: unknown): Readonly<Record<string, BindingLocalProject>> {
+  const record = asRecord(value);
+  if (!record) return {};
+  return Object.freeze(Object.fromEntries(Object.entries(record).flatMap(([id, candidate]) => {
+    const project = asRecord(candidate);
+    const name = typeof project?.name === 'string' && project.name.trim() ? project.name.trim() : '';
+    const rootPaths = stringArray(project?.rootPaths).filter((root) => root.trim());
+    if (!id || !name || rootPaths.length === 0) {
+      return [];
+    }
+    return [[id, Object.freeze({ id, name, rootPaths: uniqueStrings(rootPaths) })]];
+  })));
+}
+
+function threadProjectAssignmentRecord(value: unknown): Readonly<Record<string, BindingThreadProjectAssignment>> {
+  const record = asRecord(value);
+  if (!record) return {};
+  return Object.freeze(Object.fromEntries(Object.entries(record).flatMap(([threadId, candidate]) => {
+    const assignment = asRecord(candidate);
+    if (!threadId || !assignment) {
+      return [];
+    }
+    return [[threadId, Object.freeze({
+      projectKind: nonBlankString(assignment.projectKind),
+      projectId: nonBlankString(assignment.projectId),
+      path: nonBlankString(assignment.path),
+      cwd: nonBlankString(assignment.cwd),
+    })]];
+  })));
+}
+
+function nonBlankString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function uniqueStrings(values: readonly unknown[]): readonly string[] {
+  return Object.freeze([...new Set(values.filter((value): value is string => (
+    typeof value === 'string' && value.trim().length > 0
+  )))]);
 }
 
 function normalizeUpdatedAt(value: unknown): number | null {
