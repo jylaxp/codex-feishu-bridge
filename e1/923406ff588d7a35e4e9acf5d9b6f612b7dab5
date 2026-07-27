@@ -1,0 +1,136 @@
+src/app/in-memory-orchestrator.ts
+  s_c54cf697e76a51::t_7558ea22ac44f6 286-287,295,343
+  s_c54cf697e76a51::t_3d8399430a657a 81-85
+  s_c54cf697e76a51::t_185104248ff967 2883,3061-3066
+  s_c54cf697e76a51::t_c7a1549e9391c1 352-364
+  s_c54cf697e76a51::t_5e27692f2445a4 86-94,135-141,288-294,344,772,774,787-790,814-815,817-818,820,824-832,834-838,840-852,854-870
+  s_c54cf697e76a51::t_b6e12e3b8abdb4 816,819,821-823,833,839,853,871-875
+  s_c54cf697e76a51::t_feea09d96dd813 876,919,922-923,931,2849-2882
+  s_c54cf697e76a51::t_7991d655756ba5 1115-1118
+  s_c54cf697e76a51::t_e288ad3cd0d22c 16
+  s_c54cf697e76a51::t_c04b33ed3ff71b 877
+  s_c54cf697e76a51::t_f5939406c47a3a 2884
+src/app/codex/event-reducer.ts
+  s_c54cf697e76a51::t_4ba9f5f73a243d 661
+README.md
+  s_c54cf697e76a51::t_ad9bd5d83edd17 23-24
+  s_c54cf697e76a51::t_9267ac7d1b63e6 302
+src/app/codex/app-navigation-adapter.ts
+  s_c54cf697e76a51::t_eb48b0f4689f26 27
+src/app/main.ts
+  s_c54cf697e76a51::t_76f181b88eb815 357-360,362-363,365-368,379-422,434
+  s_c54cf697e76a51::t_67e06bc3b7fcac 850-858,867-869,900,932,1019,1022-1024
+  s_c54cf697e76a51::t_e5f1fb62e4812e 205,210-225,230-251,893,925,1012,1030
+  s_c54cf697e76a51::t_19e9e491235a16 34,435-457
+  s_c54cf697e76a51::t_658c19c890c129 505
+  s_c54cf697e76a51::t_a7da3f475f3451 511-513
+  s_c54cf697e76a51::t_52dc5be2fc20fa 29-32,301,507-510,514-520,522-543,576,964-968
+  s_c54cf697e76a51::t_d4c17b6942a979 5
+  s_c54cf697e76a51::t_20a318073fbcaa 521
+  s_c54cf697e76a51::t_ea6437cc84b9b9 206-209,226-229,506,837-848,955-963
+  s_c54cf697e76a51::t_45894543dc126e 83-85,361,364,369-378
+  s_c54cf697e76a51::t_84896f37146109 969
+test/app/desktop-ipc-regression.test.ts
+  s_c54cf697e76a51::t_fdac7a57799ef3 1845-1862
+  s_c54cf697e76a51::t_6df4c21160c616 1187-1253
+  s_c54cf697e76a51::t_47490bfe425bb2 678-716
+  s_c54cf697e76a51::t_efa9f40cd2be6c 759-769,771-821
+  s_c54cf697e76a51::t_87f184bd88eb42 770
+  s_c54cf697e76a51::t_d6af2af03a8968 25
+  s_c54cf697e76a51::t_d68054cc0318c0 822-871
+  s_c54cf697e76a51::t_1589659810afce 717-758
+  s_c54cf697e76a51::t_605444e767b858 1152-1186
+src/app/cli.ts
+  s_c54cf697e76a51::t_005e777c95fe0a 73-86,441
+src/app/codex/protocol-version-config.ts
+  s_c54cf697e76a51::t_ad9bd5d83edd17 57-58
+test/app/conversation-binding-service-v3.test.ts
+  s_c54cf697e76a51::t_1305719482936e 257-326
+  s_c54cf697e76a51::t_9c0c70ea33047e 327-377,658-725
+  s_c54cf697e76a51::t_aadf478a31e913 564-657
+  s_c54cf697e76a51::t_77ef7d955b3f90 198,777-820,822-827,849,859-862
+  s_c54cf697e76a51::t_4f4918348b9471 378-447
+  s_c54cf697e76a51::t_697e37507931cc 110,199-256,726-776
+  s_c54cf697e76a51::t_40384194a9501f 821,847-848
+  s_c54cf697e76a51::t_658c19c890c129 863
+  s_c54cf697e76a51::t_e20d507fe6e0ba 111-197
+  s_c54cf697e76a51::t_67c5c1f480f18f 543-553
+  s_e980cd34574f78::t_3c29c113265827 44,47,49-70,73,77-109
+  s_c54cf697e76a51::t_a5454785daa637 448-542,554-563
+test/app/app-navigation-adapter.test.ts
+  s_c54cf697e76a51::t_c2501afb56617b 14,20
+  s_c54cf697e76a51::t_1194e2b4fb1b3f 1-13,15-19,21
+src/app/codex/app-server-protocol-v146.ts
+  s_c54cf697e76a51::t_2815a18ac9b5c9 1-18
+docs/app-server-support-matrix.md
+  s_c54cf697e76a51::t_ad9bd5d83edd17 15,17,47-48,66-68
+  s_c54cf697e76a51::t_4e212d0adcd733 64,70-73
+  s_c54cf697e76a51::t_908fecffeabd2a 69
+test/app/app-server-control-plane.test.ts
+  s_c54cf697e76a51::t_e20d507fe6e0ba 29,68-75,83-119
+  s_c54cf697e76a51::t_beb1df57a456d0 120-121
+src/app/codex/app-server-protocol-adapter.ts
+  s_c54cf697e76a51::t_2815a18ac9b5c9 8
+src/app/conversation-binding-service-v3.ts
+  s_c54cf697e76a51::t_7f09be0b00ea26 705-712
+  s_c54cf697e76a51::t_adbc94c857849c 424,453,463
+  s_c54cf697e76a51::t_8354f428c6b8a2 607
+  s_c54cf697e76a51::t_efe9c9d6bdc96f 351-353,418,426-428,604-606,608-620
+  s_c54cf697e76a51::t_06fce0853aa323 494,663-666
+  s_c54cf697e76a51::t_c1be35eda55ae4 681-704,713-720
+  s_c54cf697e76a51::t_54cce3793b7387 103,498,500,506-507,519-523,527
+  s_c54cf697e76a51::t_2815a18ac9b5c9 12-16,18,36,374-377,539-540,546-547,549-559,561-567,569,571-576
+  s_c54cf697e76a51::t_658c19c890c129 5,102,621,679,726,735,950-972,974-975,981-985,988-1007
+  s_c54cf697e76a51::t_586f374d22db91 354-355,360,362-371,379-386,390-397
+  s_c54cf697e76a51::t_f78636758a5b9e 495-497,508-512,516-517,531-538
+  s_c54cf697e76a51::t_657400eb9169d0 33,104-108,425,440-445,468-469,471-475,478-479,541-545,570,652-662
+  s_c54cf697e76a51::t_865aeac154c510 32,116,348-350,361,389,400-417,419,432-434,436-439,476-477,480-493,513-515,518,529-530,568,601-603
+  s_c54cf697e76a51::t_3459ffa02aaa9d 420-421,423,429-431,435,446-452,454-462,464-467,470
+  s_c54cf697e76a51::t_4087845ae4df97 81-84,115,117-122,344-345,667-678
+  s_c54cf697e76a51::t_99f3d627854abb 548
+  s_c54cf697e76a51::t_9b745f972364dd 17,973
+  s_c54cf697e76a51::t_4a4b904376c1d7 11
+  s_c54cf697e76a51::t_2cf83a03368f5b 622
+  s_c54cf697e76a51::t_ee65d8fce4185d 680
+src/app/codex/desktop-thread-stream-normalizer.ts
+  s_c54cf697e76a51::t_93f9758311094a 148-153,155,168-175
+  s_c54cf697e76a51::t_4d91aef85d51a3 154,156-167
+src/app/codex/protocol.ts
+  s_c54cf697e76a51::t_2815a18ac9b5c9 234-239
+  s_c54cf697e76a51::t_4ba9f5f73a243d 326-333
+  s_c54cf697e76a51::t_0c0bc1fd194234 325
+src/app/codex/app-server-protocol-validator.ts
+  s_c54cf697e76a51::t_2815a18ac9b5c9 10,26-30,42,44-47,51,68-71,123-134,196-202
+test/app/cli-version.test.ts
+  s_c54cf697e76a51::t_ed44adc5e50e59 4,50-68
+  s_c54cf697e76a51::t_5ba9fa135b39d2 69-70
+src/app/codex/event-coordinator.ts
+  s_c54cf697e76a51::t_4ba9f5f73a243d 25
+src/app/codex/app-server-control-plane.ts
+  s_c54cf697e76a51::t_99f3d627854abb 1-4
+  s_c54cf697e76a51::t_2815a18ac9b5c9 6,9,46-50,89-91
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "e1923406ff588d7a35e4e9acf5d9b6f612b7dab5",
+  "prompts": {},
+  "sessions": {
+    "s_c54cf697e76a51": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5e80-7c30-7a71-a434-09aeae22cce8",
+        "model": "gpt-5.5"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    },
+    "s_e980cd34574f78": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f7eaf-8cfe-75e2-9bbd-34eae0f6e1d8",
+        "model": "gpt-5.5"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    }
+  }
+}
