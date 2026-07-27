@@ -12,9 +12,10 @@ Bridge 只支持经过完整 experimental schema、握手身份和控制面回�
 | 145 协议基线 | `app-server-0.145.0-alpha.18` | `codex-cli 0.145.0-alpha.18` | `7a5aaea66a649faae713d43313289ddd79b4883086c10875f9031a56ec00bd5c` | 341 | ChatGPT.app bundled Codex；已验证 binary SHA-256 `a2bc3f63...a6bf` 与 `55893252...27c6`；后者来自 App `26.715.31925` build `5551`；isolated `owned_stdio` smoke | 已支持；作为 145 adapter 基线保留 |
 | 已支持别名 | `app-server-0.145.0-alpha.18` | `codex-cli 0.145.0-alpha.27` | `7a5aaea66a649faae713d43313289ddd79b4883086c10875f9031a56ec00bd5c` | 341 | ChatGPT.app `26.715.70719` build `5650`；binary SHA-256 `d1c9c5d2...0227f`；完整 schema 与 `.18` 相同；isolated `owned_stdio` control-plane smoke | 已内置支持；复用 145 adapter |
 | 已支持别名 | `app-server-0.145.0-alpha.18` | `codex-cli 0.145.0-alpha.30` | `7a5aaea66a649faae713d43313289ddd79b4883086c10875f9031a56ec00bd5c` | 341 | ChatGPT.app `26.715.71837` build `5702`；binary SHA-256 `9de41fd6...02`；完整 schema 与 `.18` 相同；isolated `owned_stdio` control-plane smoke | 已内置支持；复用 145 adapter |
-| 当前优先版本 | `app-server-0.145.0-alpha.18` | `codex-cli 0.146.0-alpha.3` | `8535b3371e916d0ea4f2bc62c28a7236323d5f37fd7652184098c90d256c738f` | 347 | ChatGPT.app `26.721.30844` build `5813`；binary SHA-256 `01b89e3c...519`；schema 新增 app/audio/search 相关未用面；isolated non-model control-plane smoke 与真实绑定 `thread/read`/`thread/resume` smoke | 已内置支持；功能验证后复用 145 adapter |
+| 已支持别名 | `app-server-0.145.0-alpha.18` | `codex-cli 0.146.0-alpha.3` | `8535b3371e916d0ea4f2bc62c28a7236323d5f37fd7652184098c90d256c738f` | 347 | ChatGPT.app `26.721.30844` build `5813`；binary SHA-256 `01b89e3c...519`；schema 新增 app/audio/search 相关未用面；isolated non-model control-plane smoke 与真实绑定 `thread/read`/`thread/resume` smoke | 已内置支持；功能验证后复用 145 adapter |
+| 当前优先版本 | `app-server-0.145.0-alpha.18` | `codex-cli 0.146.0-alpha.3.1` | `8535b3371e916d0ea4f2bc62c28a7236323d5f37fd7652184098c90d256c738f` | 347 | ChatGPT.app `26.721.41059` build `5848`；binary SHA-256 `6d8be49e49751554df16572369e636cbe02c84b208cad3dc35528c846eeca223`；完整 schema 与 `0.146.0-alpha.3` 相同；运行期兼容检查结论为“兼容” | 已内置支持；复用 145 adapter |
 
-验证日期：2026-07-24。可审计证据位于：
+验证日期：2026-07-27。可审计证据位于：
 
 - `test/fixtures/app-server/0.144.3/manifest.json`
 - `test/fixtures/app-server/0.144.3/schema-comparison.json`

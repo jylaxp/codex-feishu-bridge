@@ -7,7 +7,7 @@ import { type BindingStore, type ChatThreadBinding } from './binding-store';
 import { createTaskCard, type CardKitJson } from './cards/layouts';
 import { sanitizeCardMarkdown, sanitizeCardPlainText, sanitizeCardText } from './cards/sanitizer';
 import { type ThreadNavigation } from './codex/app-navigation-adapter';
-import type { Thread, ThreadItem, ThreadResumeResponse, Turn } from './codex/protocol';
+import type { Thread, ThreadItem, ThreadListResponse, ThreadResumeResponse, Turn } from './codex/protocol';
 import type {
   BridgeConfig,
   CardProjectionPayload,
@@ -20,6 +20,8 @@ import type { InboundTextMessage } from './lark/intake';
 import { toast } from './lark/event-server';
 
 const PICKER_LIMIT = 99;
+const THREAD_LIST_PAGE_LIMIT = 99;
+const THREAD_LIST_MAX_PAGES = 10;
 const TOKEN_TTL_MS = 10 * 60_000;
 
 export interface BindingCatalogV3 {
@@ -186,20 +188,16 @@ export class ConversationBindingServiceV3 {
   }
 
   private async sendPicker(message: InboundTextMessage, table = false): Promise<void> {
-    const response = await this.catalog.request<unknown>('thread/list', {
-      limit: PICKER_LIMIT,
-      sortKey: 'updated_at',
-      sortDirection: 'desc',
-      archived: false,
-    });
     const binding = this.getBinding(message.tenantKey, message.chatId);
-    const choices = await this.includeCurrentBinding(parseChoices(response), binding);
+    const choices = await this.includeCurrentBinding(await this.readThreadChoices(), binding);
     const revision = binding?.revision ?? 0;
     const entries = choices.map((choice) => ({
       choice,
       token: createToken(choice.id, revision, message, this.config.larkAppSecret, this.now),
     }));
-    const card = await pickerCard(entries, table, binding?.threadId, await this.workspaceStateReader());
+    const workspaceState = await this.workspaceStateReader();
+    const visibleEntries = visiblePickerEntries(entries, binding?.threadId, workspaceState);
+    const card = await pickerCard(visibleEntries, table, binding?.threadId, workspaceState);
     const cardId = await this.cards.createCard(card);
     const messageId = await this.cards.sendCard(
       message.chatId,
@@ -207,7 +205,7 @@ export class ConversationBindingServiceV3 {
       `binding:${message.eventId}:${table ? 'picker-table' : 'picker'}`,
     );
     const expiresAtMs = this.now() + TOKEN_TTL_MS;
-    for (const entry of entries) {
+    for (const entry of visibleEntries) {
       this.pendingBindingCards.set(entry.token, Object.freeze({
         cardId,
         messageId,
@@ -216,6 +214,33 @@ export class ConversationBindingServiceV3 {
         expiresAtMs,
       }));
     }
+  }
+
+  private async readThreadChoices(): Promise<readonly ThreadChoice[]> {
+    const choices: ThreadChoice[] = [];
+    const seenThreadIds = new Set<string>();
+    let cursor: string | null = null;
+    for (let pageIndex = 0; pageIndex < THREAD_LIST_MAX_PAGES; pageIndex += 1) {
+      const response = await this.catalog.request<ThreadListResponse>('thread/list', {
+        limit: THREAD_LIST_PAGE_LIMIT,
+        cursor,
+        sortKey: 'updated_at',
+        sortDirection: 'desc',
+        archived: false,
+      });
+      for (const choice of parseChoices(response)) {
+        if (seenThreadIds.has(choice.id)) {
+          continue;
+        }
+        seenThreadIds.add(choice.id);
+        choices.push(choice);
+      }
+      cursor = nextCursorFromThreadList(response);
+      if (!cursor) {
+        break;
+      }
+    }
+    return Object.freeze(choices);
   }
 
   private async includeCurrentBinding(
@@ -910,26 +935,7 @@ async function pickerCard(
   currentBoundThreadId?: string,
   workspaceState: BindingWorkspaceState = emptyWorkspaceState(),
 ): Promise<CardKitJson> {
-  const filteredEntries = entries.filter(({ choice }) => {
-    if (currentBoundThreadId && choice.id === currentBoundThreadId) return true;
-    if (workspaceState.projectlessThreadIds.includes(choice.id)) return true;
-    return Boolean(choice.cwd && workspaceState.savedWorkspaces.some((workspace) => (
-      pathWithinWorkspace(choice.cwd as string, workspace)
-    )));
-  });
-  const sortedEntries = [...filteredEntries].sort((left, right) => {
-    const leftGlobal = workspaceState.projectlessThreadIds.includes(left.choice.id);
-    const rightGlobal = workspaceState.projectlessThreadIds.includes(right.choice.id);
-    if (leftGlobal !== rightGlobal) return leftGlobal ? -1 : 1;
-    if (leftGlobal) {
-      return left.choice.title.localeCompare(right.choice.title, 'zh-CN', { numeric: true });
-    }
-    const projectOrder = projectName(left.choice, workspaceState)
-      .localeCompare(projectName(right.choice, workspaceState), 'zh-CN', { numeric: true });
-    return projectOrder !== 0
-      ? projectOrder
-      : left.choice.title.localeCompare(right.choice.title, 'zh-CN', { numeric: true });
-  });
+  const sortedEntries = visiblePickerEntries(entries, currentBoundThreadId, workspaceState);
   const options = sortedEntries.map((entry, index) => ({
     text: {
       tag: 'plain_text',
@@ -980,6 +986,34 @@ async function pickerCard(
     },
     body: { elements },
   };
+}
+
+function visiblePickerEntries(
+  entries: readonly { readonly choice: ThreadChoice; readonly token: string }[],
+  currentBoundThreadId: string | undefined,
+  workspaceState: BindingWorkspaceState,
+): readonly { readonly choice: ThreadChoice; readonly token: string }[] {
+  const filteredEntries = entries.filter(({ choice }) => {
+    if (currentBoundThreadId && choice.id === currentBoundThreadId) return true;
+    if (workspaceState.projectlessThreadIds.includes(choice.id)) return true;
+    return Boolean(choice.cwd && workspaceState.savedWorkspaces.some((workspace) => (
+      pathWithinWorkspace(choice.cwd as string, workspace)
+    )));
+  });
+  const sortedEntries = [...filteredEntries].sort((left, right) => {
+    const leftGlobal = workspaceState.projectlessThreadIds.includes(left.choice.id);
+    const rightGlobal = workspaceState.projectlessThreadIds.includes(right.choice.id);
+    if (leftGlobal !== rightGlobal) return leftGlobal ? -1 : 1;
+    if (leftGlobal) {
+      return left.choice.title.localeCompare(right.choice.title, 'zh-CN', { numeric: true });
+    }
+    const projectOrder = projectName(left.choice, workspaceState)
+      .localeCompare(projectName(right.choice, workspaceState), 'zh-CN', { numeric: true });
+    return projectOrder !== 0
+      ? projectOrder
+      : left.choice.title.localeCompare(right.choice.title, 'zh-CN', { numeric: true });
+  });
+  return Object.freeze(sortedEntries.slice(0, PICKER_LIMIT));
 }
 
 function disabledPickerCard(card: CardKitJson, selectedToken: string): CardKitJson {
@@ -1065,7 +1099,7 @@ function parseChoices(value: unknown): readonly ThreadChoice[] {
   if (!Array.isArray(record?.data)) {
     return [];
   }
-  return record.data.slice(0, PICKER_LIMIT).flatMap((candidate) => {
+  return record.data.flatMap((candidate) => {
     const item = asRecord(candidate);
     const id = typeof item?.id === 'string' ? item.id.trim() : '';
     if (!id || id.length > 512) {
@@ -1078,6 +1112,11 @@ function parseChoices(value: unknown): readonly ThreadChoice[] {
       updatedAt: normalizeUpdatedAt(item?.updatedAt),
     }];
   });
+}
+
+function nextCursorFromThreadList(value: unknown): string | null {
+  const cursor = asRecord(value)?.nextCursor;
+  return typeof cursor === 'string' && cursor.trim() ? cursor.trim() : null;
 }
 
 function pickerOptionLabel(choice: ThreadChoice, state: BindingWorkspaceState): string {

@@ -45,6 +45,15 @@
       "distribution": "ChatGPT.app",
       "appVersion": "26.721.30844",
       "appBuild": "5813"
+    },
+    {
+      "capturedAt": "2026-07-27T09:55:55Z",
+      "codexVersion": "0.146.0-alpha.3.1",
+      "binaryName": "codex",
+      "binarySha256": "6d8be49e49751554df16572369e636cbe02c84b208cad3dc35528c846eeca223",
+      "distribution": "ChatGPT.app",
+      "appVersion": "26.721.41059",
+      "appBuild": "5848"
     }
   ]
 }

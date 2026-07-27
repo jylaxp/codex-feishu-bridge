@@ -62,6 +62,12 @@ export const BUILT_IN_SUPPORTED_PROTOCOL_VERSIONS: readonly SupportedProtocolVer
       adapterProfileId: APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18.id,
       source: 'builtin' as const,
     }),
+    Object.freeze({
+      codexVersion: '0.146.0-alpha.3.1',
+      schemaDigest: APP_SERVER_SCHEMA_DIGEST_0_146_0_ALPHA_3,
+      adapterProfileId: APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18.id,
+      source: 'builtin' as const,
+    }),
   ]);
 
 assertSupportedVersions(BUILT_IN_SUPPORTED_PROTOCOL_VERSIONS);

@@ -136,13 +136,14 @@ test('one protocol contract records multiple independently verified runtime arti
       '0.145.0-alpha.27',
       '0.145.0-alpha.30',
       '0.146.0-alpha.3',
+      '0.146.0-alpha.3.1',
     ],
   );
   assert.deepEqual(
     evidence.artifacts.map((artifact) => artifact.appBuild),
-    [null, '5551', '5650', '5702', '5813'],
+    [null, '5551', '5650', '5702', '5813', '5848'],
   );
-  assert.equal(new Set(evidence.artifacts.map((artifact) => artifact.binarySha256)).size, 5);
+  assert.equal(new Set(evidence.artifacts.map((artifact) => artifact.binarySha256)).size, 6);
   assert.deepEqual(evidence.artifacts[2], {
     capturedAt: '2026-07-22T00:46:59Z',
     codexVersion: '0.145.0-alpha.27',
@@ -169,6 +170,15 @@ test('one protocol contract records multiple independently verified runtime arti
     distribution: 'ChatGPT.app',
     appVersion: '26.721.30844',
     appBuild: '5813',
+  });
+  assert.deepEqual(evidence.artifacts[5], {
+    capturedAt: '2026-07-27T09:55:55Z',
+    codexVersion: '0.146.0-alpha.3.1',
+    binaryName: 'codex',
+    binarySha256: '6d8be49e49751554df16572369e636cbe02c84b208cad3dc35528c846eeca223',
+    distribution: 'ChatGPT.app',
+    appVersion: '26.721.41059',
+    appBuild: '5848',
   });
 });
 
@@ -290,6 +300,7 @@ test('runtime contract selects built-in smoke-verified aliases through the 145 a
     ['0.145.0-alpha.27', schemaDigest145],
     ['0.145.0-alpha.30', schemaDigest145],
     ['0.146.0-alpha.3', schemaDigest146],
+    ['0.146.0-alpha.3.1', schemaDigest146],
   ] as const) {
     const profile = assertCompatibleCodexRuntime(`codex-cli ${codexVersion}`, schemaDigest);
 
@@ -345,6 +356,7 @@ test('runtime verification reports and cleans up the selected profile', async (t
         '0.145.0-alpha.27',
         '0.145.0-alpha.30',
         '0.146.0-alpha.3',
+        '0.146.0-alpha.3.1',
       ],
     );
     assert.equal(versionConfig.lastDetection.codexVersion, expectedCodexVersion);

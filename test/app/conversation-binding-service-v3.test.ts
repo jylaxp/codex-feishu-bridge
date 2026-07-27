@@ -82,3 +82,92 @@ test('binding does not classify Desktop state from App Server history when proje
 
   assert.equal(catalogRequests, 0);
 });
+
+for (const command of ['/l', '/ll']) {
+  test(`${command} scans thread/list pages before filtering by local workspace`, async () => {
+    await assertCommandScansThreadListPages(command);
+  });
+}
+
+async function assertCommandScansThreadListPages(command: string): Promise<void> {
+  const requests: Array<{ readonly method: string; readonly params: unknown }> = [];
+  const catalog: BindingCatalogV3 = {
+    request: async <TResult>(method: string, params: unknown): Promise<TResult> => {
+      requests.push({ method, params });
+      const cursor = params && typeof params === 'object' && 'cursor' in params
+        ? (params as { readonly cursor?: unknown }).cursor
+        : null;
+      if (method !== 'thread/list') {
+        throw new Error(`unexpected method: ${method}`);
+      }
+      if (cursor === null) {
+        return {
+          data: Array.from({ length: 99 }, (_unused, index) => ({
+            id: `other-${index}`,
+            name: `Other ${index}`,
+            cwd: `/Users/jiang/work/ai/other/${index}`,
+            updatedAt: 2_000 - index,
+          })),
+          nextCursor: 'page-2',
+          backwardsCursor: null,
+        } as TResult;
+      }
+      assert.equal(cursor, 'page-2');
+      return {
+        data: [{
+          id: 'thread-bridge',
+          name: 'codex-feishu-bridage',
+          cwd: '/Users/jiang/work/ai/codex/bridge',
+          updatedAt: 1_000,
+        }],
+        nextCursor: null,
+        backwardsCursor: null,
+      } as TResult;
+    },
+  };
+  const createdCards: CardKitJson[] = [];
+  const cards: BindingCardsV3 = {
+    createCard: async (card: CardKitJson) => {
+      createdCards.push(card);
+      return 'card';
+    },
+    replyCard: async () => 'message',
+    sendCard: async () => 'message',
+    replaceCard: async (_cardId, _card, sequence) => sequence + 1,
+  };
+  const store = {
+    get: () => undefined,
+  } as unknown as BindingStore;
+  const service = new ConversationBindingServiceV3(
+    config,
+    store,
+    catalog,
+    cards,
+    () => 1_000,
+    undefined,
+    undefined,
+    async () => ({
+      savedWorkspaces: ['/Users/jiang/work/ai/codex/bridge'],
+      workspaceLabels: { '/Users/jiang/work/ai/codex/bridge': 'bridge' },
+      projectlessThreadIds: [],
+    }),
+  );
+
+  const handled = await service.handleCommand({
+    tenantKey: 'tenant',
+    eventId: 'event',
+    messageId: 'message',
+    chatId: 'chat',
+    rootMessageId: 'message',
+    senderOpenId: 'user',
+    text: command,
+    payloadDigest: 'digest',
+    createdAtMs: 1_000,
+  });
+
+  assert.equal(handled, true);
+  assert.equal(requests.length, 2);
+  assert.deepEqual(requests.map((request) => request.method), ['thread/list', 'thread/list']);
+  assert.equal((requests[1]?.params as { readonly cursor?: unknown }).cursor, 'page-2');
+  assert.match(JSON.stringify(createdCards[0]), /codex-feishu-bridage/);
+}

@@ -29,6 +29,7 @@ test('first load seeds built-ins and later loads preserve approved versions', ()
         '0.145.0-alpha.27',
         '0.145.0-alpha.30',
         '0.146.0-alpha.3',
+        '0.146.0-alpha.3.1',
       ],
     );
     assert.deepEqual(initial.supportedVersions[2], {
@@ -49,6 +50,12 @@ test('first load seeds built-ins and later loads preserve approved versions', ()
       adapterProfileId: 'app-server-0.145.0-alpha.18',
       source: 'builtin',
     });
+    assert.deepEqual(initial.supportedVersions[5], {
+      codexVersion: '0.146.0-alpha.3.1',
+      schemaDigest: schema146,
+      adapterProfileId: 'app-server-0.145.0-alpha.18',
+      source: 'builtin',
+    });
     assert.equal(initial.lastDetection, null);
 
     const candidate = detection('0.145.0-alpha.19', schema145, 'upgrade_available');
@@ -64,10 +71,11 @@ test('first load seeds built-ins and later loads preserve approved versions', ()
         '0.145.0-alpha.27',
         '0.145.0-alpha.30',
         '0.146.0-alpha.3',
+        '0.146.0-alpha.3.1',
         '0.145.0-alpha.19',
       ],
     );
-    assert.equal(reloaded.supportedVersions[5]?.source, 'approved');
+    assert.equal(reloaded.supportedVersions[6]?.source, 'approved');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -113,6 +121,7 @@ test('existing catalogs gain newly shipped built-ins without replacing approved 
         ['0.145.0-alpha.27', 'builtin'],
         ['0.145.0-alpha.30', 'builtin'],
         ['0.146.0-alpha.3', 'builtin'],
+        ['0.146.0-alpha.3.1', 'builtin'],
       ],
     );
     assert.equal(
@@ -129,6 +138,10 @@ test('existing catalogs gain newly shipped built-ins without replacing approved 
     );
     assert.equal(
       assessProtocolCompatibility(upgraded.supportedVersions, '0.146.0-alpha.3', schema146).status,
+      'supported',
+    );
+    assert.equal(
+      assessProtocolCompatibility(upgraded.supportedVersions, '0.146.0-alpha.3.1', schema146).status,
       'supported',
     );
     assert.deepEqual(
@@ -161,6 +174,7 @@ test('stale detection writers preserve versions approved by another store', () =
         '0.145.0-alpha.27',
         '0.145.0-alpha.30',
         '0.146.0-alpha.3',
+        '0.146.0-alpha.3.1',
         '0.145.0-alpha.19',
       ],
     );
@@ -228,6 +242,15 @@ test('compatibility distinguishes supported, compatible upgrade, and incompatibl
       status: 'supported',
       adapterProfileId: 'app-server-0.145.0-alpha.18',
       matchedVersion: supported[4],
+    },
+  );
+  assert.deepEqual(
+    assessProtocolCompatibility(supported, '0.146.0-alpha.3.1', schema146),
+    {
+      conclusion: '兼容',
+      status: 'supported',
+      adapterProfileId: 'app-server-0.145.0-alpha.18',
+      matchedVersion: supported[5],
     },
   );
   assert.deepEqual(

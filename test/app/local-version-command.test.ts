@@ -59,6 +59,7 @@ test('local version command resolves the real environment and persists its repor
       '0.145.0-alpha.27',
       '0.145.0-alpha.30',
       '0.146.0-alpha.3',
+      '0.146.0-alpha.3.1',
     ]);
     const persisted = JSON.parse(
       readFileSync(join(root, 'protocol-versions.json'), 'utf8'),
@@ -81,6 +82,7 @@ test('local version command resolves the real environment and persists its repor
         ['0.145.0-alpha.27', 'builtin'],
         ['0.145.0-alpha.30', 'builtin'],
         ['0.146.0-alpha.3', 'builtin'],
+        ['0.146.0-alpha.3.1', 'builtin'],
       ],
     );
     assert.equal(persisted.lastDetection.checkedAt, '2026-07-19T09:30:00.000Z');
