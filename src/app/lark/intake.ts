@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { DEFAULT_BOT_KEY } from '../bot-config-store';
 import { BridgeConfig } from '../domain';
 
 export const MAX_INBOUND_IMAGES = 8;
@@ -20,17 +21,27 @@ export interface RawMessageEvent {
     readonly chat_type?: string;
     readonly message_type?: string;
     readonly content?: string;
-    readonly mentions?: ReadonlyArray<{ readonly key?: string }>;
+    readonly mentions?: ReadonlyArray<{
+      readonly key?: string;
+      readonly id?: {
+        readonly open_id?: string;
+        readonly user_id?: string;
+        readonly union_id?: string;
+      };
+    }>;
   };
 }
 
 export interface InboundMessage {
+  readonly botKey?: string;
   readonly tenantKey: string;
   readonly eventId: string;
   readonly messageId: string;
   readonly chatId: string;
+  readonly chatType?: 'p2p' | 'group' | 'unknown';
   readonly rootMessageId: string;
   readonly senderOpenId: string;
+  readonly senderType?: 'user' | 'bot';
   readonly messageType?: 'text' | 'image' | 'post';
   readonly hasExplicitText?: boolean;
   readonly text: string;
@@ -44,6 +55,19 @@ export interface InboundMessage {
 export interface InboundImageReference {
   readonly messageId: string;
   readonly imageKey: string;
+}
+
+export interface InboundReplyContext {
+  readonly botKey?: string;
+  readonly tenantKey: string;
+  readonly eventId: string;
+  readonly messageId: string;
+  readonly chatId: string;
+  readonly chatType?: 'p2p' | 'group' | 'unknown';
+  readonly rootMessageId: string;
+  readonly senderOpenId?: string;
+  readonly senderType?: 'user' | 'bot';
+  readonly createdAtMs: number;
 }
 
 /** Compatibility alias for command handlers that remain text-only. */
@@ -60,9 +84,12 @@ export type IntakeRejectionReason =
   | 'APP_MISMATCH'
   | 'TENANT_MISMATCH'
   | 'SENDER_NOT_USER'
+  | 'SENDER_NOT_ALLOWED'
   | 'SENDER_MISSING'
   | 'CHAT_NOT_ALLOWED'
   | 'USER_NOT_ALLOWED'
+  | 'BOT_NOT_MENTIONED'
+  | 'GROUP_BOT_SENDER_DISABLED'
   | 'MESSAGE_NOT_TEXT'
   | 'EVENT_ID_MISSING'
   | 'MESSAGE_ID_MISSING'
@@ -78,6 +105,16 @@ export type IntakeResult =
 function nonBlank(value: string | undefined): string | null {
   const normalized = value?.trim();
   return normalized ? normalized : null;
+}
+
+function mentionKey(value: { readonly key?: string } | undefined): string | null {
+  return nonBlank(value?.key);
+}
+
+function mentionOpenId(
+  value: { readonly id?: { readonly open_id?: string } } | undefined,
+): string | null {
+  return nonBlank(value?.id?.open_id);
 }
 
 function extractText(content: string, mentionKeys: readonly string[]): string | null {
@@ -218,11 +255,70 @@ function digestMessage(eventId: string, messageId: string, text: string): string
     .digest('hex');
 }
 
+/**
+ * Extracts only the fields needed to reply with an availability reason.
+ * It deliberately skips command/binding/user policy checks because no task is
+ * accepted from this path.
+ */
+export function normalizeInboundReplyContext(
+  event: RawMessageEvent,
+  config: BridgeConfig,
+  now: () => number = Date.now,
+  botKey: string = config.botKey ?? DEFAULT_BOT_KEY,
+): InboundReplyContext | null {
+  if (event.app_id !== config.larkAppId) {
+    return null;
+  }
+
+  const tenantKey = nonBlank(event.tenant_key);
+  if (!tenantKey || (config.larkTenantKey && tenantKey !== config.larkTenantKey)) {
+    return null;
+  }
+  const senderTenantKey = nonBlank(event.sender?.tenant_key);
+  if (senderTenantKey !== null && senderTenantKey !== tenantKey) {
+    return null;
+  }
+
+  const rawMessage = event.message;
+  const chatId = nonBlank(rawMessage?.chat_id);
+  const messageId = nonBlank(rawMessage?.message_id);
+  if (!rawMessage || !chatId || !messageId) {
+    return null;
+  }
+  const chatType = normalizeChatType(rawMessage.chat_type);
+  if (chatType === 'group' && currentBotMentionKeysFor(rawMessage.mentions ?? [], config).length === 0) {
+    return null;
+  }
+
+  const eventId = nonBlank(event.event_id) ?? messageId;
+  const createdAtMs = parseCreatedAt(rawMessage.create_time);
+  if (createdAtMs === null || now() - createdAtMs > 30_000) {
+    return null;
+  }
+
+  const rawSenderType = event.sender?.sender_type;
+  const senderType = rawSenderType === 'bot' ? 'bot' : rawSenderType === 'user' ? 'user' : undefined;
+  const senderOpenId = nonBlank(event.sender?.sender_id?.open_id);
+  return Object.freeze({
+    botKey,
+    tenantKey,
+    eventId,
+    messageId,
+    chatId,
+    chatType,
+    rootMessageId: nonBlank(rawMessage.root_id) ?? messageId,
+    ...(senderOpenId ? { senderOpenId } : {}),
+    ...(senderType ? { senderType } : {}),
+    createdAtMs,
+  });
+}
+
 /** Validates and normalizes an SDK-verified Feishu message event. */
 export function normalizeInboundMessage(
   event: RawMessageEvent,
   config: BridgeConfig,
   now: () => number = Date.now,
+  botKey: string = config.botKey ?? DEFAULT_BOT_KEY,
 ): IntakeResult {
   if (event.app_id !== config.larkAppId) {
     return { accepted: false, reason: 'APP_MISMATCH' };
@@ -237,8 +333,17 @@ export function normalizeInboundMessage(
     return { accepted: false, reason: 'TENANT_MISMATCH' };
   }
 
-  if (event.sender?.sender_type !== 'user') {
+  const rawMessage = event.message;
+  const chatType = normalizeChatType(rawMessage?.chat_type);
+  const senderType = event.sender?.sender_type === 'bot' ? 'bot' : 'user';
+  if (event.sender?.sender_type !== 'user' && event.sender?.sender_type !== 'bot') {
+    return { accepted: false, reason: 'SENDER_NOT_ALLOWED' };
+  }
+  if (chatType !== 'group' && event.sender?.sender_type !== 'user') {
     return { accepted: false, reason: 'SENDER_NOT_USER' };
+  }
+  if (chatType === 'group' && senderType === 'bot' && config.allowGroupBotMentions !== true) {
+    return { accepted: false, reason: 'GROUP_BOT_SENDER_DISABLED' };
   }
 
   const senderOpenId = nonBlank(event.sender.sender_id?.open_id);
@@ -246,13 +351,25 @@ export function normalizeInboundMessage(
     return { accepted: false, reason: 'SENDER_MISSING' };
   }
 
-  const rawMessage = event.message;
   const chatId = nonBlank(rawMessage?.chat_id);
-  if (!rawMessage || !chatId || !config.allowedChats.includes(chatId)) {
+  if (
+    !rawMessage
+    || !chatId
+    || (config.allowedChats.length > 0 && !config.allowedChats.includes(chatId))
+  ) {
     return { accepted: false, reason: 'CHAT_NOT_ALLOWED' };
   }
-  if (!config.authorizedUsers.includes(senderOpenId)) {
+  if (
+    senderType === 'user'
+    && !config.authorizedUsers.includes(senderOpenId)
+    && !(chatType === 'group' && config.allowGroupUserMentions !== false)
+  ) {
     return { accepted: false, reason: 'USER_NOT_ALLOWED' };
+  }
+  const mentions = rawMessage.mentions ?? [];
+  const currentBotMentionKeys = currentBotMentionKeysFor(mentions, config);
+  if (chatType === 'group' && currentBotMentionKeys.length === 0) {
+    return { accepted: false, reason: 'BOT_NOT_MENTIONED' };
   }
   const messageType = rawMessage?.message_type;
   if (messageType !== 'text' && messageType !== 'image' && messageType !== 'post') {
@@ -276,9 +393,9 @@ export function normalizeInboundMessage(
   }
 
   const content = rawMessage.content;
-  const mentionKeys = (rawMessage.mentions ?? [])
-    .map((mention) => mention.key?.trim() ?? '')
-    .filter(Boolean);
+  const mentionKeys = chatType === 'group'
+    ? currentBotMentionKeys
+    : mentions.map((mention) => mentionKey(mention) ?? '').filter(Boolean);
   const parsedContent = content ? extractMessageContent(messageType, content, mentionKeys) : null;
   if (!parsedContent) {
     return { accepted: false, reason: 'TEXT_INVALID' };
@@ -292,12 +409,15 @@ export function normalizeInboundMessage(
   return {
     accepted: true,
     message: Object.freeze({
+      botKey,
       tenantKey,
       eventId,
       messageId,
       chatId,
+      chatType,
       rootMessageId,
       senderOpenId,
+      senderType,
       messageType,
       hasExplicitText,
       text,
@@ -307,6 +427,27 @@ export function normalizeInboundMessage(
       createdAtMs,
     }),
   };
+}
+
+function normalizeChatType(value: string | undefined): InboundMessage['chatType'] {
+  if (value === 'p2p' || value === 'group') {
+    return value;
+  }
+  return 'unknown';
+}
+
+function currentBotMentionKeysFor(
+  mentions: readonly {
+    readonly key?: string;
+    readonly id?: { readonly open_id?: string };
+  }[],
+  config: BridgeConfig,
+): readonly string[] {
+  const botOpenId = nonBlank(config.larkBotOpenId);
+  const currentMentions = botOpenId
+    ? mentions.filter((mention) => mentionOpenId(mention) === botOpenId)
+    : mentions;
+  return Object.freeze(currentMentions.map((mention) => mentionKey(mention) ?? '').filter(Boolean));
 }
 
 function extractMessageContent(

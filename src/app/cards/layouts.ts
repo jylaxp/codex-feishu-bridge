@@ -64,6 +64,36 @@ export interface ApprovalSummaryCardOptions {
   readonly entries: readonly ApprovalSummaryEntryCardOptions[];
 }
 
+export interface BotUnavailableCardOptions {
+  readonly title: string;
+  readonly reason: string;
+  readonly nextStep?: string;
+}
+
+/** Builds an explicit availability rejection for a mentioned bot that cannot take work. */
+export function createBotUnavailableCard(options: BotUnavailableCardOptions): CardKitJson {
+  const content = options.nextStep
+    ? `${options.reason}\n\n${options.nextStep}`
+    : options.reason;
+  return {
+    schema: '2.0',
+    config: { wide_screen_mode: true },
+    header: {
+      template: 'orange',
+      title: { tag: 'plain_text', content: options.title },
+    },
+    body: {
+      elements: [{
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content,
+        },
+      }],
+    },
+  };
+}
+
 /** Builds the explicit rejection shown when a conversation queue has no capacity. */
 export function createQueueFullCard(maxQueuedTasks: number): CardKitJson {
   return {

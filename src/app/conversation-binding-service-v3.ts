@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { basename, join, normalize, sep } from 'node:path';
 
 import { type BindingStore, type ChatThreadBinding } from './binding-store';
+import { DEFAULT_BOT_KEY } from './bot-config-store';
 import { createTaskCard, type CardKitJson } from './cards/layouts';
 import { sanitizeCardMarkdown, sanitizeCardPlainText, sanitizeCardText } from './cards/sanitizer';
 import { type ThreadNavigation } from './codex/app-navigation-adapter';
@@ -47,6 +48,7 @@ export interface BindingLoggerV3 {
 }
 
 export interface BindingActionV3 {
+  readonly botKey: string;
   readonly tenantKey: string;
   readonly chatId: string;
   readonly messageId: string;
@@ -88,8 +90,12 @@ export class ConversationBindingServiceV3 {
     private readonly projectActiveDesktopTurn: ((binding: ChatThreadBinding) => Promise<boolean>) | undefined = undefined,
   ) {}
 
-  public getBinding(tenantKey: string, chatId: string): ChatThreadBinding | undefined {
-    return this.store.get(tenantKey, chatId);
+  public getBinding(
+    tenantKey: string,
+    chatId: string,
+    botKey: string = DEFAULT_BOT_KEY,
+  ): ChatThreadBinding | undefined {
+    return this.store.get(tenantKey, chatId, botKey);
   }
 
   public async handleCommand(message: InboundTextMessage): Promise<boolean> {
@@ -107,7 +113,7 @@ export class ConversationBindingServiceV3 {
       return true;
     }
     if (command === '/unbind') {
-      const removed = this.store.unbind(message.tenantKey, message.chatId);
+      const removed = this.store.unbind(message.tenantKey, message.chatId, message.botKey);
       await this.reply(message, unboundCard(removed), 'unbind');
       return true;
     }
@@ -115,7 +121,7 @@ export class ConversationBindingServiceV3 {
   }
 
   public async ensureBoundOrPrompt(message: InboundTextMessage): Promise<boolean> {
-    if (this.getBinding(message.tenantKey, message.chatId)) {
+    if (this.getBinding(message.tenantKey, message.chatId, message.botKey)) {
       return true;
     }
     await this.sendPicker(message);
@@ -130,7 +136,7 @@ export class ConversationBindingServiceV3 {
     if (!payload) {
       return toast('会话选择已过期、作用域不匹配或无效，请重新 /bind', 'warning');
     }
-    const revision = this.getBinding(action.tenantKey, action.chatId)?.revision ?? 0;
+    const revision = this.getBinding(action.tenantKey, action.chatId, action.botKey)?.revision ?? 0;
     if (payload.revision !== revision) {
       return toast('选择卡已过期，请重新 /bind', 'warning');
     }
@@ -143,6 +149,7 @@ export class ConversationBindingServiceV3 {
     const workspaceId = choice.cwd ?? this.config.codexCwd;
     const selectedCard = pending ? disabledPickerCard(pending.card, action.token) : undefined;
     const binding = this.store.bind({
+      botKey: action.botKey,
       tenantKey: action.tenantKey,
       chatId: action.chatId,
       threadId: payload.threadId,
@@ -175,7 +182,7 @@ export class ConversationBindingServiceV3 {
       return toast('你没有打开会话的权限', 'warning');
     }
     const payload = verifyToken(action.token, action, this.config.larkAppSecret, this.now);
-    const binding = this.getBinding(action.tenantKey, action.chatId);
+    const binding = this.getBinding(action.tenantKey, action.chatId, action.botKey);
     if (!payload || !binding || payload.threadId !== binding.threadId || payload.revision !== binding.revision) {
       return toast('会话打开操作已过期，请重新发送 /binding', 'warning');
     }
@@ -188,7 +195,7 @@ export class ConversationBindingServiceV3 {
   }
 
   private async sendPicker(message: InboundTextMessage, table = false): Promise<void> {
-    const binding = this.getBinding(message.tenantKey, message.chatId);
+    const binding = this.getBinding(message.tenantKey, message.chatId, message.botKey);
     const choices = await this.includeCurrentBinding(await this.readThreadChoices(), binding);
     const revision = binding?.revision ?? 0;
     const entries = choices.map((choice) => ({
@@ -272,7 +279,7 @@ export class ConversationBindingServiceV3 {
   }
 
   private async sendStatus(message: InboundTextMessage): Promise<void> {
-    const binding = this.getBinding(message.tenantKey, message.chatId);
+    const binding = this.getBinding(message.tenantKey, message.chatId, message.botKey);
     const token = binding
       ? createToken(binding.threadId, binding.revision, message, this.config.larkAppSecret, this.now)
       : undefined;
@@ -280,7 +287,7 @@ export class ConversationBindingServiceV3 {
   }
 
   private async openBoundThread(message: InboundTextMessage): Promise<void> {
-    const binding = this.getBinding(message.tenantKey, message.chatId);
+    const binding = this.getBinding(message.tenantKey, message.chatId, message.botKey);
     if (!binding) {
       await this.sendStatus(message);
       return;
@@ -293,7 +300,7 @@ export class ConversationBindingServiceV3 {
     binding: ChatThreadBinding,
     messageId: string,
   ): Promise<void> {
-    if (this.getBinding(binding.tenantKey, binding.chatId)?.revision !== binding.revision) {
+    if (this.getBinding(binding.tenantKey, binding.chatId, binding.botKey)?.revision !== binding.revision) {
       return;
     }
     try {
@@ -1297,6 +1304,7 @@ function createToken(
   const payload = Buffer.from(JSON.stringify({
     threadId,
     revision,
+    botKey: message.botKey ?? DEFAULT_BOT_KEY,
     tenantKey: message.tenantKey,
     chatId: message.chatId,
     expiresAtMs: now() + TOKEN_TTL_MS,
@@ -1327,6 +1335,8 @@ function verifyToken(
       || typeof parsed.tenantKey !== 'string'
       || typeof parsed.chatId !== 'string'
       || typeof parsed.expiresAtMs !== 'number'
+      || (typeof parsed.botKey !== 'string' && parsed.botKey !== undefined)
+      || (parsed.botKey ?? DEFAULT_BOT_KEY) !== action.botKey
       || parsed.tenantKey !== action.tenantKey
       || parsed.chatId !== action.chatId
       || parsed.expiresAtMs < now()

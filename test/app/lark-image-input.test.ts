@@ -18,6 +18,7 @@ import {
 import { InboundMessageAggregator } from '../../src/app/lark/inbound-message-aggregator';
 import { normalizeCardAction } from '../../src/app/lark/event-server';
 import {
+  normalizeInboundReplyContext,
   normalizeInboundMessage,
   isTextOnlyInboundMessage,
   type InboundMessage,
@@ -106,6 +107,99 @@ test('post events accept locale-wrapped image-only content for later aggregation
   assert.deepEqual(result.message.imageReferences, [
     { messageId: 'message', imageKey: 'img_v3_only' },
   ]);
+});
+
+test('group messages require the current bot mention and strip only that mention', () => {
+  const base = messageEvent('text', JSON.stringify({ text: '@_user_1 请处理 @_user_2 的问题' }));
+  const result = normalizeInboundMessage({
+    ...base,
+    message: {
+      ...base.message,
+      chat_type: 'group',
+      mentions: [
+        { key: '@_user_1', id: { open_id: 'bot-open-id' } },
+        { key: '@_user_2', id: { open_id: 'other-open-id' } },
+      ],
+    },
+  }, {
+    ...config,
+    larkBotOpenId: 'bot-open-id',
+    authorizedUsers: [],
+  }, () => 1_000_000_001_000, 'bot_exampleaaaa');
+
+  assert.equal(result.accepted, true);
+  if (!result.accepted) {
+    return;
+  }
+  assert.equal(result.message.botKey, 'bot_exampleaaaa');
+  assert.equal(result.message.chatType, 'group');
+  assert.equal(result.message.text, '请处理 @_user_2 的问题');
+});
+
+test('group messages mentioning another bot are rejected', () => {
+  const base = messageEvent('text', JSON.stringify({ text: '@_user_2 请处理' }));
+  const result = normalizeInboundMessage({
+    ...base,
+    message: {
+      ...base.message,
+      chat_type: 'group',
+      mentions: [{ key: '@_user_2', id: { open_id: 'other-open-id' } }],
+    },
+  }, { ...config, larkBotOpenId: 'bot-open-id' }, () => 1_000_000_001_000);
+
+  assert.deepEqual(result, { accepted: false, reason: 'BOT_NOT_MENTIONED' });
+});
+
+test('reply context accepts current bot group mentions without task policy checks', () => {
+  const base = messageEvent('text', JSON.stringify({ text: '@_bot 请处理' }));
+  const context = normalizeInboundReplyContext({
+    ...base,
+    event_id: '',
+    sender: {
+      sender_type: 'user',
+      tenant_key: 'tenant',
+      sender_id: { open_id: 'unbound-user' },
+    },
+    message: {
+      ...base.message,
+      chat_type: 'group',
+      mentions: [{ key: '@_bot', id: { open_id: 'bot-open-id' } }],
+    },
+  }, {
+    ...config,
+    larkBotOpenId: 'bot-open-id',
+    authorizedUsers: ['owner-only'],
+  }, () => 1_000_000_001_000, 'bot_release_test');
+
+  assert.deepEqual(context, {
+    botKey: 'bot_release_test',
+    tenantKey: 'tenant',
+    eventId: 'message',
+    messageId: 'message',
+    chatId: 'chat',
+    chatType: 'group',
+    rootMessageId: 'message',
+    senderOpenId: 'unbound-user',
+    senderType: 'user',
+    createdAtMs: 1_000_000_000_000,
+  });
+});
+
+test('reply context rejects group mentions for a different bot', () => {
+  const base = messageEvent('text', JSON.stringify({ text: '@_other 请处理' }));
+  const context = normalizeInboundReplyContext({
+    ...base,
+    message: {
+      ...base.message,
+      chat_type: 'group',
+      mentions: [{ key: '@_other', id: { open_id: 'other-open-id' } }],
+    },
+  }, {
+    ...config,
+    larkBotOpenId: 'bot-open-id',
+  }, () => 1_000_000_001_000, 'bot_release_test');
+
+  assert.equal(context, null);
 });
 
 test('image events with malformed content are rejected', () => {
@@ -776,6 +870,7 @@ test('pending image card action is normalized with its operator and scope', () =
   }, config);
 
   assert.deepEqual(action, {
+    botKey: 'default',
     tenantKey: 'tenant',
     chatId: 'chat',
     messageId: 'card-message',
@@ -798,6 +893,7 @@ test('pending image card action accepts an empty optional description', () => {
   }, config);
 
   assert.deepEqual(action, {
+    botKey: 'default',
     tenantKey: 'tenant',
     chatId: 'chat',
     messageId: 'card-message',

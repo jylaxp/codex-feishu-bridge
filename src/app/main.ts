@@ -2,7 +2,13 @@ import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 
-import { BindingStore } from './binding-store';
+import { BindingStore, type ChatThreadBinding } from './binding-store';
+import {
+  BotConfigStore,
+  botConfigToBridgeConfig,
+  DEFAULT_BOT_KEY,
+  type LarkBotConfig,
+} from './bot-config-store';
 import { CardKitClient, type LarkReplyApi } from './cards/cardkit-client';
 import { CardImageRenderer, type LarkImageApi } from './cards/card-image-renderer';
 import {
@@ -14,6 +20,7 @@ import {
   createImageInputOverloadedCard,
   createImagePendingCard,
   createImageSubmissionFailedCard,
+  createBotUnavailableCard,
   createQueueFullCard,
 } from './cards/layouts';
 import { AppServerClient, type AppServerTransportOptions } from './codex/app-server-client';
@@ -46,8 +53,12 @@ import {
   type LarkMessageAcknowledgementApi,
 } from './lark/message-acknowledgement';
 import { OutputFileUploader, type FileUploadApi } from './lark/output-file-uploader';
-import { LarkEventServer, toast } from './lark/event-server';
-import { isTextOnlyInboundMessage, type InboundMessage } from './lark/intake';
+import { LarkEventServer, toast, type LarkUnavailableReason } from './lark/event-server';
+import {
+  isTextOnlyInboundMessage,
+  type InboundMessage,
+  type InboundReplyContext,
+} from './lark/intake';
 import {
   InboundImageStore,
   type LarkMessageResourceApi,
@@ -56,7 +67,7 @@ import {
   InboundMessageAggregator,
   MAX_INBOUND_IMAGES,
 } from './lark/inbound-message-aggregator';
-import { LarkScopeConfigStore } from './lark/scope-config-store';
+import { LarkScopeConfigStore, type LarkScope } from './lark/scope-config-store';
 import { BridgeLogger } from './logger';
 import { runPreflight } from './preflight';
 import { BridgeProcessLock } from './process-lock';
@@ -78,6 +89,21 @@ export interface BridgeRuntime {
 }
 
 const BINDING_DESKTOP_SNAPSHOT_TIMEOUT_MS = 5_000;
+
+interface BotRuntime {
+  readonly botKey: string;
+  readonly config: BridgeConfig;
+  readonly bot: LarkBotConfig;
+  readonly lark: ReturnType<typeof createLarkRuntimeClients>;
+  readonly cardImages: CardImageRenderer;
+  readonly cards: CardKitClient;
+  readonly acknowledgements: LarkMessageAcknowledgement;
+  readonly inboundImages: InboundImageStore;
+  readonly outputFileUploader: OutputFileUploader;
+  eventServer?: LarkEventServer;
+}
+
+type RuntimeUnavailableReason = LarkUnavailableReason | 'GROUP_NOT_BOUND';
 
 /**
  * Starts the ephemeral Desktop-follower Bridge. The only business file loaded
@@ -114,10 +140,12 @@ export async function startBridge(
     resolveFailure = resolve;
   });
   const bindings = new BindingStore(preflight.configHome);
+  const botStore = new BotConfigStore(preflight.configHome);
   let runtimeContract: Awaited<ReturnType<typeof verifyCodexRuntimeContract>>;
   let protocolAdapter: ReturnType<typeof adapterForAppServerProfile>;
   try {
     bindings.load();
+    botStore.load(config);
     runtimeContract = await verifyCodexRuntimeContract(
       config,
       effectiveEnv,
@@ -140,6 +168,15 @@ export async function startBridge(
   const appServerControlPlane = new AppServerControlPlane(appServer, protocolAdapter);
   const desktop = new DesktopIpcClient();
   await desktop.syncFollowedThreads(bindings.list().map((binding) => binding.threadId));
+  const configuredBots = botStore.list();
+  if (configuredBots.length === 0) {
+    processLock.release();
+    throw new Error('No Feishu bot is configured');
+  }
+  const enabledBots = configuredBots.filter((bot) => bot.enabled);
+  const botConfigs = new Map<string, BridgeConfig>(
+    configuredBots.map((bot) => [bot.botKey, { ...botConfigToBridgeConfig(config, bot) } as BridgeConfig]),
+  );
   let orchestrator: InMemoryOrchestrator | undefined;
   let messageAggregator: InboundMessageAggregator | undefined;
   let inboundGeneration = 0;
@@ -245,6 +282,29 @@ export async function startBridge(
     });
   };
   healthPublisher.flush();
+  const botRuntimes = new Map<string, BotRuntime>();
+  const larkConnections = new Map<string, LarkWebsocketConnectionSnapshot>();
+  const aggregateLarkConnection = (): LarkWebsocketConnectionSnapshot => aggregateLarkConnections(
+    [...larkConnections.values()],
+  );
+  const configForBotKey = (botKey: string): BridgeConfig | undefined => botConfigs.get(botKey);
+  const runtimeForBotKey = (botKey: string): BotRuntime => {
+    const runtime = botRuntimes.get(botKey);
+    if (!runtime) {
+      throw new Error(`No enabled Feishu bot runtime for ${botKey}`);
+    }
+    return runtime;
+  };
+  const cardsForBotKey = (botKey: string): CardKitClient | undefined => botRuntimes.get(botKey)?.cards;
+  const approveNotificationImages = (notification: ServerNotification): void => {
+    const paths = notificationLocalImagePaths(notification);
+    if (paths.length === 0) {
+      return;
+    }
+    for (const runtime of botRuntimes.values()) {
+      runtime.cardImages.approve(paths);
+    }
+  };
   let desktopThreadFollowingWrite = Promise.resolve();
   const syncDesktopThreadFollowing = async (): Promise<void> => {
     const threadIds = new Set(bindings.list().map((binding) => binding.threadId));
@@ -260,56 +320,86 @@ export async function startBridge(
     }
   };
   const normalizer = new DesktopThreadStreamNormalizer();
-  const lark = createLarkRuntimeClients(config, {
-    logSink: (level) => logger.warn(`lark_sdk_${level}`),
-    onTerminalWebsocketError: resolveFailure,
-    onWebsocketStateChanged: (snapshot) => {
-      larkConnection = snapshot;
-      logger.info('lark_websocket_state_changed', {
-        state: snapshot.state,
-        reconnectCount: snapshot.reconnectCount,
-      });
-      if (snapshot.state === 'ready' && snapshot.reconnectCount > 0) {
-        orchestrator?.resumeCardDelivery();
-      }
-      publishHealth();
-    },
-  });
-  const cardImages = new CardImageRenderer(
-    lark.api as unknown as LarkImageApi,
-    [config.codexCwd, resolveCodexVisualizationsRoot(effectiveEnv)],
-  );
-  const cards = new CardKitClient(
-    new CachedTenantTokenProvider(config.larkAppId, config.larkAppSecret),
-    lark.api as unknown as LarkReplyApi,
-    fetch,
-    10_000,
-    (card) => cardImages.render(card),
-  );
-  const acknowledgements = new LarkMessageAcknowledgement(
-    lark.api as unknown as LarkMessageAcknowledgementApi,
-    logger,
-  );
-  const inboundImages = new InboundImageStore(
-    lark.api as unknown as LarkMessageResourceApi,
-    preflight.runtimeDirectory.temporaryDir,
-  );
+  for (const bot of configuredBots) {
+    const scopedConfig = botConfigs.get(bot.botKey);
+    if (!scopedConfig) {
+      continue;
+    }
+    larkConnections.set(bot.botKey, Object.freeze({
+      state: 'idle',
+      reconnectCount: 0,
+      connectedAtMs: null,
+    }));
+    const lark = createLarkRuntimeClients(scopedConfig, {
+      logSink: (level) => logger.warn(`lark_sdk_${level}`, { botKey: bot.botKey }),
+      onTerminalWebsocketError: resolveFailure,
+      onWebsocketStateChanged: (snapshot) => {
+        larkConnections.set(bot.botKey, snapshot);
+        larkConnection = aggregateLarkConnection();
+        logger.info('lark_websocket_state_changed', {
+          botKey: bot.botKey,
+          state: snapshot.state,
+          reconnectCount: snapshot.reconnectCount,
+        });
+        if (snapshot.state === 'ready' && snapshot.reconnectCount > 0) {
+          orchestrator?.resumeCardDelivery();
+        }
+        publishHealth();
+      },
+    });
+    const cardImages = new CardImageRenderer(
+      lark.api as unknown as LarkImageApi,
+      [scopedConfig.codexCwd, resolveCodexVisualizationsRoot(effectiveEnv)],
+    );
+    const cards = new CardKitClient(
+      new CachedTenantTokenProvider(scopedConfig.larkAppId, scopedConfig.larkAppSecret),
+      lark.api as unknown as LarkReplyApi,
+      fetch,
+      10_000,
+      (card) => cardImages.render(card),
+    );
+    botRuntimes.set(bot.botKey, {
+      botKey: bot.botKey,
+      config: scopedConfig,
+      bot,
+      lark,
+      cardImages,
+      cards,
+      acknowledgements: new LarkMessageAcknowledgement(
+        lark.api as unknown as LarkMessageAcknowledgementApi,
+        logger,
+      ),
+      inboundImages: new InboundImageStore(
+        lark.api as unknown as LarkMessageResourceApi,
+        preflight.runtimeDirectory.temporaryDir,
+      ),
+      outputFileUploader: new OutputFileUploader(scopedConfig, lark.api as unknown as FileUploadApi),
+    });
+  }
+  larkConnection = aggregateLarkConnection();
+  const defaultRuntime = botRuntimes.get(DEFAULT_BOT_KEY)
+    ?? enabledBots.map((bot) => botRuntimes.get(bot.botKey)).find(Boolean)
+    ?? botRuntimes.values().next().value;
+  if (!defaultRuntime) {
+    processLock.release();
+    throw new Error('No Feishu bot runtime could be created');
+  }
   const rateLimits = new RateLimitCache(
     () => appServerControlPlane.request('account/rateLimits/read', {}),
     config.rateLimitQueryIntervalMs,
   );
-  const outputFileUploader = new OutputFileUploader(config, lark.api as unknown as FileUploadApi);
-  const larkScopeConfig = new LarkScopeConfigStore(preflight.configHome);
   const navigation = new CodexAppNavigationAdapter();
-  orchestrator = new InMemoryOrchestrator(config, desktop, cards, {
+  orchestrator = new InMemoryOrchestrator(config, desktop, defaultRuntime.cards, {
     onCardError: (error) => logger.error('card_update_failed', error),
+    cardClientForBotKey: cardsForBotKey,
+    larkSecretForBotKey: (botKey) => configForBotKey(botKey)?.larkAppSecret,
     readRateLimits: () => rateLimits.get(),
-    uploadOutputFiles: (answer, rootMessageId, taskId) => (
-      outputFileUploader.uploadMarkdownFiles(answer, rootMessageId, taskId)
+    uploadOutputFilesForBotKey: (botKey, answer, rootMessageId, taskId) => (
+      runtimeForBotKey(botKey).outputFileUploader.uploadMarkdownFiles(answer, rootMessageId, taskId)
     ),
     resolveBindingByThreadId: (threadId) => bindings.getUniqueByThreadId(threadId),
     isBindingCurrent: (candidate) => (
-      bindings.get(candidate.tenantKey, candidate.chatId)?.threadId === candidate.threadId
+      bindings.get(candidate.tenantKey, candidate.chatId, candidate.botKey)?.threadId === candidate.threadId
     ),
     requestThreadSnapshot: (threadId) => desktop.requestThreadFollowingSnapshot(threadId),
     readThreadTitle: (threadId) => readThreadTitle(appServerControlPlane, threadId),
@@ -323,53 +413,91 @@ export async function startBridge(
       publishHealth();
     },
     releaseInboundImages: (paths) => {
-      cardImages.revoke(paths);
-      void inboundImages.release(paths).catch((error: unknown) => {
+      defaultRuntime.cardImages.revoke(paths);
+      void defaultRuntime.inboundImages.release(paths).catch((error: unknown) => {
         logger.error('lark_inbound_image_cleanup_failed', toError(error), { count: paths.length });
       });
     },
-  });
-  const approvals = new DesktopApprovalService(config, desktop, cards, orchestrator);
-  const conversationBindings = new ConversationBindingServiceV3(
-    config,
-    bindings,
-    appServerControlPlane,
-    cards,
-    undefined,
-    navigation,
-    logger,
-    undefined,
-    () => rateLimits.get(),
-    async (binding) => {
-      await syncDesktopThreadFollowing();
-      const snapshotAvailable = await desktop.waitForThreadFollowingSnapshot(
-        binding.threadId,
-        BINDING_DESKTOP_SNAPSHOT_TIMEOUT_MS,
-      );
-      if (!snapshotAvailable || !normalizer.hasThreadSnapshot(binding.threadId)) {
-        throw new Error('Desktop thread snapshot is unavailable for binding projection');
+    releaseInboundImagesForBotKey: (botKey, paths) => {
+      const runtime = botRuntimes.get(botKey);
+      if (!runtime) {
+        return;
       }
-      const notifications = normalizer.activeTurnSnapshot(binding.threadId);
-      if (notifications.length === 0) {
-        return false;
-      }
-      for (const notification of notifications) {
-        cardImages.approve(notificationLocalImagePaths(notification));
-        orchestrator.handleNotification(notification);
-      }
-      return true;
+      runtime.cardImages.revoke(paths);
+      void runtime.inboundImages.release(paths).catch((error: unknown) => {
+        logger.error('lark_inbound_image_cleanup_failed', toError(error), {
+          botKey,
+          count: paths.length,
+        });
+      });
     },
-  );
-  const commands = new BridgeCommandService(
-    config,
-    bindings,
-    appServerControlPlane,
-    cards,
-    orchestrator,
-    navigation,
-    undefined,
-    rateLimits,
-  );
+  });
+  const approvals = new DesktopApprovalService(config, desktop, defaultRuntime.cards, orchestrator, Date.now, {
+    configForBotKey,
+    cardsForBotKey,
+  });
+  const conversationBindingsByBot = new Map<string, ConversationBindingServiceV3>();
+  const commandsByBot = new Map<string, BridgeCommandService>();
+  const projectActiveDesktopTurn = async (binding: ChatThreadBinding): Promise<boolean> => {
+    if (!orchestrator) {
+      return false;
+    }
+    await syncDesktopThreadFollowing();
+    const snapshotAvailable = await desktop.waitForThreadFollowingSnapshot(
+      binding.threadId,
+      BINDING_DESKTOP_SNAPSHOT_TIMEOUT_MS,
+    );
+    if (!snapshotAvailable || !normalizer.hasThreadSnapshot(binding.threadId)) {
+      throw new Error('Desktop thread snapshot is unavailable for binding projection');
+    }
+    const notifications = normalizer.activeTurnSnapshot(binding.threadId);
+    if (notifications.length === 0) {
+      return false;
+    }
+    for (const notification of notifications) {
+      approveNotificationImages(notification);
+      orchestrator.handleNotification(notification);
+    }
+    return true;
+  };
+  for (const runtime of botRuntimes.values()) {
+    conversationBindingsByBot.set(runtime.botKey, new ConversationBindingServiceV3(
+      runtime.config,
+      bindings,
+      appServerControlPlane,
+      runtime.cards,
+      undefined,
+      navigation,
+      logger,
+      undefined,
+      () => rateLimits.get(),
+      projectActiveDesktopTurn,
+    ));
+    commandsByBot.set(runtime.botKey, new BridgeCommandService(
+      runtime.config,
+      bindings,
+      appServerControlPlane,
+      runtime.cards,
+      orchestrator,
+      navigation,
+      undefined,
+      rateLimits,
+    ));
+  }
+  const conversationBindingsFor = (botKey: string): ConversationBindingServiceV3 => {
+    const service = conversationBindingsByBot.get(botKey);
+    if (!service) {
+      throw new Error(`No binding service for bot ${botKey}`);
+    }
+    return service;
+  };
+  const commandsFor = (botKey: string): BridgeCommandService => {
+    const service = commandsByBot.get(botKey);
+    if (!service) {
+      throw new Error(`No command service for bot ${botKey}`);
+    }
+    return service;
+  };
   const desktopSupervisor = new DesktopIpcSupervisor(desktop, {
     onReady: (handshake) => {
       desktopState = 'READY';
@@ -399,6 +527,14 @@ export async function startBridge(
   });
   const processInboundMessage = async (message: InboundMessage): Promise<boolean> => {
     const generation = inboundGeneration;
+    const botKey = message.botKey ?? DEFAULT_BOT_KEY;
+    const runtime = runtimeForBotKey(botKey);
+    const conversationBindings = conversationBindingsFor(botKey);
+    const commands = commandsFor(botKey);
+    const cards = runtime.cards;
+    if ((message.chatType ?? 'p2p') === 'group' && isTextOnlyInboundMessage(message) && message.text.startsWith('/')) {
+      return false;
+    }
     if (isTextOnlyInboundMessage(message)) {
       if (await commands.handle(message)) {
         await syncDesktopThreadFollowing();
@@ -409,8 +545,12 @@ export async function startBridge(
         return true;
       }
     }
-    const binding = conversationBindings.getBinding(message.tenantKey, message.chatId);
+    const binding = conversationBindings.getBinding(message.tenantKey, message.chatId, botKey);
     if (!binding) {
+      if ((message.chatType ?? 'p2p') === 'group') {
+        await replyUnavailableMessage(runtime, message, 'GROUP_NOT_BOUND');
+        return false;
+      }
       await conversationBindings.ensureBoundOrPrompt(message);
       return false;
     }
@@ -430,20 +570,21 @@ export async function startBridge(
       const paths: string[] = [];
       try {
         for (const reference of imageReferences) {
-          paths.push(await inboundImages.download(reference.messageId, reference.imageKey));
+          paths.push(await runtime.inboundImages.download(reference.messageId, reference.imageKey));
           if (generation !== inboundGeneration) {
-            await inboundImages.release(paths);
+            await runtime.inboundImages.release(paths);
             return false;
           }
         }
-        cardImages.approve(paths);
+        runtime.cardImages.approve(paths);
         preparedMessage = { ...message, localImagePaths: Object.freeze(paths) };
       } catch (error) {
-        await inboundImages.release(paths);
+        await runtime.inboundImages.release(paths);
         if (generation !== inboundGeneration) {
           return false;
         }
         logger.error('lark_inbound_image_prepare_failed', toError(error), {
+          botKey,
           chatId: message.chatId,
           messageId: message.messageId,
         });
@@ -456,8 +597,8 @@ export async function startBridge(
     try {
       outcome = await orchestrator.handleInbound(preparedMessage, binding);
     } catch (error) {
-      cardImages.revoke(preparedMessage.localImagePaths ?? []);
-      await inboundImages.release(preparedMessage.localImagePaths ?? []);
+      runtime.cardImages.revoke(preparedMessage.localImagePaths ?? []);
+      await runtime.inboundImages.release(preparedMessage.localImagePaths ?? []);
       throw error;
     }
     if (generation !== inboundGeneration || outcome === 'abandoned') {
@@ -482,6 +623,7 @@ export async function startBridge(
         await commands.consumeActiveSkill(binding);
       } catch (error) {
         logger.error('active_skill_cleanup_failed', toError(error), {
+          botKey,
           chatId: message.chatId,
           threadId: binding.threadId,
         });
@@ -494,8 +636,33 @@ export async function startBridge(
     card: Readonly<Record<string, unknown>>,
     operation: string,
   ): Promise<string> => {
+    const cards = runtimeForBotKey(message.botKey ?? DEFAULT_BOT_KEY).cards;
     const cardId = await cards.createCard(card);
     return cards.replyCard(message.rootMessageId, cardId, `${operation}:${message.eventId}`);
+  };
+  const replyUnavailableContext = async (
+    runtime: BotRuntime,
+    context: InboundReplyContext,
+    reason: RuntimeUnavailableReason,
+  ): Promise<void> => {
+    const cardId = await runtime.cards.createCard(createBotUnavailableCard(unavailableCard(reason, runtime.bot)));
+    await runtime.cards.replyCard(
+      context.rootMessageId,
+      cardId,
+      `bot-unavailable:${runtime.botKey}:${reason}:${context.eventId}`,
+    );
+  };
+  const replyUnavailableMessage = async (
+    runtime: BotRuntime,
+    message: InboundMessage,
+    reason: RuntimeUnavailableReason,
+  ): Promise<void> => {
+    const cardId = await runtime.cards.createCard(createBotUnavailableCard(unavailableCard(reason, runtime.bot)));
+    await runtime.cards.replyCard(
+      message.rootMessageId,
+      cardId,
+      `bot-unavailable:${runtime.botKey}:${reason}:${message.eventId}`,
+    );
   };
   messageAggregator = new InboundMessageAggregator(processInboundMessage, {
     onPending: (message, imageCount, actionToken) => replyImageState(
@@ -517,7 +684,10 @@ export async function startBridge(
     },
     onSubmitted: async (_message, cardMessageId) => {
       if (cardMessageId) {
-        await cards.patchMessage(cardMessageId, createImageBatchSubmittedCard());
+        await runtimeForBotKey(_message.botKey ?? DEFAULT_BOT_KEY).cards.patchMessage(
+          cardMessageId,
+          createImageBatchSubmittedCard(),
+        );
       }
     },
     onActionDispatchFailed: async (
@@ -540,10 +710,11 @@ export async function startBridge(
       );
       if (originalCardMessageId) {
         try {
-          await cards.patchMessage(originalCardMessageId, failureCard);
+          await runtimeForBotKey(message.botKey ?? DEFAULT_BOT_KEY).cards.patchMessage(originalCardMessageId, failureCard);
           return originalCardMessageId;
         } catch (patchError) {
           logger.error('lark_image_retry_card_patch_failed', toError(patchError), {
+            botKey: message.botKey ?? DEFAULT_BOT_KEY,
             chatId: message.chatId,
             messageId: originalCardMessageId,
           });
@@ -556,93 +727,128 @@ export async function startBridge(
       );
     },
     onBackgroundError: (message, error) => logger.error('lark_image_background_failed', error, {
+      botKey: message.botKey ?? DEFAULT_BOT_KEY,
       chatId: message.chatId,
       messageId: message.messageId,
     }),
   });
-  const eventServer = new LarkEventServer(lark.websocket, config, {
-    onMessage: async (message) => {
-      logger.info('lark_message_accepted', {
-        tenantKey: message.tenantKey,
-        chatId: message.chatId,
-        messageId: message.messageId,
-        eventId: message.eventId,
-        messageType: message.messageType ?? 'text',
-      });
-      void acknowledgements.ack(message);
-      void messageAggregator.accept(message).catch((error: unknown) => {
-        logger.error('lark_async_message_failed', toError(error), {
+  for (const runtime of botRuntimes.values()) {
+    runtime.eventServer = new LarkEventServer(runtime.lark.websocket, runtime.config, {
+      onMessage: async (message) => {
+        logger.info('lark_message_accepted', {
+          botKey: message.botKey ?? DEFAULT_BOT_KEY,
+          tenantKey: message.tenantKey,
           chatId: message.chatId,
+          chatType: message.chatType ?? 'unknown',
           messageId: message.messageId,
+          eventId: message.eventId,
+          messageType: message.messageType ?? 'text',
         });
-      });
-    },
-    onCardAction: async (action) => {
-      if (action.action === 'binding') {
-        const response = await conversationBindings.handleCardAction(action);
-        await syncDesktopThreadFollowing();
-        return response;
-      }
-      if (action.action === 'open') {
-        return conversationBindings.handleOpenAction(action);
-      }
-      if (action.action === 'model' || action.action === 'skill') {
-        return commands.handleCardAction(action);
-      }
-      if (action.action === 'image-run' || action.action === 'image-cancel') {
-        if (!config.authorizedUsers.includes(action.operatorOpenId)) {
-          return toast('你没有操作当前图片任务的权限', 'warning');
+        if (!runtime.bot.enabled) {
+          await replyUnavailableMessage(runtime, message, 'BOT_DISABLED');
+          return;
         }
-        const result = await messageAggregator.handleImageBatchAction({
-          tenantKey: action.tenantKey,
-          chatId: action.chatId,
-          senderOpenId: action.operatorOpenId,
-          action: action.action,
-          token: action.token,
-          ...(action.taskDescription !== undefined
-            ? { taskDescription: action.taskDescription }
-            : {}),
-        });
-        if (result === 'submitted') {
-          return toast('图片任务已提交', 'success');
-        }
-        if (result === 'cancelled') {
-          void cards.patchMessage(action.messageId, createImageBatchCancelledCard()).catch((error: unknown) => {
-            logger.error('lark_image_action_card_patch_failed', toError(error), {
-              chatId: action.chatId,
-              messageId: action.messageId,
-              action: action.action,
-            });
+        void runtime.acknowledgements.ack(message);
+        void messageAggregator.accept(message).catch((error: unknown) => {
+          logger.error('lark_async_message_failed', toError(error), {
+            botKey: message.botKey ?? DEFAULT_BOT_KEY,
+            chatId: message.chatId,
+            messageId: message.messageId,
           });
-          return toast('待提交图片已取消', 'success');
+        });
+      },
+      onUnavailableMessage: async (context, reason) => {
+        logger.info('lark_message_unavailable', {
+          botKey: runtime.botKey,
+          reason,
+          tenantKey: context.tenantKey,
+          chatId: context.chatId,
+          chatType: context.chatType ?? 'unknown',
+          messageId: context.messageId,
+          eventId: context.eventId,
+        });
+        await replyUnavailableContext(runtime, context, reason);
+      },
+      onCardAction: async (action) => {
+        const actionRuntime = runtimeForBotKey(action.botKey);
+        const actionConfig = configForBotKey(action.botKey) ?? actionRuntime.config;
+        if (action.action === 'binding') {
+          const response = await conversationBindingsFor(action.botKey).handleCardAction(action);
+          await syncDesktopThreadFollowing();
+          return response;
         }
-        return toast('图片操作已失效，请重新发送图片', 'warning');
-      }
-      if (action.action === 'cancel') {
-        if (!config.authorizedUsers.includes(action.operatorOpenId)) {
-          return toast('你没有取消任务的权限', 'warning');
+        if (action.action === 'open') {
+          return conversationBindingsFor(action.botKey).handleOpenAction(action);
         }
-        const cancelled = await orchestrator.cancel(action);
-        return toast(cancelled ? '已请求取消任务' : '任务已结束或操作已失效', cancelled ? 'success' : 'warning');
-      }
-      return approvals.handleAction(action);
-    },
-    onRejectedEvent: (reason) => logger.warn('lark_event_rejected', { reason }),
-    onHandlerError: (kind, error) => logger.error('lark_event_handler_failed', error, { kind }),
-    onSdkLog: (level) => logger.warn(`lark_sdk_${level}`),
-    onScopeBound: (nextConfig) => {
-      Object.assign(config, {
-        larkTenantKey: nextConfig.larkTenantKey,
-        allowedChats: nextConfig.allowedChats,
-        authorizedUsers: nextConfig.authorizedUsers,
-        allowedApprovers: nextConfig.allowedApprovers,
-      });
-    },
-  }, larkScopeConfig);
+        if (action.action === 'model' || action.action === 'skill') {
+          return commandsFor(action.botKey).handleCardAction(action);
+        }
+        if (action.action === 'image-run' || action.action === 'image-cancel') {
+          if (!actionConfig.authorizedUsers.includes(action.operatorOpenId)) {
+            return toast('你没有操作当前图片任务的权限', 'warning');
+          }
+          const result = await messageAggregator.handleImageBatchAction({
+            botKey: action.botKey,
+            tenantKey: action.tenantKey,
+            chatId: action.chatId,
+            senderOpenId: action.operatorOpenId,
+            action: action.action,
+            token: action.token,
+            ...(action.taskDescription !== undefined
+              ? { taskDescription: action.taskDescription }
+              : {}),
+          });
+          if (result === 'submitted') {
+            return toast('图片任务已提交', 'success');
+          }
+          if (result === 'cancelled') {
+            void actionRuntime.cards.patchMessage(action.messageId, createImageBatchCancelledCard()).catch((error: unknown) => {
+              logger.error('lark_image_action_card_patch_failed', toError(error), {
+                botKey: action.botKey,
+                chatId: action.chatId,
+                messageId: action.messageId,
+                action: action.action,
+              });
+            });
+            return toast('待提交图片已取消', 'success');
+          }
+          return toast('图片操作已失效，请重新发送图片', 'warning');
+        }
+        if (action.action === 'cancel') {
+          if (!actionConfig.authorizedUsers.includes(action.operatorOpenId)) {
+            return toast('你没有取消任务的权限', 'warning');
+          }
+          const cancelled = await orchestrator.cancel(action);
+          return toast(cancelled ? '已请求取消任务' : '任务已结束或操作已失效', cancelled ? 'success' : 'warning');
+        }
+        return approvals.handleAction(action);
+      },
+      onRejectedEvent: (reason) => logger.warn('lark_event_rejected', {
+        botKey: runtime.botKey,
+        reason,
+      }),
+      onHandlerError: (kind, error) => logger.error('lark_event_handler_failed', error, {
+        botKey: runtime.botKey,
+        kind,
+      }),
+      onSdkLog: (level) => logger.warn(`lark_sdk_${level}`, { botKey: runtime.botKey }),
+      onScopeBound: (nextConfig) => {
+        Object.assign(runtime.config, {
+          larkTenantKey: nextConfig.larkTenantKey,
+          allowedChats: nextConfig.allowedChats,
+          authorizedUsers: nextConfig.authorizedUsers,
+          allowedApprovers: nextConfig.allowedApprovers,
+        });
+        botConfigs.set(runtime.botKey, runtime.config);
+      },
+    }, scopeStoreForBot(runtime.botKey, botStore, config, preflight.configHome), {
+      unavailableReason: runtime.bot.enabled ? undefined : 'BOT_DISABLED',
+    });
+  }
   const unsubscribeDesktop = desktop.onThreadStreamStateChanged((message, epoch) => {
     normalizer.beginEpoch(epoch);
     for (const notification of normalizer.handle(message)) {
-      cardImages.approve(notificationLocalImagePaths(notification));
+      approveNotificationImages(notification);
       orchestrator.handleNotification(notification);
     }
   });
@@ -658,7 +864,9 @@ export async function startBridge(
     appServerState = 'ready';
     publishHealth();
     await desktopSupervisor.start();
-    await eventServer.start();
+    for (const runtime of botRuntimes.values()) {
+      await runtime.eventServer?.start();
+    }
     runtimeStarted = true;
     healthPublisher.flush();
     logger.info('bridge_started', {
@@ -669,6 +877,7 @@ export async function startBridge(
       appServerSchemaDigest: runtimeContract.schemaDigest,
       codexRuntimeArtifactSha256: runtimeContract.runtimeArtifact.binarySha256,
       desktopIpcContract: DESKTOP_IPC_CONTRACT.id,
+      larkBotCount: botRuntimes.size,
       runtimeInstance: randomUUID().slice(0, 8),
     });
   } catch (error) {
@@ -680,13 +889,13 @@ export async function startBridge(
     lastDesktopDeliveryErrorCode = null;
     unavailableDesktopThreads.clear();
     await stopResources(
-      eventServer,
+      [...botRuntimes.values()].flatMap((runtime) => runtime.eventServer ? [runtime.eventServer] : []),
       desktopSupervisor,
       appServer,
       unsubscribeDesktop,
       unsubscribeApproval,
       approvals,
-      inboundImages,
+      [...botRuntimes.values()].map((runtime) => runtime.inboundImages),
       messageAggregator,
       processLock,
     );
@@ -710,13 +919,13 @@ export async function startBridge(
       lastDesktopDeliveryErrorCode = null;
       unavailableDesktopThreads.clear();
       await stopResources(
-        eventServer,
+        [...botRuntimes.values()].flatMap((runtime) => runtime.eventServer ? [runtime.eventServer] : []),
         desktopSupervisor,
         appServer,
         unsubscribeDesktop,
         unsubscribeApproval,
         approvals,
-        inboundImages,
+        [...botRuntimes.values()].map((runtime) => runtime.inboundImages),
         messageAggregator,
         processLock,
       );
@@ -779,31 +988,141 @@ async function readThreadTitle(
     ?? textField(thread?.preview);
 }
 
+function scopeStoreForBot(
+  botKey: string,
+  botStore: BotConfigStore,
+  baseConfig: BridgeConfig,
+  configHome: string,
+): { readonly save: (scope: LarkScope) => void } {
+  return Object.freeze({
+    save: (scope) => persistBotScope(botKey, scope, botStore, baseConfig, configHome),
+  });
+}
+
+function persistBotScope(
+  botKey: string,
+  scope: LarkScope,
+  botStore: BotConfigStore,
+  baseConfig: BridgeConfig,
+  configHome: string,
+): void {
+  if (botKey === DEFAULT_BOT_KEY && !botStore.hasMaterializedFile()) {
+    new LarkScopeConfigStore(configHome).save(scope);
+    Object.assign(baseConfig, {
+      larkTenantKey: scope.tenantKey,
+      allowedChats: splitScopeList(scope.allowedChats),
+      authorizedUsers: splitScopeList(scope.authorizedUsers ?? ''),
+      allowedApprovers: splitScopeList(scope.allowedApprovers ?? ''),
+    });
+    return;
+  }
+  const existing = botStore.get(botKey);
+  if (!existing) {
+    return;
+  }
+  const next = botStore.update(botKey, {
+    tenantKey: scope.tenantKey,
+    allowedChats: splitScopeList(scope.allowedChats),
+    authorizedUsers: splitScopeList(scope.authorizedUsers ?? ''),
+    allowedApprovers: splitScopeList(scope.allowedApprovers ?? ''),
+  });
+  Object.assign(baseConfig, botKey === DEFAULT_BOT_KEY ? {
+    larkTenantKey: next.tenantKey,
+    allowedChats: next.allowedChats,
+    authorizedUsers: next.authorizedUsers,
+    allowedApprovers: next.allowedApprovers,
+  } : {});
+}
+
+function splitScopeList(value: string): readonly string[] {
+  return Object.freeze([...new Set(value.split(',').map((item) => item.trim()).filter(Boolean))]);
+}
+
+function aggregateLarkConnections(
+  snapshots: readonly LarkWebsocketConnectionSnapshot[],
+): LarkWebsocketConnectionSnapshot {
+  if (snapshots.length === 0) {
+    return Object.freeze({ state: 'closed', reconnectCount: 0, connectedAtMs: null });
+  }
+  const reconnectCount = snapshots.reduce((sum, snapshot) => sum + snapshot.reconnectCount, 0);
+  const connectedAtMsValues = snapshots
+    .map((snapshot) => snapshot.connectedAtMs)
+    .filter((value): value is number => value !== null);
+  const connectedAtMs = connectedAtMsValues.length === snapshots.length
+    ? Math.min(...connectedAtMsValues)
+    : null;
+  if (snapshots.every((snapshot) => snapshot.state === 'ready')) {
+    return Object.freeze({ state: 'ready', reconnectCount, connectedAtMs });
+  }
+  if (snapshots.some((snapshot) => snapshot.state === 'terminal')) {
+    return Object.freeze({ state: 'terminal', reconnectCount, connectedAtMs: null });
+  }
+  if (snapshots.some((snapshot) => snapshot.state === 'reconnecting')) {
+    return Object.freeze({ state: 'reconnecting', reconnectCount, connectedAtMs: null });
+  }
+  if (snapshots.some((snapshot) => snapshot.state === 'connecting')) {
+    return Object.freeze({ state: 'connecting', reconnectCount, connectedAtMs: null });
+  }
+  if (snapshots.every((snapshot) => snapshot.state === 'closed')) {
+    return Object.freeze({ state: 'closed', reconnectCount, connectedAtMs: null });
+  }
+  return Object.freeze({ state: 'idle', reconnectCount, connectedAtMs: null });
+}
+
+function unavailableCard(
+  reason: RuntimeUnavailableReason,
+  bot: LarkBotConfig,
+): { readonly title: string; readonly reason: string; readonly nextStep?: string } {
+  const displayName = bot.displayName ? `「${bot.displayName}」` : '当前机器人';
+  if (reason === 'BOT_DISABLED') {
+    return Object.freeze({
+      title: '机器人当前不可用',
+      reason: `${displayName} 已被 Bridge 管理员禁用，当前不会接收任务、命令或审批操作。`,
+      nextStep: `请联系 owner/admin 执行 \`codex-feishu-bridge bot enable --bot-key ${bot.botKey}\` 后再试。`,
+    });
+  }
+  if (reason === 'GROUP_NOT_BOUND') {
+    return Object.freeze({
+      title: '当前群未绑定会话',
+      reason: `${displayName} 已收到 @，但当前群还没有绑定 ChatGPT 会话，因此不能接收任务。`,
+      nextStep: '请让 owner/admin 在机器人管理面为当前群绑定会话后再发送普通消息。',
+    });
+  }
+  return Object.freeze({
+    title: '机器人当前不可用',
+    reason: `${displayName} 当前不能接收任务。`,
+  });
+}
+
 async function stopResources(
-  eventServer: LarkEventServer,
+  eventServers: readonly LarkEventServer[],
   desktopSupervisor: DesktopIpcSupervisor,
   appServer: AppServerClient,
   unsubscribeDesktop: () => void,
   unsubscribeApproval: () => void,
   approvals: DesktopApprovalService,
-  inboundImages: InboundImageStore,
+  inboundImages: readonly InboundImageStore[],
   messageAggregator: InboundMessageAggregator,
   processLock: BridgeProcessLock,
 ): Promise<void> {
   const errors: Error[] = [];
-  try {
-    eventServer.stop();
-  } catch (error) {
-    errors.push(toError(error));
+  for (const eventServer of eventServers) {
+    try {
+      eventServer.stop();
+    } catch (error) {
+      errors.push(toError(error));
+    }
   }
   unsubscribeDesktop();
   unsubscribeApproval();
   approvals.abandonAll();
   messageAggregator.close();
-  try {
-    await inboundImages.close();
-  } catch (error) {
-    errors.push(toError(error));
+  for (const inboundImageStore of inboundImages) {
+    try {
+      await inboundImageStore.close();
+    } catch (error) {
+      errors.push(toError(error));
+    }
   }
   try {
     await desktopSupervisor.stop();

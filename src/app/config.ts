@@ -192,6 +192,8 @@ export function parseEnvironment(env: NodeJS.ProcessEnv): BridgeConfig {
     allowedChats: parseOptionalList(env, 'ALLOWED_CHATS'),
     authorizedUsers: parseOptionalList(env, 'AUTHORIZED_USERS'),
     allowedApprovers: parseOptionalList(env, 'ALLOWED_APPROVERS'),
+    allowGroupUserMentions: parseBoolean(env, 'ALLOW_GROUP_USER_MENTIONS', true),
+    allowGroupBotMentions: parseBoolean(env, 'ALLOW_GROUP_BOT_MENTIONS'),
     approvalCardMode: parseApprovalCardMode(env),
     allowedShellCommands: parseAllowedShellCommands(env),
     ...appServer,

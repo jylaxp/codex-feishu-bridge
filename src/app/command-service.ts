@@ -24,6 +24,7 @@ import type { BridgeConfig } from './domain';
 import type { InboundCardAction } from './lark/event-server';
 import { toast } from './lark/event-server';
 import type { InboundTextMessage } from './lark/intake';
+import { DEFAULT_BOT_KEY } from './bot-config-store';
 
 export interface CommandCatalog {
   request<TResult>(method: string, params: unknown): Promise<TResult>;
@@ -62,6 +63,7 @@ export interface ModelCatalog {
 interface PendingSelection {
   readonly kind: 'model' | 'skill';
   readonly value: string | null;
+  readonly botKey: string;
   readonly tenantKey: string;
   readonly chatId: string;
   readonly bindingRevision: number;
@@ -109,7 +111,13 @@ export class BridgeCommandService {
 
   public async handle(message: InboundTextMessage): Promise<boolean> {
     this.pruneProcessedEvents();
-    const eventKey = JSON.stringify([message.tenantKey, message.chatId, message.eventId, message.messageId]);
+    const eventKey = JSON.stringify([
+      message.botKey ?? DEFAULT_BOT_KEY,
+      message.tenantKey,
+      message.chatId,
+      message.eventId,
+      message.messageId,
+    ]);
     if (this.processedEventKeys.has(eventKey)) {
       return true;
     }
@@ -137,10 +145,11 @@ export class BridgeCommandService {
       return toast('你没有修改当前会话设置的权限', 'warning');
     }
     const selection = this.pendingSelections.get(action.token);
-    const binding = this.store.get(action.tenantKey, action.chatId);
+    const binding = this.store.get(action.tenantKey, action.chatId, action.botKey);
     if (
       !selection
       || selection.kind !== action.action
+      || selection.botKey !== action.botKey
       || selection.tenantKey !== action.tenantKey
       || selection.chatId !== action.chatId
       || !binding
@@ -183,7 +192,7 @@ export class BridgeCommandService {
         0,
         `skill-selected:${action.messageId}:${updated.revision}`,
       );
-      const key = selectionKey(action.tenantKey, action.chatId);
+      const key = selectionKey(action.botKey, action.tenantKey, action.chatId);
       if (updated.activeSkill) {
         this.activeSkillCards.set(key, Object.freeze({
           cardId: selection.cardId,
@@ -205,7 +214,7 @@ export class BridgeCommandService {
       return;
     }
     this.store.bind({ ...binding, activeSkill: undefined, activeSkillPath: undefined });
-    const key = selectionKey(binding.tenantKey, binding.chatId);
+    const key = selectionKey(binding.botKey ?? DEFAULT_BOT_KEY, binding.tenantKey, binding.chatId);
     const activeCard = this.activeSkillCards.get(key);
     this.activeSkillCards.delete(key);
     if (!activeCard) {
@@ -328,7 +337,7 @@ export class BridgeCommandService {
   private async cancel(message: InboundTextMessage): Promise<boolean> {
     const binding = this.binding(message);
     if (!binding) return true;
-    const cancelled = await this.tasks.cancelCurrent(message.chatId, binding.threadId);
+    const cancelled = await this.tasks.cancelCurrent(message.chatId, binding.threadId, message.botKey);
     await this.reply(
       message,
       cancelled ? '🛑 任务取消指令已发送' : '🛑 无活跃任务',
@@ -392,7 +401,8 @@ export class BridgeCommandService {
   private async workspace(message: InboundTextMessage, argument: string): Promise<boolean> {
     const binding = this.binding(message);
     if (!binding) return true;
-    const exploredWorkspace = this.exploreCwds.get(message.chatId);
+    const messageBotKey = message.botKey ?? DEFAULT_BOT_KEY;
+    const exploredWorkspace = this.exploreCwds.get(selectionKey(messageBotKey, message.tenantKey, message.chatId));
     const requestedWorkspace = argument || (
       exploredWorkspace && exploredWorkspace !== binding.workspaceId ? exploredWorkspace : ''
     );
@@ -422,7 +432,7 @@ export class BridgeCommandService {
         return true;
       }
       this.store.bind({ ...binding, workspaceId: workspace });
-      this.exploreCwds.set(message.chatId, workspace);
+      this.exploreCwds.set(selectionKey(messageBotKey, message.tenantKey, message.chatId), workspace);
       await this.reply(
         message,
         '📁 工作目录绑定成功',
@@ -458,7 +468,7 @@ export class BridgeCommandService {
   private async create(message: InboundTextMessage, name: string): Promise<boolean> {
     try {
       const sessionName = name || defaultSessionName();
-      const previous = this.store.get(message.tenantKey, message.chatId);
+      const previous = this.store.get(message.tenantKey, message.chatId, message.botKey);
       const workspaceId = previous?.workspaceId ?? this.config.codexCwd;
       const response = await this.catalog.request<Record<string, unknown>>('thread/start', {
         threadSource: 'user',
@@ -467,7 +477,7 @@ export class BridgeCommandService {
       const threadId = threadIdFrom(response);
       if (!threadId) throw new Error('App Server 未返回新会话标识');
       await this.catalog.request('thread/name/set', { threadId, name: sessionName });
-      this.store.bind({ tenantKey: message.tenantKey, chatId: message.chatId, threadId,
+      this.store.bind({ botKey: message.botKey, tenantKey: message.tenantKey, chatId: message.chatId, threadId,
         workspaceId,
         ...(previous?.model ? { model: previous.model } : {}),
         ...(previous?.personality ? { personality: previous.personality } : {}),
@@ -520,7 +530,7 @@ export class BridgeCommandService {
     } catch {
       // The original product treats App Server archiving as best effort.
     }
-    this.store.unbind(message.tenantKey, message.chatId);
+    this.store.unbind(message.tenantKey, message.chatId, message.botKey);
     await this.reply(
       message,
       '🗑️ 会话归档解绑成功',
@@ -637,8 +647,9 @@ export class BridgeCommandService {
       );
       return true;
     }
-    const binding = this.store.get(message.tenantKey, message.chatId);
-    const execCwd = this.exploreCwds.get(message.chatId)
+    const binding = this.store.get(message.tenantKey, message.chatId, message.botKey);
+    const messageBotKey = message.botKey ?? DEFAULT_BOT_KEY;
+    const execCwd = this.exploreCwds.get(selectionKey(messageBotKey, message.tenantKey, message.chatId))
       ?? binding?.workspaceId
       ?? this.config.codexCwd
       ?? homedir();
@@ -657,7 +668,7 @@ export class BridgeCommandService {
           );
           return true;
         }
-        this.exploreCwds.set(message.chatId, resolvedWorkspace);
+        this.exploreCwds.set(selectionKey(messageBotKey, message.tenantKey, message.chatId), resolvedWorkspace);
         const note = binding
           ? '\n\n*(注意：当前绑定的会话工作目录未受影响。若要正式应用并保存此目录，请发送 `/cwd`)*'
           : '';
@@ -752,7 +763,7 @@ export class BridgeCommandService {
   }
 
   private binding(message: InboundTextMessage): ChatThreadBinding | undefined {
-    const binding = this.store.get(message.tenantKey, message.chatId);
+    const binding = this.store.get(message.tenantKey, message.chatId, message.botKey);
     if (!binding) {
       void this.reply(
         message,
@@ -802,6 +813,7 @@ export class BridgeCommandService {
     this.pendingSelections.set(token, Object.freeze({
       kind,
       value,
+      botKey: message.botKey ?? DEFAULT_BOT_KEY,
       tenantKey: message.tenantKey,
       chatId: message.chatId,
       bindingRevision: binding.revision,
@@ -1158,8 +1170,8 @@ function defaultSessionName(now = new Date()): string {
   return `飞书会话_${now.getFullYear()}-${part(now.getMonth() + 1)}-${part(now.getDate())} ${part(now.getHours())}:${part(now.getMinutes())}`;
 }
 
-function selectionKey(tenantKey: string, chatId: string): string {
-  return `${tenantKey.length}:${tenantKey}${chatId.length}:${chatId}`;
+function selectionKey(botKey: string, tenantKey: string, chatId: string): string {
+  return `${botKey.length}:${botKey}${tenantKey.length}:${tenantKey}${chatId.length}:${chatId}`;
 }
 
 async function readCachedModels(): Promise<readonly string[]> {

@@ -12,6 +12,7 @@ import { defaultConfigHome, inspectConfigReset, resetConfigHome } from './config
 import { loadBridgeEnvironment } from './config-file';
 import { initializeSetupFiles, runSetup, SetupOptions, SetupReport } from './setup';
 import type { LocalVersionReport } from './local-version-command';
+import type { BotCommandAction, BotCommandReport } from './bot-command';
 
 type Command =
   | 'init'
@@ -26,6 +27,7 @@ type Command =
   | 'compatibility'
   | 'validate-ui-sync'
   | 'config-reset'
+  | 'bot'
   | 'setup'
   | 'rebind'
   | 'supervise'
@@ -41,6 +43,10 @@ interface CliArguments {
   readonly force: boolean;
   readonly json: boolean;
   readonly approve: boolean;
+  readonly botAction: BotCommandAction | undefined;
+  readonly appId: string | undefined;
+  readonly appSecret: string | undefined;
+  readonly botKey: string | undefined;
 }
 
 export interface CliRuntime {
@@ -68,6 +74,18 @@ export interface CliDependencies {
     env: NodeJS.ProcessEnv,
     options: { readonly approve?: boolean },
   ) => Promise<LocalVersionReport>;
+  readonly runBotCommand?: (
+    options: {
+      readonly action: BotCommandAction;
+      readonly configHome?: string;
+      readonly appId?: string;
+      readonly appSecret?: string;
+      readonly botKey?: string;
+      readonly confirm?: boolean;
+      readonly json?: boolean;
+    },
+    env: NodeJS.ProcessEnv,
+  ) => Promise<BotCommandReport>;
 }
 
 export async function runCli(
@@ -140,6 +158,20 @@ export async function runCli(
       ? resetConfigHome(configHome, { confirm: true, destructive: parsed.destructive })
       : inspectConfigReset(configHome);
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    return;
+  }
+  if (parsed.command === 'bot') {
+    const botCommand = await import('./bot-command');
+    const run = dependencies.runBotCommand ?? botCommand.runBotCommand;
+    await run({
+      action: parsed.botAction ?? 'list',
+      configHome: parsed.configHome,
+      appId: parsed.appId,
+      appSecret: parsed.appSecret,
+      botKey: parsed.botKey,
+      confirm: parsed.confirm,
+      json: parsed.json,
+    }, runtimeEnv);
     return;
   }
   if (parsed.command === 'setup' || parsed.command === 'rebind') {
@@ -238,6 +270,10 @@ function parseArguments(args: readonly string[]): CliArguments {
   let force = false;
   let json = false;
   let approve = false;
+  let botAction: BotCommandAction | undefined;
+  let appId: string | undefined;
+  let appSecret: string | undefined;
+  let botKey: string | undefined;
   let commandSeen = false;
 
   for (let index = 0; index < args.length; index += 1) {
@@ -276,6 +312,21 @@ function parseArguments(args: readonly string[]): CliArguments {
       approve = true;
       continue;
     }
+    if (argument === '--app-id') {
+      appId = requireOptionValue(args, index, '--app-id');
+      index += 1;
+      continue;
+    }
+    if (argument === '--app-secret') {
+      appSecret = requireOptionValue(args, index, '--app-secret');
+      index += 1;
+      continue;
+    }
+    if (argument === '--bot-key') {
+      botKey = requireOptionValue(args, index, '--bot-key');
+      index += 1;
+      continue;
+    }
     if (argument === '--help' || argument === '-h') {
       command = 'help';
       commandSeen = true;
@@ -290,6 +341,15 @@ function parseArguments(args: readonly string[]): CliArguments {
     if (!commandSeen && isCommand(argument)) {
       command = argument;
       commandSeen = true;
+      if (command === 'bot') {
+        const next = args[index + 1];
+        if (next && !next.startsWith('--')) {
+          botAction = parseBotAction(next);
+          index += 1;
+        } else {
+          botAction = 'list';
+        }
+      }
       continue;
     }
     throw new Error(`Unknown CLI argument: ${argument ?? ''}`);
@@ -312,11 +372,12 @@ function parseArguments(args: readonly string[]): CliArguments {
     && command !== 'update'
     && command !== 'version'
     && command !== 'compatibility'
+    && command !== 'bot'
   ) {
     throw new Error('--config-home is not valid with this command');
   }
-  if (confirm && command !== 'config-reset') {
-    throw new Error('--confirm is only valid with config reset');
+  if (confirm && command !== 'config-reset' && command !== 'bot') {
+    throw new Error('--confirm is only valid with config reset or bot remove');
   }
   if (destructive && command !== 'config-reset') {
     throw new Error('--destructive is only valid with config reset');
@@ -327,13 +388,48 @@ function parseArguments(args: readonly string[]): CliArguments {
   if (force && command !== 'update') {
     throw new Error('--force is only valid with update');
   }
-  if (json && command !== 'status' && command !== 'version' && command !== 'compatibility') {
-    throw new Error('--json is only valid with status, version, or compatibility');
+  if (json && command !== 'status' && command !== 'version' && command !== 'compatibility' && command !== 'bot') {
+    throw new Error('--json is only valid with status, version, compatibility, or bot');
   }
   if (approve && command !== 'compatibility') {
     throw new Error('--approve is only valid with compatibility');
   }
-  return { command, threadId, configHome, confirm, destructive, rebind, force, json, approve };
+  if ((appId || appSecret) && command !== 'bot') {
+    throw new Error('--app-id and --app-secret are only valid with bot import');
+  }
+  if (botKey && command !== 'bot') {
+    throw new Error('--bot-key is only valid with bot management commands');
+  }
+  if (command === 'bot') {
+    const action = botAction ?? 'list';
+    if ((appId || appSecret) && action !== 'import') {
+      throw new Error('--app-id and --app-secret are only valid with bot import');
+    }
+    if (
+      botKey
+      && action !== 'rebind'
+      && action !== 'enable'
+      && action !== 'disable'
+      && action !== 'remove'
+    ) {
+      throw new Error('--bot-key is only valid with bot rebind, enable, disable, or remove');
+    }
+  }
+  return {
+    command,
+    threadId,
+    configHome,
+    confirm,
+    destructive,
+    rebind,
+    force,
+    json,
+    approve,
+    botAction,
+    appId,
+    appSecret,
+    botKey,
+  };
 }
 
 function requireOptionValue(
@@ -361,10 +457,31 @@ function isCommand(value: string | undefined): value is Command {
     || value === 'compatibility'
     || value === 'validate-ui-sync'
     || value === 'config-reset'
+    || value === 'bot'
     || value === 'setup'
     || value === 'rebind'
     || value === 'supervise'
     || value === 'help';
+}
+
+function parseBotAction(value: string | undefined): BotCommandAction {
+  if (value === undefined) {
+    return 'list';
+  }
+  if (
+    value === 'add'
+    || value === 'import'
+    || value === 'migrate-default'
+    || value === 'rebind'
+    || value === 'enable'
+    || value === 'disable'
+    || value === 'remove'
+    || value === 'list'
+    || value === 'doctor'
+  ) {
+    return value;
+  }
+  throw new Error(`Unknown bot command: ${value}`);
 }
 
 function createShutdownSignalWaiter(): ShutdownSignalWaiter {
@@ -404,9 +521,18 @@ function helpText(): string {
     '  codex-feishu-bridge doctor',
     '  codex-feishu-bridge version [--json] [--config-home PATH]',
     '  codex-feishu-bridge compatibility [--json] [--approve] [--config-home PATH]',
+    '  codex-feishu-bridge bot add [--config-home PATH]',
+    '  codex-feishu-bridge bot import --app-id APP_ID --app-secret SECRET [--config-home PATH]',
+    '  codex-feishu-bridge bot migrate-default [--config-home PATH]',
+    '  codex-feishu-bridge bot rebind --bot-key BOT_KEY [--config-home PATH]',
+    '  codex-feishu-bridge bot enable --bot-key BOT_KEY [--config-home PATH]',
+    '  codex-feishu-bridge bot disable --bot-key BOT_KEY [--config-home PATH]',
+    '  codex-feishu-bridge bot remove --bot-key BOT_KEY --confirm [--config-home PATH]',
+    '  codex-feishu-bridge bot list [--json] [--config-home PATH]',
     '  codex-feishu-bridge validate-ui-sync [--thread THREAD_ID]',
     '  codex-feishu-bridge config reset [--config-home PATH] [--confirm] [--destructive]',
     '',
+    'Alias: cfb is equivalent to codex-feishu-bridge.',
     'Configuration is loaded from ~/.codex-feishu-bridge/.env by default.',
     'Process/service-manager environment values override the .env file.',
     'setup creates the private .env and scans a Feishu QR code when app credentials are missing.',
@@ -415,6 +541,8 @@ function helpText(): string {
     'start/restart/stop/status manage the PID file and logs under ~/.codex-feishu-bridge/.',
     'version detects local ChatGPT/Codex versions and refreshes protocol-versions.json.',
     'compatibility reports 兼容/不兼容; --approve explicitly adds a compatible exact version.',
+    'bot add scans one QR code, fetches the robot identity, and generates the internal botKey.',
+    'bot migrate-default materializes the existing .env robot as the reserved default bot.',
     'validate-ui-sync without --thread lists recent workspace tasks.',
     'config reset is a dry run until --confirm; --destructive is required to clear an already-current binding.',
     '',

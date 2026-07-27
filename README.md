@@ -44,7 +44,7 @@ macOS Desktop IPC；Windows 适配后续单独接入。
 npm install -g git+https://github.com/jylaxp/codex-feishu-bridge.git
 ```
 
-安装完成后，终端会提供 `codex-feishu-bridge` 命令。
+安装完成后，终端会提供短命令 `cfb`；完整命令 `codex-feishu-bridge` 仍保留兼容。
 
 ### 方式 B：从本地源码安装
 
@@ -68,7 +68,7 @@ npm pack
 把生成的 `.tgz` 文件复制到目标机器，然后安装：
 
 ```bash
-npm install -g ./codex-feishu-bridge-2.0.0.tgz
+npm install -g ./codex-feishu-bridge-2.1.0.tgz
 ```
 
 `.tgz` 包含 Bridge 编译产物；npm 会按标准包安装流程解析运行依赖，因此目标机器首次安装时需要能访问配置的 npm registry，或已经具备对应依赖缓存。

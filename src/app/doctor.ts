@@ -1,6 +1,7 @@
 import { statSync } from 'node:fs';
 
 import { BindingStore } from './binding-store';
+import { BotConfigStore } from './bot-config-store';
 import {
   appServerIdentityAssurance,
   type AppServerIdentityAssurance,
@@ -28,6 +29,23 @@ export interface DoctorReport {
   readonly allowedChatCount: number;
   readonly authorizedUserCount: number;
   readonly allowedApproverCount: number;
+  readonly botCount: number;
+  readonly enabledBotCount: number;
+  readonly bots: readonly DoctorBotReport[];
+}
+
+export interface DoctorBotReport {
+  readonly botKey: string;
+  readonly appId: string;
+  readonly enabled: boolean;
+  readonly tenantKeyConfigured: boolean;
+  readonly allowedChatCount: number;
+  readonly authorizedUserCount: number;
+  readonly allowedApproverCount: number;
+  readonly allowGroupUserMentions: boolean;
+  readonly allowGroupBotMentions: boolean;
+  readonly identityResolved: boolean;
+  readonly displayName?: string;
 }
 
 export interface DoctorDependencies {
@@ -44,6 +62,8 @@ export async function runDoctor(
   const preflight = runPreflight(parseEnvironment(effectiveEnv), { nodeVersion: dependencies.nodeVersion });
   const store = new BindingStore(preflight.configHome);
   store.load();
+  const botStore = new BotConfigStore(preflight.configHome);
+  botStore.load(preflight.config);
   const contract = await (dependencies.verifyRuntimeContract ?? verifyCodexRuntimeContract)(
     preflight.config,
     effectiveEnv,
@@ -66,5 +86,20 @@ export async function runDoctor(
     allowedChatCount: preflight.config.allowedChats.length,
     authorizedUserCount: preflight.config.authorizedUsers.length,
     allowedApproverCount: preflight.config.allowedApprovers.length,
+    botCount: botStore.list().length,
+    enabledBotCount: botStore.activeBots().length,
+    bots: Object.freeze(botStore.list().map((bot) => Object.freeze({
+      botKey: bot.botKey,
+      appId: bot.appId,
+      enabled: bot.enabled,
+      tenantKeyConfigured: bot.tenantKey.length > 0,
+      allowedChatCount: bot.allowedChats.length,
+      authorizedUserCount: bot.authorizedUsers.length,
+      allowedApproverCount: bot.allowedApprovers.length,
+      allowGroupUserMentions: bot.allowGroupUserMentions,
+      allowGroupBotMentions: bot.allowGroupBotMentions,
+      identityResolved: Boolean(bot.botOpenId),
+      ...(bot.displayName ? { displayName: bot.displayName } : {}),
+    }))),
   });
 }

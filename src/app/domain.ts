@@ -71,12 +71,18 @@ export interface CardProjectionPayload {
 }
 
 export interface BridgeConfig {
+  /** Internal non-secret robot routing key. Legacy single-bot installs use `default`. */
+  readonly botKey?: string;
   readonly larkAppId: string;
   readonly larkAppSecret: string;
   readonly larkTenantKey: string;
+  readonly larkBotOpenId?: string;
+  readonly larkBotName?: string;
   readonly allowedChats: readonly string[];
   readonly authorizedUsers: readonly string[];
   readonly allowedApprovers: readonly string[];
+  readonly allowGroupUserMentions?: boolean;
+  readonly allowGroupBotMentions?: boolean;
   /** Defaults to individual cards to preserve the established Feishu workflow. */
   readonly approvalCardMode: ApprovalCardMode;
   /** Explicitly trusted local executables for /cmd, /run and /shell. */

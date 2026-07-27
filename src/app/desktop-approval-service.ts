@@ -14,6 +14,7 @@ import type {
 import type { DesktopIpcClient } from './codex/desktop-ipc-client';
 import type { ApprovalDecision, BridgeConfig } from './domain';
 import { toast } from './lark/event-server';
+import { DEFAULT_BOT_KEY } from './bot-config-store';
 
 const APPROVAL_TTL_MS = 10 * 60_000;
 
@@ -36,6 +37,7 @@ interface ApprovalCardClient {
 
 interface ApprovalTaskLookup {
   approvalContext(threadId: string, turnId: string | null): {
+    readonly botKey?: string;
     readonly taskId: string;
     readonly chatId: string;
     readonly rootMessageId: string;
@@ -48,6 +50,7 @@ interface ApprovalTaskLookup {
 interface PendingApproval {
   readonly approval: DesktopApprovalRequest;
   readonly epoch: number;
+  readonly botKey: string;
   readonly chatId: string;
   cardId: string;
   cardMessageId: string;
@@ -68,6 +71,7 @@ interface ApprovalSummaryEntry {
 }
 
 interface ApprovalSummary {
+  readonly botKey: string;
   readonly taskId: string;
   readonly chatId: string;
   readonly rootMessageId: string;
@@ -80,6 +84,7 @@ interface ApprovalSummary {
 }
 
 export interface DesktopApprovalAction {
+  readonly botKey?: string;
   readonly chatId: string;
   readonly messageId: string;
   readonly operatorOpenId: string;
@@ -102,8 +107,20 @@ export class DesktopApprovalService {
     private readonly cards: ApprovalCardClient,
     private readonly tasks: ApprovalTaskLookup,
     now: () => number = Date.now,
+    private readonly options: {
+      readonly configForBotKey?: (botKey: string) => BridgeConfig | undefined;
+      readonly cardsForBotKey?: (botKey: string) => ApprovalCardClient | undefined;
+    } = {},
   ) {
     this.now = now;
+  }
+
+  private configForBotKey(botKey: string): BridgeConfig {
+    return this.options.configForBotKey?.(botKey) ?? this.config;
+  }
+
+  private cardsForBotKey(botKey: string): ApprovalCardClient {
+    return this.options.cardsForBotKey?.(botKey) ?? this.cards;
   }
 
   public async present(approval: DesktopApprovalRequest, epoch: number): Promise<void> {
@@ -114,6 +131,8 @@ export class DesktopApprovalService {
     if (!context || !this.tasks.setAwaitingApproval(approval.threadId, approval.turnId, true)) {
       return;
     }
+    const contextBotKey = context.botKey ?? DEFAULT_BOT_KEY;
+    const config = this.configForBotKey(contextBotKey);
     const tokenEntries = approval.availableDecisions.map((decision) => [
       createOpaqueActionToken(),
       decision,
@@ -130,6 +149,7 @@ export class DesktopApprovalService {
     const pending: PendingApproval = {
       approval,
       epoch,
+      botKey: contextBotKey,
       chatId: context.chatId,
       cardId: '',
       cardMessageId: '',
@@ -139,7 +159,7 @@ export class DesktopApprovalService {
       timer,
     };
     try {
-      if (this.config.approvalCardMode === 'summary') {
+      if (config.approvalCardMode === 'summary') {
         await this.presentInSummary(context, pending);
       } else {
         await this.presentIndividually(context, pending, actionTokens);
@@ -152,7 +172,9 @@ export class DesktopApprovalService {
   }
 
   public async handleAction(action: DesktopApprovalAction): Promise<object> {
-    if (!this.config.allowedApprovers.includes(action.operatorOpenId)) {
+    const botKey = action.botKey ?? DEFAULT_BOT_KEY;
+    const config = this.configForBotKey(botKey);
+    if (!config.allowedApprovers.includes(action.operatorOpenId)) {
       return toast('你没有审批权限', 'warning');
     }
     const pending = this.approvalsByToken.get(action.token);
@@ -160,6 +182,7 @@ export class DesktopApprovalService {
     if (
       !pending
       || !decision
+      || pending.botKey !== botKey
       || pending.chatId !== action.chatId
       || pending.cardMessageId !== action.messageId
       || pending.expiresAtMs < this.now()
@@ -186,7 +209,7 @@ export class DesktopApprovalService {
           pending.summaryEntry.decidedAtMs = this.now();
           await this.replaceSummaryCard(pending.summary);
         } else {
-          pending.cardSequence = await this.cards.replaceCard(
+          pending.cardSequence = await this.cardsForBotKey(pending.botKey).replaceCard(
             pending.cardId,
             createApprovalDecisionCard({
               kind: pending.approval.kind,
@@ -241,7 +264,8 @@ export class DesktopApprovalService {
     pending: PendingApproval,
     actionTokens: Partial<Record<ApprovalDecision, string>>,
   ): Promise<void> {
-    pending.cardId = await this.cards.createCard(createApprovalCard({
+    const cards = this.cardsForBotKey(context.botKey ?? DEFAULT_BOT_KEY);
+    pending.cardId = await cards.createCard(createApprovalCard({
       title: sanitizeCardText('Codex 审批请求', { maxLength: 120 }),
       kind: pending.approval.kind,
       operationSummary: sanitizeCardText(redactApprovalSecrets(pending.approval.operationSummary), { maxLength: 4_000 }),
@@ -250,7 +274,7 @@ export class DesktopApprovalService {
       actionTokens,
       availableDecisions: pending.approval.availableDecisions,
     }));
-    pending.cardMessageId = await this.cards.replyCard(
+    pending.cardMessageId = await cards.replyCard(
       context.rootMessageId,
       pending.cardId,
       `approval:${context.taskId}:${String(pending.approval.requestId)}`,
@@ -320,6 +344,7 @@ export class DesktopApprovalService {
     entry: ApprovalSummaryEntry,
   ): Promise<ApprovalSummary> {
     const provisional = {
+      botKey: context.botKey ?? DEFAULT_BOT_KEY,
       taskId: context.taskId,
       chatId: context.chatId,
       rootMessageId: context.rootMessageId,
@@ -328,10 +353,11 @@ export class DesktopApprovalService {
       revision: 0,
       updateQueue: Promise.resolve(),
     };
-    const cardId = await this.cards.createCard(createApprovalSummaryCard({
+    const cards = this.cardsForBotKey(context.botKey ?? DEFAULT_BOT_KEY);
+    const cardId = await cards.createCard(createApprovalSummaryCard({
       entries: this.summaryEntries(provisional.entries),
     }));
-    const cardMessageId = await this.cards.replyCard(
+    const cardMessageId = await cards.replyCard(
       context.rootMessageId,
       cardId,
       `approval-summary:${context.taskId}`,
@@ -344,7 +370,7 @@ export class DesktopApprovalService {
   private async replaceSummaryCard(summary: ApprovalSummary): Promise<void> {
     const revision = ++summary.revision;
     const update = summary.updateQueue.then(async () => {
-      summary.cardSequence = await this.cards.replaceCard(
+      summary.cardSequence = await this.cardsForBotKey(summary.botKey).replaceCard(
         summary.cardId,
         createApprovalSummaryCard({ entries: this.summaryEntries(summary.entries) }),
         summary.cardSequence,
@@ -361,7 +387,7 @@ export class DesktopApprovalService {
       await this.replaceSummaryCard(pending.summary);
       return;
     }
-    pending.cardSequence = await this.cards.replaceCard(
+    pending.cardSequence = await this.cardsForBotKey(pending.botKey).replaceCard(
       pending.cardId,
       createApprovalUnavailableCard({
         title: sanitizeCardText('Codex 审批请求', { maxLength: 120 }),

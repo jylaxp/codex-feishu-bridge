@@ -12,10 +12,13 @@ import {
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 
-const BINDINGS_SCHEMA_VERSION = 1;
+import { DEFAULT_BOT_KEY } from './bot-config-store';
+
+const BINDINGS_SCHEMA_VERSION = 2;
 const MAX_BINDINGS_FILE_BYTES = 1024 * 1024;
 const MAX_BINDING_COUNT = 10_000;
 const MAX_IDENTIFIER_LENGTH = 512;
+const MAX_BOT_KEY_LENGTH = 64;
 
 export interface BindingSettings {
   readonly model?: string;
@@ -28,6 +31,7 @@ export interface BindingSettings {
 }
 
 export interface ChatThreadBinding extends BindingSettings {
+  readonly botKey?: string;
   readonly tenantKey: string;
   readonly chatId: string;
   readonly threadId: string;
@@ -36,6 +40,10 @@ export interface ChatThreadBinding extends BindingSettings {
   readonly revision: number;
   readonly updatedAtMs: number;
 }
+
+export type ChatThreadBindingInput =
+  Omit<ChatThreadBinding, 'botKey' | 'revision' | 'updatedAtMs'>
+  & { readonly botKey?: string };
 
 interface BindingDocument {
   readonly schemaVersion: number;
@@ -98,16 +106,20 @@ export class BindingStore {
     }
     const parsed = parseDocument(document);
     for (const binding of parsed.bindings) {
-      const key = bindingKey(binding.tenantKey, binding.chatId);
+      const key = bindingKey(binding.botKey ?? DEFAULT_BOT_KEY, binding.tenantKey, binding.chatId);
       if (this.bindings.has(key)) {
-        throw new BindingStoreError('bindings.json contains a duplicate tenant/chat binding');
+        throw new BindingStoreError('bindings.json contains a duplicate bot/tenant/chat binding');
       }
       this.bindings.set(key, binding);
     }
   }
 
-  public get(tenantKey: string, chatId: string): ChatThreadBinding | undefined {
-    return this.bindings.get(bindingKey(tenantKey, chatId));
+  public get(
+    tenantKey: string,
+    chatId: string,
+    botKey: string = DEFAULT_BOT_KEY,
+  ): ChatThreadBinding | undefined {
+    return this.bindings.get(bindingKey(botKey, tenantKey, chatId));
   }
 
   public list(): readonly ChatThreadBinding[] {
@@ -134,11 +146,9 @@ export class BindingStore {
   }
 
   /** Persists one replacement binding using same-directory atomic replacement. */
-  public bind(
-    input: Omit<ChatThreadBinding, 'revision' | 'updatedAtMs'>,
-  ): ChatThreadBinding {
+  public bind(input: ChatThreadBindingInput): ChatThreadBinding {
     const normalized = normalizeBindingInput(input);
-    const key = bindingKey(normalized.tenantKey, normalized.chatId);
+    const key = bindingKey(normalized.botKey ?? DEFAULT_BOT_KEY, normalized.tenantKey, normalized.chatId);
     const previous = this.bindings.get(key);
     const binding = Object.freeze({
       ...normalized,
@@ -160,8 +170,12 @@ export class BindingStore {
   }
 
   /** Removes only the static chat binding and never touches any runtime task. */
-  public unbind(tenantKey: string, chatId: string): boolean {
-    const key = bindingKey(tenantKey, chatId);
+  public unbind(
+    tenantKey: string,
+    chatId: string,
+    botKey: string = DEFAULT_BOT_KEY,
+  ): boolean {
+    const key = bindingKey(botKey, tenantKey, chatId);
     const previous = this.bindings.get(key);
     if (!previous) {
       return false;
@@ -172,6 +186,31 @@ export class BindingStore {
       return true;
     } catch (error) {
       this.bindings.set(key, previous);
+      throw error;
+    }
+  }
+
+  public removeBotBindings(botKey: string): number {
+    const normalizedBotKey = requiredBotKey(botKey);
+    const removed: [string, ChatThreadBinding][] = [];
+    for (const [key, binding] of this.bindings.entries()) {
+      if (binding.botKey === normalizedBotKey) {
+        removed.push([key, binding]);
+      }
+    }
+    if (removed.length === 0) {
+      return 0;
+    }
+    for (const [key] of removed) {
+      this.bindings.delete(key);
+    }
+    try {
+      this.persist();
+      return removed.length;
+    } catch (error) {
+      for (const [key, binding] of removed) {
+        this.bindings.set(key, binding);
+      }
       throw error;
     }
   }
@@ -215,7 +254,10 @@ function parseDocument(value: unknown): BindingDocument {
   if (!isRecord(value) || hasUnknownKeys(value, ['schemaVersion', 'bindings'])) {
     throw new BindingStoreError('bindings.json has an invalid document shape');
   }
-  if (value.schemaVersion !== BINDINGS_SCHEMA_VERSION || !Array.isArray(value.bindings)) {
+  if (
+    (value.schemaVersion !== 1 && value.schemaVersion !== BINDINGS_SCHEMA_VERSION)
+    || !Array.isArray(value.bindings)
+  ) {
     throw new BindingStoreError('bindings.json schema version is unsupported');
   }
   if (value.bindings.length > MAX_BINDING_COUNT) {
@@ -223,12 +265,13 @@ function parseDocument(value: unknown): BindingDocument {
   }
   return Object.freeze({
     schemaVersion: BINDINGS_SCHEMA_VERSION,
-    bindings: Object.freeze(value.bindings.map(parseBinding)),
+    bindings: Object.freeze(value.bindings.map((binding) => parseBinding(binding, value.schemaVersion))),
   });
 }
 
-function parseBinding(value: unknown): ChatThreadBinding {
+function parseBinding(value: unknown, schemaVersion: unknown): ChatThreadBinding {
   if (!isRecord(value) || hasUnknownKeys(value, [
+    'botKey',
     'tenantKey',
     'chatId',
     'threadId',
@@ -246,6 +289,9 @@ function parseBinding(value: unknown): ChatThreadBinding {
     throw new BindingStoreError('bindings.json contains an invalid binding');
   }
   const normalized = normalizeBindingInput({
+    botKey: schemaVersion === 1
+      ? DEFAULT_BOT_KEY
+      : requiredBotKey(value.botKey),
     tenantKey: requiredText(value.tenantKey, 'tenantKey'),
     chatId: requiredText(value.chatId, 'chatId'),
     threadId: requiredText(value.threadId, 'threadId'),
@@ -282,9 +328,10 @@ function parseBinding(value: unknown): ChatThreadBinding {
 }
 
 function normalizeBindingInput(
-  input: Omit<ChatThreadBinding, 'revision' | 'updatedAtMs'>,
+  input: ChatThreadBindingInput,
 ): Omit<ChatThreadBinding, 'revision' | 'updatedAtMs'> {
   return Object.freeze({
+    botKey: requiredBotKey(input.botKey),
     tenantKey: requiredText(input.tenantKey, 'tenantKey'),
     chatId: requiredText(input.chatId, 'chatId'),
     threadId: requiredText(input.threadId, 'threadId'),
@@ -305,6 +352,14 @@ function normalizeBindingInput(
       ? { activeSkillPath: optionalText(input.activeSkillPath, 'activeSkillPath') }
       : {}),
   });
+}
+
+function requiredBotKey(value: unknown): string {
+  const key = value === undefined ? DEFAULT_BOT_KEY : requiredText(value, 'botKey');
+  if (key.length > MAX_BOT_KEY_LENGTH || !/^(?:default|bot_[a-z2-7][a-z2-7]{11,59})$/.test(key)) {
+    throw new BindingStoreError('botKey is invalid');
+  }
+  return key;
 }
 
 function requiredText(value: unknown, label: string): string {
@@ -332,8 +387,12 @@ function optionalText(value: unknown, label: string): string | undefined {
   return text;
 }
 
-function bindingKey(tenantKey: string, chatId: string): string {
-  return JSON.stringify([requiredText(tenantKey, 'tenantKey'), requiredText(chatId, 'chatId')]);
+function bindingKey(botKey: string, tenantKey: string, chatId: string): string {
+  return JSON.stringify([
+    requiredBotKey(botKey),
+    requiredText(tenantKey, 'tenantKey'),
+    requiredText(chatId, 'chatId'),
+  ]);
 }
 
 function hasUnknownKeys(record: Record<string, unknown>, allowed: readonly string[]): boolean {

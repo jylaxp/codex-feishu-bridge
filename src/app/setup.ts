@@ -255,6 +255,8 @@ function ensureDefaultEnvironment(
     ['ALLOWED_CHATS', ''],
     ['AUTHORIZED_USERS', ''],
     ['ALLOWED_APPROVERS', ''],
+    ['ALLOW_GROUP_USER_MENTIONS', 'true'],
+    ['ALLOW_GROUP_BOT_MENTIONS', 'false'],
     ['APPROVAL_SUMMARY_MODE', '0'],
     ['APP_SERVER_MODE', 'owned_stdio'],
     ['CODEX_BIN', defaults.codexBin],
@@ -311,6 +313,10 @@ function renderManagedEnvironment(source: string): string {
     value('AUTHORIZED_USERS'),
     '# 可处理审批操作的飞书用户 open_id，多个值使用英文逗号分隔。',
     value('ALLOWED_APPROVERS'),
+    '# 群内普通成员 @ 机器人时是否允许发起普通任务。',
+    value('ALLOW_GROUP_USER_MENTIONS'),
+    '# 群内其他机器人 @ 当前机器人时是否允许发起普通任务。',
+    value('ALLOW_GROUP_BOT_MENTIONS'),
     '# 是否按任务汇总审批卡：0 = 默认，每项审批各发一张卡；1 = 同一任务全部审批汇总为一张卡。',
     value('APPROVAL_SUMMARY_MODE'),
     '',
@@ -365,7 +371,7 @@ function requiredKeysWithPlaceholders(source: string): readonly string[] {
     .map(([key]) => key);
 }
 
-async function registerFeishuApp(options: {
+export async function registerFeishuApp(options: {
   readonly output: OutputWriter;
   readonly registerApp: (options: RegisterAppOptions) => Promise<RegisterAppResult>;
   readonly qrRenderer: (url: string) => Promise<void> | void;
@@ -401,7 +407,7 @@ async function registerFeishuApp(options: {
   return result;
 }
 
-async function renderQrCode(url: string): Promise<void> {
+export async function renderQrCode(url: string): Promise<void> {
   const qrcode = await import('qrcode-terminal');
   qrcode.generate(url, { small: true });
 }

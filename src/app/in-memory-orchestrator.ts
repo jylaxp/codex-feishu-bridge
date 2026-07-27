@@ -3,6 +3,7 @@ import { pathToFileURL } from 'node:url';
 
 import { deriveTaskCancelToken } from './action-tokens';
 import type { ChatThreadBinding } from './binding-store';
+import { DEFAULT_BOT_KEY } from './bot-config-store';
 import { CardKitError } from './cards/cardkit-client';
 import { type CardKitJson, createTaskCard } from './cards/layouts';
 import {
@@ -69,8 +70,16 @@ export interface InMemoryCardClient {
 export interface InMemoryOrchestratorOptions {
   readonly now?: () => number;
   readonly onCardError?: (error: Error) => void;
+  readonly cardClientForBotKey?: (botKey: string) => InMemoryCardClient | undefined;
+  readonly larkSecretForBotKey?: (botKey: string) => string | undefined;
   readonly readRateLimits?: () => Promise<unknown>;
   readonly uploadOutputFiles?: (answer: string, rootMessageId: string, taskId: string) => Promise<void>;
+  readonly uploadOutputFilesForBotKey?: (
+    botKey: string,
+    answer: string,
+    rootMessageId: string,
+    taskId: string,
+  ) => Promise<void>;
   /** Testable base backoff for transient CardKit update failures. */
   readonly cardRetryDelayMs?: number;
   /** Maximum wait for a terminal Desktop snapshot to receive its final content. */
@@ -93,6 +102,7 @@ export interface InMemoryOrchestratorOptions {
   readonly onDesktopDeliveryOutcome?: (outcome: DesktopDeliveryOutcome) => void;
   /** Releases process-owned image files after Codex no longer needs them. */
   readonly releaseInboundImages?: (paths: readonly string[]) => void;
+  readonly releaseInboundImagesForBotKey?: (botKey: string, paths: readonly string[]) => void;
 }
 
 export type DesktopDeliveryOperation = 'start' | 'steer' | 'interrupt';
@@ -118,6 +128,7 @@ export type InMemoryInboundOutcome =
   | 'rejected_queue_full';
 
 export interface RuntimeApprovalContext {
+  readonly botKey: string;
   readonly taskId: string;
   readonly chatId: string;
   readonly rootMessageId: string;
@@ -254,8 +265,13 @@ const MAX_TIMELINE_REASONING_BYTES = 6 * 1024;
 export class InMemoryOrchestrator {
   private readonly now: () => number;
   private readonly onCardError: (error: Error) => void;
+  private readonly cardClientForBotKey: (botKey: string) => InMemoryCardClient | undefined;
+  private readonly larkSecretForBotKey: (botKey: string) => string | undefined;
   private readonly readRateLimits: (() => Promise<unknown>) | undefined;
   private readonly uploadOutputFiles: ((answer: string, rootMessageId: string, taskId: string) => Promise<void>) | undefined;
+  private readonly uploadOutputFilesForBotKey:
+    | ((botKey: string, answer: string, rootMessageId: string, taskId: string) => Promise<void>)
+    | undefined;
   private readonly cardRetryDelayMs: number;
   private readonly terminalConvergenceTimeoutMs: number;
   private readonly requestThreadSnapshot:
@@ -271,6 +287,9 @@ export class InMemoryOrchestrator {
   private readonly onRuntimeHealthChanged: () => void;
   private readonly onDesktopDeliveryOutcome: (outcome: DesktopDeliveryOutcome) => void;
   private readonly releaseInboundImages: (paths: readonly string[]) => void;
+  private readonly releaseInboundImagesForBotKey:
+    | ((botKey: string, paths: readonly string[]) => void)
+    | undefined;
   private readonly tasksById = new Map<string, RuntimeTask>();
   private readonly scheduler = new ThreadTaskScheduler<RuntimeTask, {
     readonly message: InboundMessage;
@@ -292,8 +311,11 @@ export class InMemoryOrchestrator {
   ) {
     this.now = options.now ?? Date.now;
     this.onCardError = options.onCardError ?? (() => undefined);
+    this.cardClientForBotKey = options.cardClientForBotKey ?? (() => undefined);
+    this.larkSecretForBotKey = options.larkSecretForBotKey ?? (() => undefined);
     this.readRateLimits = options.readRateLimits;
     this.uploadOutputFiles = options.uploadOutputFiles;
+    this.uploadOutputFilesForBotKey = options.uploadOutputFilesForBotKey;
     this.resolveBindingByThreadId = options.resolveBindingByThreadId;
     this.isBindingCurrent = options.isBindingCurrent ?? (() => true);
     this.readSkills = options.readSkills;
@@ -302,6 +324,7 @@ export class InMemoryOrchestrator {
     this.onRuntimeHealthChanged = options.onRuntimeHealthChanged ?? (() => undefined);
     this.onDesktopDeliveryOutcome = options.onDesktopDeliveryOutcome ?? (() => undefined);
     this.releaseInboundImages = options.releaseInboundImages ?? (() => undefined);
+    this.releaseInboundImagesForBotKey = options.releaseInboundImagesForBotKey;
     this.cardRetryDelayMs = options.cardRetryDelayMs ?? CARD_RETRY_BASE_DELAY_MS;
     this.terminalConvergenceTimeoutMs = Math.max(
       1,
@@ -313,6 +336,22 @@ export class InMemoryOrchestrator {
   /** Returns the threads whose live cards still depend on Desktop state events. */
   public activeThreadIds(): readonly string[] {
     return this.scheduler.activeThreadIds();
+  }
+
+  private cardsForBotKey(botKey: string): InMemoryCardClient {
+    return this.cardClientForBotKey(botKey) ?? this.cards;
+  }
+
+  private cardsForTask(task: RuntimeTask): InMemoryCardClient {
+    return this.cardsForBotKey(task.binding.botKey ?? task.message.botKey ?? DEFAULT_BOT_KEY);
+  }
+
+  private cardsForBinding(binding: ChatThreadBinding): InMemoryCardClient {
+    return this.cardsForBotKey(binding.botKey ?? DEFAULT_BOT_KEY);
+  }
+
+  private secretForBotKey(botKey: string): string {
+    return this.larkSecretForBotKey(botKey) ?? this.config.larkAppSecret;
   }
 
   /** Returns content-free counters for runtime health reporting. */
@@ -366,7 +405,7 @@ export class InMemoryOrchestrator {
     generation: number,
   ): Promise<InMemoryInboundOutcome> {
     this.pruneDedupe();
-    const dedupeKey = JSON.stringify([message.eventId, message.messageId]);
+    const dedupeKey = JSON.stringify([message.botKey ?? DEFAULT_BOT_KEY, message.eventId, message.messageId]);
     if (this.processedMessageKeys.has(dedupeKey)) {
       this.releaseMessageImages(message);
       return 'duplicate';
@@ -467,6 +506,7 @@ export class InMemoryOrchestrator {
   }
 
   public async cancel(action: {
+    readonly botKey?: string;
     readonly chatId: string;
     readonly messageId: string;
     readonly operatorOpenId: string;
@@ -475,8 +515,10 @@ export class InMemoryOrchestrator {
     if (!this.config.authorizedUsers.includes(action.operatorOpenId)) {
       return false;
     }
+    const botKey = action.botKey ?? DEFAULT_BOT_KEY;
     const task = [...this.tasksById.values()].find((candidate) => (
-      candidate.message.chatId === action.chatId
+      (candidate.message.botKey ?? DEFAULT_BOT_KEY) === botKey
+      && candidate.message.chatId === action.chatId
       && (
         candidate.cardMessageId === action.messageId
         || candidate.pendingFreezes.some((pending) => pending.cardMessageId === action.messageId)
@@ -515,9 +557,18 @@ export class InMemoryOrchestrator {
   }
 
   /** Cancels the current task for an authorized chat command without a card token. */
-  public async cancelCurrent(chatId: string, threadId: string): Promise<boolean> {
+  public async cancelCurrent(
+    chatId: string,
+    threadId: string,
+    botKey: string = DEFAULT_BOT_KEY,
+  ): Promise<boolean> {
     const task = this.scheduler.active(threadId);
-    if (!task || task.message.chatId !== chatId || !isCancellableTask(task)) {
+    if (
+      !task
+      || task.message.chatId !== chatId
+      || (task.message.botKey ?? DEFAULT_BOT_KEY) !== botKey
+      || !isCancellableTask(task)
+    ) {
       return false;
     }
     if (!task.turnId) {
@@ -555,6 +606,7 @@ export class InMemoryOrchestrator {
       return undefined;
     }
     return Object.freeze({
+      botKey: task.message.botKey ?? task.binding.botKey ?? DEFAULT_BOT_KEY,
       taskId: task.id,
       chatId: task.message.chatId,
       rootMessageId: task.message.rootMessageId,
@@ -645,6 +697,7 @@ export class InMemoryOrchestrator {
     }
     const id = randomUUID();
     const startedAtMs = this.now();
+    const cards = this.cardsForBinding(taskBinding);
     const initialCard = taskCard(
       displayTaskPrompt(message),
       'CARD_CREATING',
@@ -657,12 +710,12 @@ export class InMemoryOrchestrator {
       undefined,
       taskBinding,
     );
-    const cardId = await this.cards.createCard(initialCard);
+    const cardId = await cards.createCard(initialCard);
     if (generation !== this.runtimeGeneration || !this.isBindingCurrent(taskBinding)) {
       this.releaseMessageImages(message);
       return 'abandoned';
     }
-    const cardMessageId = await this.cards.sendCard(message.chatId, cardId, `task:${id}`);
+    const cardMessageId = await cards.sendCard(message.chatId, cardId, `task:${id}`);
     if (generation !== this.runtimeGeneration || !this.isBindingCurrent(taskBinding)) {
       this.releaseMessageImages(message);
       return 'abandoned';
@@ -673,7 +726,7 @@ export class InMemoryOrchestrator {
       binding: taskBinding,
       cardId,
       cardMessageId,
-      cancelToken: deriveTaskCancelToken(this.config.larkAppSecret, id),
+      cancelToken: deriveTaskCancelToken(this.secretForBotKey(taskBinding.botKey ?? DEFAULT_BOT_KEY), id),
       turnId: null,
       status: 'STARTING',
       commentary: '',
@@ -836,7 +889,8 @@ export class InMemoryOrchestrator {
     }
     const id = randomUUID();
     const startedAtMs = this.now();
-    const cardId = await this.cards.createCard(taskCard(
+    const cards = this.cardsForBinding(taskBinding);
+    const cardId = await cards.createCard(taskCard(
       prompt,
       'RUNNING',
       '',
@@ -851,7 +905,7 @@ export class InMemoryOrchestrator {
     if (!this.isBindingCurrent(taskBinding)) {
       return;
     }
-    const cardMessageId = await this.cards.sendCard(taskBinding.chatId, cardId, `desktop:${id}`);
+    const cardMessageId = await cards.sendCard(taskBinding.chatId, cardId, `desktop:${id}`);
     if (!this.isBindingCurrent(taskBinding)) {
       return;
     }
@@ -861,7 +915,7 @@ export class InMemoryOrchestrator {
       binding: taskBinding,
       cardId,
       cardMessageId,
-      cancelToken: deriveTaskCancelToken(this.config.larkAppSecret, id),
+      cancelToken: deriveTaskCancelToken(this.secretForBotKey(taskBinding.botKey ?? DEFAULT_BOT_KEY), id),
       turnId: turn.id,
       status: 'RUNNING',
       commentary: '',
@@ -1152,7 +1206,8 @@ export class InMemoryOrchestrator {
     this.onRuntimeHealthChanged();
     try {
       reconcileAnswerCursor(task);
-      let pages = await taskCardPages(task, this.cards);
+      const cards = this.cardsForTask(task);
+      let pages = await taskCardPages(task, cards);
       if (!this.isTaskProjectionCurrent(task)) {
         task.cardDeliveryPending = false;
         this.onRuntimeHealthChanged();
@@ -1165,10 +1220,10 @@ export class InMemoryOrchestrator {
           break;
         }
         await this.continueCard(task, currentPage, nextPage);
-        pages = await taskCardPages(task, this.cards);
+        pages = await taskCardPages(task, cards);
       }
       if (terminal && !task.streamingClosed) {
-        task.cardSequence = await this.cards.closeStreaming(
+        task.cardSequence = await cards.closeStreaming(
           task.cardId,
           task.cardSequence,
           `task:${task.id}:close:${task.cardSequence + 1}`,
@@ -1178,13 +1233,13 @@ export class InMemoryOrchestrator {
       const currentPage = pages[0] ?? emptyTaskCardPage(task.cardPageNumber === 1);
       const card = await renderedTaskPageCard(
         task,
-        this.cards,
+        cards,
         currentPage,
         task.cardPageNumber - 1,
         true,
         terminal,
       );
-      task.cardSequence = await this.cards.replaceRenderedCard(
+      task.cardSequence = await cards.replaceRenderedCard(
         task.cardId,
         card,
         task.cardSequence,
@@ -1215,26 +1270,27 @@ export class InMemoryOrchestrator {
     nextPage: TaskCardPage,
   ): Promise<void> {
     const nextPageNumber = task.cardPageNumber + 1;
+    const cards = this.cardsForTask(task);
     if (!task.pendingCardId) {
       const nextCard = await renderedTaskPageCard(
         task,
-        this.cards,
+        cards,
         nextPage,
         nextPageNumber - 1,
         true,
         false,
       );
-      task.pendingCardId = await this.cards.createRenderedCard(nextCard);
+      task.pendingCardId = await cards.createRenderedCard(nextCard);
     }
     const frozenCard = await renderedTaskPageCard(
       task,
-      this.cards,
+      cards,
       currentPage,
       task.cardPageNumber - 1,
       false,
       false,
     );
-    const cardMessageId = await this.cards.sendCard(
+    const cardMessageId = await cards.sendCard(
       task.message.chatId,
       task.pendingCardId,
       `task:${task.id}:page:${nextPageNumber}`,
@@ -1264,15 +1320,16 @@ export class InMemoryOrchestrator {
         return;
       }
       try {
+        const cards = this.cardsForTask(task);
         if (!pending.streamingClosed) {
-          pending.sequence = await this.cards.closeStreaming(
+          pending.sequence = await cards.closeStreaming(
             pending.cardId,
             pending.sequence,
             `task:${task.id}:page:${pending.pageNumber}:close`,
           );
           pending.streamingClosed = true;
         }
-        pending.sequence = await this.cards.replaceRenderedCard(
+        pending.sequence = await cards.replaceRenderedCard(
           pending.cardId,
           pending.card,
           pending.sequence,
@@ -1410,14 +1467,23 @@ export class InMemoryOrchestrator {
     if (
       task.status !== 'SUCCEEDED'
       || task.outputFilesUploaded
-      || !this.uploadOutputFiles
+      || (!this.uploadOutputFiles && !this.uploadOutputFilesForBotKey)
       || !this.isTaskProjectionCurrent(task)
     ) {
       return;
     }
     task.outputFilesUploaded = true;
     try {
-      await this.uploadOutputFiles(task.finalAnswer, task.message.rootMessageId, task.id);
+      if (this.uploadOutputFilesForBotKey) {
+        await this.uploadOutputFilesForBotKey(
+          task.binding.botKey ?? task.message.botKey ?? DEFAULT_BOT_KEY,
+          task.finalAnswer,
+          task.message.rootMessageId,
+          task.id,
+        );
+      } else {
+        await this.uploadOutputFiles?.(task.finalAnswer, task.message.rootMessageId, task.id);
+      }
     } catch {
       // File upload is opt-in convenience output; it never changes task status.
     }
@@ -1451,6 +1517,10 @@ export class InMemoryOrchestrator {
 
   private releaseMessageImages(message: InboundMessage): void {
     if (message.localImagePaths?.length) {
+      if (this.releaseInboundImagesForBotKey) {
+        this.releaseInboundImagesForBotKey(message.botKey ?? DEFAULT_BOT_KEY, message.localImagePaths);
+        return;
+      }
       this.releaseInboundImages(message.localImagePaths);
     }
   }
@@ -1461,6 +1531,10 @@ export class InMemoryOrchestrator {
     }
     const paths = [...task.localImagePaths];
     task.localImagePaths.clear();
+    if (this.releaseInboundImagesForBotKey) {
+      this.releaseInboundImagesForBotKey(task.binding.botKey ?? task.message.botKey ?? DEFAULT_BOT_KEY, paths);
+      return;
+    }
     this.releaseInboundImages(paths);
   }
 
@@ -2776,12 +2850,15 @@ function desktopMessage(
   createdAtMs: number,
 ): InboundMessage {
   return {
+    botKey: binding.botKey ?? DEFAULT_BOT_KEY,
     tenantKey: binding.tenantKey,
     eventId: `desktop:${binding.threadId}:${turn.id}`,
     messageId: cardMessageId,
     chatId: binding.chatId,
+    chatType: 'p2p',
     rootMessageId: cardMessageId,
     senderOpenId: 'desktop',
+    senderType: 'user',
     text: prompt,
     payloadDigest: turn.id,
     createdAtMs,

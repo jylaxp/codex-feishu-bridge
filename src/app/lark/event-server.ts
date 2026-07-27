@@ -1,11 +1,14 @@
 import * as Lark from '@larksuiteoapi/node-sdk';
 
-import { BridgeConfig } from '../domain';
+import { DEFAULT_BOT_KEY } from '../bot-config-store';
+import type { BridgeConfig } from '../domain';
 import { createRedactedLarkSdkLogger, type LarkSdkLogSink } from './client';
 import {
-  InboundMessage,
   normalizeInboundMessage,
-  RawMessageEvent,
+  normalizeInboundReplyContext,
+  type InboundMessage,
+  type InboundReplyContext,
+  type RawMessageEvent,
 } from './intake';
 import type { LarkScope } from './scope-config-store';
 
@@ -25,6 +28,7 @@ export type CardActionKind =
 type CardActionOption = string | { readonly value?: unknown };
 
 export interface InboundCardAction {
+  readonly botKey: string;
   readonly tenantKey: string;
   readonly chatId: string;
   readonly messageId: string;
@@ -55,10 +59,20 @@ export interface RawCardActionEvent {
 export interface LarkEventHandlers {
   readonly onMessage: (message: InboundMessage) => Promise<void>;
   readonly onCardAction: (action: InboundCardAction) => Promise<unknown>;
+  readonly onUnavailableMessage?: (
+    context: InboundReplyContext,
+    reason: LarkUnavailableReason,
+  ) => Promise<void>;
   readonly onRejectedEvent?: (reason: string) => void;
   readonly onHandlerError?: (kind: 'message' | 'card_action', error: Error) => void;
   readonly onScopeBound?: (config: BridgeConfig) => void;
   readonly onSdkLog?: LarkSdkLogSink;
+}
+
+export type LarkUnavailableReason = 'BOT_DISABLED';
+
+export interface LarkEventServerOptions {
+  readonly unavailableReason?: LarkUnavailableReason;
 }
 
 export interface LarkScopeAutoBindStore {
@@ -93,6 +107,7 @@ function selectedOptionValue(option: CardActionOption | undefined): string | nul
 export function normalizeCardAction(
   event: RawCardActionEvent,
   config: BridgeConfig,
+  botKey: string = config.botKey ?? DEFAULT_BOT_KEY,
 ): InboundCardAction | null {
   const tenantKey = nonBlank(event.tenant_key);
   const chatId = nonBlank(event.context?.open_chat_id);
@@ -155,6 +170,7 @@ export function normalizeCardAction(
   }
 
   return Object.freeze({
+    botKey,
     tenantKey,
     chatId,
     messageId,
@@ -174,11 +190,14 @@ export class LarkEventServer {
     config: BridgeConfig,
     private readonly handlers: LarkEventHandlers,
     private readonly scopeAutoBindStore?: LarkScopeAutoBindStore,
+    private readonly options: LarkEventServerOptions = {},
   ) {
     this.activeConfig = config;
+    this.botKey = config.botKey ?? DEFAULT_BOT_KEY;
   }
 
   private activeConfig: BridgeConfig;
+  private readonly botKey: string;
 
   public async start(): Promise<void> {
     if (this.dispatcher) {
@@ -189,6 +208,26 @@ export class LarkEventServer {
       logger: createRedactedLarkSdkLogger(this.handlers.onSdkLog),
     }).register({
       'im.message.receive_v1': async (event: RawMessageEvent) => {
+        if (this.options.unavailableReason) {
+          const context = normalizeInboundReplyContext(
+            event,
+            this.activeConfig,
+            Date.now,
+            this.botKey,
+          );
+          if (!context) {
+            this.handlers.onRejectedEvent?.(this.options.unavailableReason);
+            return;
+          }
+          try {
+            await this.handlers.onUnavailableMessage?.(context, this.options.unavailableReason);
+          } catch (error) {
+            const handlerError = toError(error);
+            this.handlers.onHandlerError?.('message', handlerError);
+            throw handlerError;
+          }
+          return;
+        }
         let scopedConfig: BridgeConfig;
         try {
           scopedConfig = this.resolveMessageScope(event);
@@ -197,7 +236,7 @@ export class LarkEventServer {
           this.handlers.onHandlerError?.('message', handlerError);
           throw handlerError;
         }
-        const result = normalizeInboundMessage(event, scopedConfig);
+        const result = normalizeInboundMessage(event, scopedConfig, Date.now, this.botKey);
         if (!result.accepted) {
           this.handlers.onRejectedEvent?.(result.reason);
           return;
@@ -211,7 +250,10 @@ export class LarkEventServer {
         }
       },
       'card.action.trigger': async (event: RawCardActionEvent) => {
-        const action = normalizeCardAction(event, this.activeConfig);
+        if (this.options.unavailableReason) {
+          return toast(unavailableToast(this.options.unavailableReason), 'warning');
+        }
+        const action = normalizeCardAction(event, this.activeConfig, this.botKey);
         if (!action) {
           this.handlers.onRejectedEvent?.('CARD_ACTION_INVALID');
           return toast('操作无效或已失效', 'warning');
@@ -292,6 +334,13 @@ export class LarkEventServer {
     this.handlers.onScopeBound?.(nextConfig);
     return this.activeConfig;
   }
+}
+
+function unavailableToast(reason: LarkUnavailableReason): string {
+  if (reason === 'BOT_DISABLED') {
+    return '机器人已被 Bridge 管理员禁用，当前不会处理任务。';
+  }
+  return '机器人当前不可用。';
 }
 
 function scopeNeedsBootstrap(config: BridgeConfig): boolean {

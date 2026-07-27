@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import { createOpaqueActionToken } from '../action-tokens';
+import { DEFAULT_BOT_KEY } from '../bot-config-store';
 import {
   MAX_INBOUND_IMAGES,
   type InboundImageReference,
@@ -52,6 +53,7 @@ interface PendingImageBatch {
 }
 
 export interface InboundImageBatchAction {
+  readonly botKey?: string;
   readonly tenantKey: string;
   readonly chatId: string;
   readonly senderOpenId: string;
@@ -384,14 +386,19 @@ export class InboundMessageAggregator {
   }
 }
 
-function messageIdentity(message: Pick<InboundMessage, 'eventId' | 'messageId'>): string {
-  return `${message.eventId}\0${message.messageId}`;
+function messageIdentity(message: Pick<InboundMessage, 'botKey' | 'eventId' | 'messageId'>): string {
+  return `${message.botKey ?? DEFAULT_BOT_KEY}\0${message.eventId}\0${message.messageId}`;
 }
 
 function conversationKey(
-  message: Pick<InboundMessage, 'tenantKey' | 'chatId' | 'senderOpenId'>,
+  message: Pick<InboundMessage, 'botKey' | 'tenantKey' | 'chatId' | 'senderOpenId'>,
 ): string {
-  return JSON.stringify([message.tenantKey, message.chatId, message.senderOpenId]);
+  return JSON.stringify([
+    message.botKey ?? DEFAULT_BOT_KEY,
+    message.tenantKey,
+    message.chatId,
+    message.senderOpenId,
+  ]);
 }
 
 function isImageOnly(message: InboundMessage): boolean {
