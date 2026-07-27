@@ -1,0 +1,41 @@
+docs/app-server-support-matrix.md
+  s_c54cf697e76a51::t_43ffcc0df2d3a3 15-16,18
+test/fixtures/app-server/0.145.0-alpha.18/artifacts.json
+  s_c54cf697e76a51::t_8c5232fcf0b4fc 48-56
+src/app/codex/contract.ts
+  s_c54cf697e76a51::t_c51d5e9d25a9e5 9
+src/app/codex/protocol-version-config.ts
+  s_c54cf697e76a51::t_e21314e1eb6674 65-70
+test/app/local-version-command.test.ts
+  s_c54cf697e76a51::t_f094db6f7daa79 62,85
+src/app/conversation-binding-service-v3.ts
+  s_c54cf697e76a51::t_f1ffa0716bb4d4 10,23-24,192,198-200,208,219-243
+  s_c54cf697e76a51::t_f125a1eade4edd 938,991-1018,1102,1117-1119
+  s_c54cf697e76a51::t_01829d98e7fe84 244-245
+  s_c54cf697e76a51::t_c85e05146137b6 1120-1121
+test/app/conversation-binding-service-v3.test.ts
+  s_c54cf697e76a51::t_0661604568e68e 86-88,90,92,163,173
+  s_c54cf697e76a51::t_64648fc05a36b2 85,89
+  s_c54cf697e76a51::t_ec496db7159f81 91,93-162,164-172
+test/app/protocol-version-config.test.ts
+  s_c54cf697e76a51::t_45f5966905aabe 32,53-58,74,78,124,143-146,177,247-253
+  s_c54cf697e76a51::t_06c962dbdba4a9 254-255
+test/app/runtime-contract.test.ts
+  s_c54cf697e76a51::t_518e688dd41319 139,144,146,174-182,303,359
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "d0e92af50e31ddd294e04329647301d8a7516ad9",
+  "prompts": {},
+  "sessions": {
+    "s_c54cf697e76a51": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5e80-7c30-7a71-a434-09aeae22cce8",
+        "model": "gpt-5.5"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    }
+  }
+}
