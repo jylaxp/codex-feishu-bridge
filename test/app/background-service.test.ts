@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { runBackgroundCommand } from '../../src/app/background-service';
+import { runBackgroundCommand, type ProcessSnapshot } from '../../src/app/background-service';
 
 test('background service ignores process output and does not create log files when logging is off', async () => {
   for (const source of [undefined, 'LOG_TO_FILE=false\n', 'LOG_TO_FILE=invalid\n']) {
@@ -61,6 +61,91 @@ test('background service captures process output only when file logging is enabl
   }
 });
 
+test('background stop terminates every same-entry Bridge supervisor and worker', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'bridge-background-stop-all-'));
+  try {
+    const entryPath = '/opt/codex-feishu-bridge/dist/app/cli.js';
+    const alive = new Set([100, 101, 200, 201, 300, 400]);
+    const signals: Array<{ readonly pid: number; readonly signal: string | number | undefined }> = [];
+    writeFileSync(join(root, 'bridge.pid'), '100\n', { mode: 0o600 });
+
+    const output: string[] = [];
+    const report = await runBackgroundCommand('stop', {
+      configHome: root,
+      entryPath,
+      listProcesses: () => [
+        processInfo(100, 1, `/usr/local/bin/node ${entryPath} supervise`),
+        processInfo(101, 100, `/usr/local/bin/node ${entryPath} run`),
+        processInfo(200, 1, `/usr/local/bin/node ${entryPath} supervise`),
+        processInfo(201, 200, `/usr/local/bin/node ${entryPath} run`),
+        processInfo(300, 1, '/usr/local/bin/node /opt/other-bridge/dist/app/cli.js supervise'),
+        processInfo(400, 1, `rg ${entryPath} run`),
+      ],
+      isProcessAlive: (pid) => alive.has(pid),
+      killProcess: (pid, signal) => {
+        signals.push({ pid, signal });
+        if (signal === 'SIGTERM') {
+          alive.delete(pid);
+        }
+      },
+      delay: async () => undefined,
+      output: { write: (chunk) => output.push(String(chunk)) },
+    }, {});
+
+    assert.equal(report.running, false);
+    assert.deepEqual(signals, [
+      { pid: 100, signal: 'SIGTERM' },
+      { pid: 200, signal: 'SIGTERM' },
+      { pid: 101, signal: 'SIGTERM' },
+      { pid: 201, signal: 'SIGTERM' },
+    ]);
+    assert.equal(alive.has(300), true);
+    assert.equal(alive.has(400), true);
+    assert.equal(existsSync(join(root, 'bridge.pid')), false);
+    assert.match(output.join(''), /Bridge 后台服务已停止/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('background stop sweeps same-entry Bridge processes when pid file is stale', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'bridge-background-stop-stale-'));
+  try {
+    const entryPath = '/opt/codex-feishu-bridge/dist/app/cli.js';
+    const alive = new Set([200, 201]);
+    const signals: Array<{ readonly pid: number; readonly signal: string | number | undefined }> = [];
+    writeFileSync(join(root, 'bridge.pid'), '100\n', { mode: 0o600 });
+
+    const report = await runBackgroundCommand('stop', {
+      configHome: root,
+      entryPath,
+      listProcesses: () => [
+        processInfo(100, 1, `/usr/local/bin/node ${entryPath} supervise`),
+        processInfo(200, 1, `/usr/local/bin/node ${entryPath} supervise`),
+        processInfo(201, 200, `/usr/local/bin/node ${entryPath} run`),
+      ],
+      isProcessAlive: (pid) => alive.has(pid),
+      killProcess: (pid, signal) => {
+        signals.push({ pid, signal });
+        if (signal === 'SIGTERM') {
+          alive.delete(pid);
+        }
+      },
+      delay: async () => undefined,
+      output: { write: () => undefined },
+    }, {});
+
+    assert.equal(report.running, false);
+    assert.deepEqual(signals, [
+      { pid: 200, signal: 'SIGTERM' },
+      { pid: 201, signal: 'SIGTERM' },
+    ]);
+    assert.equal(existsSync(join(root, 'bridge.pid')), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 function recordingSpawn(): {
   readonly spawnProcess: typeof spawn;
   readonly options: SpawnOptions | undefined;
@@ -76,4 +161,8 @@ function recordingSpawn(): {
       return recording.options;
     },
   };
+}
+
+function processInfo(pid: number, ppid: number, command: string): ProcessSnapshot {
+  return { pid, ppid, command };
 }

@@ -41,18 +41,25 @@ const binding: ChatThreadBinding = {
   updatedAtMs: 1,
 };
 
-test('binding does not classify Desktop state from App Server history when projection is unknown', async () => {
-  let catalogRequests = 0;
+test('binding pushes latest history when Desktop projection is unknown', async () => {
+  const catalogRequests: Array<{ readonly method: string; readonly params: unknown }> = [];
+  const sentCards: Array<{ readonly chatId: string; readonly cardId: string; readonly idempotencyKey?: string }> = [];
   const catalog: BindingCatalogV3 = {
-    request: async () => {
-      catalogRequests += 1;
-      throw new Error('App Server history must not be queried');
+    request: async <TResult>(method: string, params: unknown): Promise<TResult> => {
+      catalogRequests.push({ method, params });
+      if (method !== 'thread/resume') {
+        throw new Error(`unexpected method: ${method}`);
+      }
+      return completedThreadResumeResponse() as TResult;
     },
   };
   const cards: BindingCardsV3 = {
     createCard: async (_card: CardKitJson) => 'card',
     replyCard: async () => 'message',
-    sendCard: async () => 'message',
+    sendCard: async (chatId, cardId, idempotencyKey) => {
+      sentCards.push({ chatId, cardId, idempotencyKey });
+      return 'message';
+    },
     replaceCard: async (_cardId, _card, sequence) => sequence + 1,
   };
   const store = {
@@ -80,6 +87,49 @@ test('binding does not classify Desktop state from App Server history when proje
     ): Promise<void>;
   }).completeBindingSideEffects(binding, 'picker-message');
 
+  assert.deepEqual(catalogRequests.map((request) => request.method), ['thread/resume']);
+  assert.equal(sentCards.length, 1);
+  assert.equal(sentCards[0]?.chatId, binding.chatId);
+  assert.match(sentCards[0]?.idempotencyKey ?? '', /history:picker-message:thread-active:turn-completed/);
+});
+
+test('binding skips history when Desktop projection reports active turn', async () => {
+  let catalogRequests = 0;
+  const catalog: BindingCatalogV3 = {
+    request: async () => {
+      catalogRequests += 1;
+      throw new Error('App Server history must not be queried for an active Desktop turn');
+    },
+  };
+  const cards: BindingCardsV3 = {
+    createCard: async (_card: CardKitJson) => 'card',
+    replyCard: async () => 'message',
+    sendCard: async () => 'message',
+    replaceCard: async (_cardId, _card, sequence) => sequence + 1,
+  };
+  const store = {
+    get: () => binding,
+  } as unknown as BindingStore;
+  const service = new ConversationBindingServiceV3(
+    config,
+    store,
+    catalog,
+    cards,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => true,
+  );
+
+  await (service as unknown as {
+    completeBindingSideEffects(
+      selectedBinding: ChatThreadBinding,
+      messageId: string,
+    ): Promise<void>;
+  }).completeBindingSideEffects(binding, 'picker-message');
+
   assert.equal(catalogRequests, 0);
 });
 
@@ -87,6 +137,48 @@ for (const command of ['/l', '/ll']) {
   test(`${command} scans thread/list pages before filtering by local workspace`, async () => {
     await assertCommandScansThreadListPages(command);
   });
+}
+
+function completedThreadResumeResponse(): unknown {
+  return {
+    thread: {
+      id: binding.threadId,
+      sessionId: 'session',
+      preview: 'hello',
+      cwd: binding.workspaceId,
+      modelProvider: 'openai',
+      status: { type: 'idle' },
+      name: binding.threadTitle,
+      turns: [{
+        id: 'turn-completed',
+        input: [{
+          type: 'text',
+          text: 'hello',
+          text_elements: [],
+        }],
+        items: [{
+          id: 'item-user',
+          type: 'userMessage',
+          text: 'hello',
+        }, {
+          id: 'item-final',
+          type: 'agentMessage',
+          phase: 'final_answer',
+          text: 'done',
+        }],
+        itemsView: 'full',
+        status: 'completed',
+        error: null,
+        startedAt: 1_000,
+        completedAt: 2_000,
+        durationMs: 1_000,
+      }],
+    },
+    model: 'gpt-5.6-sol',
+    modelProvider: 'openai',
+    cwd: binding.workspaceId,
+    initialTurnsPage: null,
+  };
 }
 
 async function assertCommandScansThreadListPages(command: string): Promise<void> {

@@ -28,8 +28,18 @@ export interface BackgroundServiceOptions {
   readonly entryPath?: string;
   readonly spawnProcess?: typeof spawn;
   readonly executeFile?: typeof execFileSync;
+  readonly listProcesses?: () => readonly ProcessSnapshot[];
+  readonly killProcess?: KillProcess;
+  readonly isProcessAlive?: (pid: number) => boolean;
+  readonly delay?: (milliseconds: number) => Promise<void>;
   readonly output?: { write(chunk: string): unknown };
   readonly jsonOutput?: boolean;
+}
+
+export interface ProcessSnapshot {
+  readonly pid: number;
+  readonly ppid: number | null;
+  readonly command: string;
 }
 
 export interface BackgroundServiceReport {
@@ -50,18 +60,20 @@ export async function runBackgroundCommand(
 ): Promise<BackgroundServiceReport> {
   const paths = servicePaths(options.configHome ?? resolveConfigHome(baseEnv));
   const output = options.output ?? process.stdout;
+  const entryPath = options.entryPath ?? resolve(__dirname, 'cli.js');
+  const lifecycle = createProcessLifecycle(options);
   if (command === 'status') {
-    const report = statusReport(command, paths, baseEnv);
+    const report = statusReport(command, paths, baseEnv, lifecycle.isAlive);
     output.write(options.jsonOutput ? `${JSON.stringify(report, null, 2)}\n` : formatStatus(report));
     return report;
   }
   if (command === 'stop') {
-    const report = await stopService(paths, baseEnv);
+    const report = await stopService(paths, baseEnv, entryPath, lifecycle);
     output.write(report.running ? '❌ Bridge 未能停止。\n' : '✅ Bridge 后台服务已停止。\n');
     return report;
   }
   if (command === 'restart') {
-    await stopService(paths, baseEnv);
+    await stopService(paths, baseEnv, entryPath, lifecycle);
     const report = startService(paths, options, baseEnv, 'restart');
     output.write(formatStarted(report, '重启'));
     return report;
@@ -71,12 +83,12 @@ export async function runBackgroundCommand(
     const args = ['install', '-g', UPDATE_REPOSITORY];
     if (options.forceUpdate) args.push('--force');
     (options.executeFile ?? execFileSync)(npm, args, { stdio: 'inherit' });
-    await stopService(paths, baseEnv);
+    await stopService(paths, baseEnv, entryPath, lifecycle);
     const report = startService(paths, options, baseEnv, 'update');
     output.write(formatStarted(report, '更新并重启'));
     return report;
   }
-  const existing = statusReport('start', paths, baseEnv);
+  const existing = statusReport('start', paths, baseEnv, lifecycle.isAlive);
   if (existing.running) {
     output.write(`ℹ️ Bridge 已在后台运行，PID: ${existing.pid}\n`);
     return existing;
@@ -160,40 +172,74 @@ function startService(
 async function stopService(
   paths: ServicePaths,
   baseEnv: NodeJS.ProcessEnv,
+  entryPath: string,
+  lifecycle: ProcessLifecycle,
 ): Promise<BackgroundServiceReport> {
   const pid = readPid(paths.pidFile);
-  if (!pid || !isProcessAlive(pid)) {
+  if (!pid || !lifecycle.isAlive(pid)) {
     removePidFile(paths.pidFile);
-    return statusReport('stop', paths, baseEnv);
+  } else {
+    await terminateProcess(pid, lifecycle);
   }
+  await stopAdditionalBridgeProcesses(entryPath, lifecycle);
+  removePidFile(paths.pidFile);
+  const report = statusReport('stop', paths, baseEnv, lifecycle.isAlive);
+  const leftovers = currentEntryBridgeProcesses(entryPath, lifecycle.listProcesses())
+    .filter((processInfo) => lifecycle.isAlive(processInfo.pid));
+  return leftovers.length === 0 ? report : {
+    ...report,
+    running: true,
+    pid: leftovers[0]?.pid ?? report.pid,
+  };
+}
+
+async function terminateProcess(
+  pid: number,
+  lifecycle: ProcessLifecycle,
+): Promise<void> {
   try {
-    process.kill(pid, 'SIGTERM');
+    lifecycle.kill(pid, 'SIGTERM');
   } catch {
-    removePidFile(paths.pidFile);
-    return statusReport('stop', paths, baseEnv);
+    return;
   }
   const deadline = Date.now() + STOP_WAIT_MS;
-  while (Date.now() < deadline && isProcessAlive(pid)) {
-    await delay(STOP_POLL_MS);
+  while (Date.now() < deadline && lifecycle.isAlive(pid)) {
+    await lifecycle.delay(STOP_POLL_MS);
   }
-  if (isProcessAlive(pid)) {
+  if (lifecycle.isAlive(pid)) {
     try {
-      process.kill(pid, 'SIGKILL');
+      lifecycle.kill(pid, 'SIGKILL');
     } catch {
       // The process may exit between the liveness check and the signal.
     }
   }
-  removePidFile(paths.pidFile);
-  return statusReport('stop', paths, baseEnv);
+}
+
+async function stopAdditionalBridgeProcesses(
+  entryPath: string,
+  lifecycle: ProcessLifecycle,
+): Promise<void> {
+  const candidates = currentEntryBridgeProcesses(entryPath, lifecycle.listProcesses())
+    .filter((processInfo) => processInfo.pid !== process.pid && lifecycle.isAlive(processInfo.pid));
+  const ordered = [...candidates].sort((left, right) => processKindOrder(left.kind) - processKindOrder(right.kind));
+  const seen = new Set<number>();
+  for (const processInfo of ordered) {
+    if (seen.has(processInfo.pid)) {
+      continue;
+    }
+    seen.add(processInfo.pid);
+    await terminateProcess(processInfo.pid, lifecycle);
+  }
 }
 
 function statusReport(
   command: BackgroundCommand,
   paths: ServicePaths,
   baseEnv: NodeJS.ProcessEnv,
+  isAlive: (pid: number) => boolean,
 ): BackgroundServiceReport {
   const pid = readPid(paths.pidFile);
-  const running = pid !== null && isProcessAlive(pid);
+  const running = pid !== null && isAlive(pid);
   if (pid !== null && !running) removePidFile(paths.pidFile);
   const health = running ? readRuntimeHealth(paths.configHome) : null;
   return {
@@ -203,8 +249,97 @@ function statusReport(
     loggingEnabled: resolveLoggingEnabled(paths.configHome, baseEnv),
     stdoutLog: paths.stdoutLog,
     stderrLog: paths.stderrLog,
-    health: health?.supervisorPid === pid && isProcessAlive(health.pid) ? health : null,
+    health: health?.supervisorPid === pid && isAlive(health.pid) ? health : null,
   };
+}
+
+type KillProcess = (pid: number, signal?: NodeJS.Signals | number) => unknown;
+
+interface ProcessLifecycle {
+  readonly listProcesses: () => readonly ProcessSnapshot[];
+  readonly kill: KillProcess;
+  readonly isAlive: (pid: number) => boolean;
+  readonly delay: (milliseconds: number) => Promise<void>;
+}
+
+interface BridgeProcessSnapshot extends ProcessSnapshot {
+  readonly kind: 'supervise' | 'run';
+}
+
+function createProcessLifecycle(options: BackgroundServiceOptions): ProcessLifecycle {
+  return {
+    listProcesses: options.listProcesses ?? listSystemProcesses,
+    kill: options.killProcess ?? process.kill,
+    isAlive: options.isProcessAlive ?? isProcessAlive,
+    delay: options.delay ?? delay,
+  };
+}
+
+function listSystemProcesses(): readonly ProcessSnapshot[] {
+  if (process.platform === 'win32') {
+    return [];
+  }
+  const output = execFileSync('ps', ['-axo', 'pid=,ppid=,command='], {
+    encoding: 'utf8',
+    maxBuffer: 2 * 1024 * 1024,
+  });
+  return output
+    .split('\n')
+    .map((line) => parseProcessLine(line))
+    .filter((processInfo): processInfo is ProcessSnapshot => processInfo !== null);
+}
+
+function parseProcessLine(line: string): ProcessSnapshot | null {
+  const match = /^\s*(\d+)\s+(\d+)\s+(.+?)\s*$/.exec(line);
+  if (!match) {
+    return null;
+  }
+  const pid = Number(match[1]);
+  const ppid = Number(match[2]);
+  if (!Number.isSafeInteger(pid) || pid <= 0 || !Number.isSafeInteger(ppid) || ppid < 0) {
+    return null;
+  }
+  return {
+    pid,
+    ppid,
+    command: match[3] ?? '',
+  };
+}
+
+function currentEntryBridgeProcesses(
+  entryPath: string,
+  processes: readonly ProcessSnapshot[],
+): readonly BridgeProcessSnapshot[] {
+  return processes.flatMap((processInfo) => {
+    const kind = bridgeProcessKind(entryPath, processInfo.command);
+    return kind ? [{ ...processInfo, kind }] : [];
+  });
+}
+
+function bridgeProcessKind(entryPath: string, command: string): BridgeProcessSnapshot['kind'] | null {
+  if (!/(?:^|[/\\\s])node(?:\.exe)?(?:\s|$)/i.test(command)) {
+    return null;
+  }
+  if (commandRunsBridgeEntry(command, entryPath, 'supervise')) {
+    return 'supervise';
+  }
+  if (commandRunsBridgeEntry(command, entryPath, 'run')) {
+    return 'run';
+  }
+  return null;
+}
+
+function commandRunsBridgeEntry(command: string, entryPath: string, subcommand: string): boolean {
+  const index = command.indexOf(entryPath);
+  if (index < 0) {
+    return false;
+  }
+  const afterEntry = command.slice(index + entryPath.length).trimStart();
+  return afterEntry === subcommand || afterEntry.startsWith(`${subcommand} `);
+}
+
+function processKindOrder(kind: BridgeProcessSnapshot['kind']): number {
+  return kind === 'supervise' ? 0 : 1;
 }
 
 function resolveLoggingEnabled(configHome: string, baseEnv: NodeJS.ProcessEnv): boolean {

@@ -313,7 +313,6 @@ export class ConversationBindingServiceV3 {
         chatId: binding.chatId,
         threadId: binding.threadId,
       });
-      return;
     }
     await this.pushLatestHistoryCard(
       binding,
