@@ -1,0 +1,41 @@
+src/app/codex/desktop-ipc-client.ts
+  s_c54cf697e76a51::t_52789ebe0cdda5 458,488,510,532
+src/app/in-memory-orchestrator.ts
+  s_c54cf697e76a51::t_8aebadd5f757a3 831-832
+  s_c54cf697e76a51::t_b84acf25ba6e7e 847-857,859-867,869-874,878,881,883,885,887-894,896
+  s_c54cf697e76a51::t_2e9c5c4d8579dc 299,301-302,333,335-348
+  s_c54cf697e76a51::t_08a8700bb3e84b 2420-2426,3093-3094,3096
+  s_c54cf697e76a51::t_e5cabc15f8fba1 3095
+  s_c54cf697e76a51::t_ff38950cfd01d1 86-91,123-131,265-266,3097
+  s_c54cf697e76a51::t_426c766e6ca9a3 783,785,798-799,823,826
+  s_c54cf697e76a51::t_70c9679ed34b34 3098
+docs/app-server-support-matrix.md
+  s_c54cf697e76a51::t_4573f76eeb130e 64,70-73
+test/app/desktop-ipc-regression.test.ts
+  s_c54cf697e76a51::t_0be3ff09c08030 1191-1225,1236
+  s_c54cf697e76a51::t_c40f48a48f42f5 1882-1903
+  s_c54cf697e76a51::t_21bccf7fe644ca 1226,1234,1240,1242,1244,1262,1266-1269
+  s_c54cf697e76a51::t_093861522fa61b 159,161,163,165
+src/app/main.ts
+  s_c54cf697e76a51::t_a0840d94920d4c 45
+  s_c54cf697e76a51::t_1aaddcd3046ac6 435-437
+  s_c54cf697e76a51::t_a1e334d4cab7d5 34,438
+  s_c54cf697e76a51::t_abeb7d37edb7c0 301,307-308
+  s_c54cf697e76a51::t_2b584473cf7e26 300,302-306,309-312,462
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "f8692b6bea0c5f10ddccd6adb3809b1ad03f2496",
+  "prompts": {},
+  "sessions": {
+    "s_c54cf697e76a51": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5e80-7c30-7a71-a434-09aeae22cce8",
+        "model": "gpt-5.5"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    }
+  }
+}
