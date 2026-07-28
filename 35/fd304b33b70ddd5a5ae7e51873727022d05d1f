@@ -1,0 +1,23 @@
+src/app/background-service.ts
+  s_c54cf697e76a51::t_70235326dc81e1 78,401-402,404,407
+  s_c54cf697e76a51::t_c636dbd2b88383 71-72,79,81,91-92,94,104,398-400,403,405-406
+test/app/background-service.test.ts
+  s_c54cf697e76a51::t_48e57aed387396 67-90,93-98
+  s_c54cf697e76a51::t_5d571aff6d4e70 29,58,66,91-92,140
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "35fd304b33b70ddd5a5ae7e51873727022d05d1f",
+  "prompts": {},
+  "sessions": {
+    "s_c54cf697e76a51": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5e80-7c30-7a71-a434-09aeae22cce8",
+        "model": "gpt-5.5"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    }
+  }
+}
