@@ -89,6 +89,7 @@ export interface BridgeRuntime {
 }
 
 const BINDING_DESKTOP_SNAPSHOT_TIMEOUT_MS = 5_000;
+const DESKTOP_ROUTE_RECOVERY_TIMEOUT_MS = 5_000;
 
 interface BotRuntime {
   readonly botKey: string;
@@ -411,6 +412,21 @@ export async function startBridge(
     onDesktopDeliveryOutcome: (outcome) => {
       updateDesktopDeliveryHealth(outcome);
       publishHealth();
+    },
+    recoverDesktopThreadRoute: async (threadId) => {
+      logger.info('desktop_route_recovery_started', { threadId });
+      try {
+        await navigation.openThread(threadId);
+      } catch (error) {
+        logger.error('desktop_route_recovery_open_failed', error, { threadId });
+        return false;
+      }
+      const recovered = await desktop.waitForThreadFollowingSnapshot(
+        threadId,
+        DESKTOP_ROUTE_RECOVERY_TIMEOUT_MS,
+      );
+      logger.info('desktop_route_recovery_completed', { threadId, recovered });
+      return recovered;
     },
     releaseInboundImages: (paths) => {
       defaultRuntime.cardImages.revoke(paths);

@@ -26,6 +26,7 @@ test('background service ignores process output and does not create log files wh
       assert.equal(report.loggingEnabled, false);
       assert.deepEqual(spawned.options?.stdio, ['ignore', 'ignore', 'ignore']);
       assert.equal(existsSync(join(root, 'logs')), false);
+      assert.match(output.join(''), /Bridge 正在启动后台服务/);
       assert.match(output.join(''), /日志: 已关闭/);
       assert.doesNotMatch(output.join(''), /标准日志|错误日志/);
     } finally {
@@ -54,8 +55,42 @@ test('background service captures process output only when file logging is enabl
     assert.equal(typeof stdio[2], 'number');
     assert.equal(existsSync(join(root, 'logs', 'bridge_stdout.log')), true);
     assert.equal(existsSync(join(root, 'logs', 'bridge_stderr.log')), true);
+    assert.match(output.join(''), /Bridge 正在启动后台服务/);
     assert.match(output.join(''), /标准日志:/);
     assert.match(output.join(''), /错误日志:/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('background restart logs both stop and start lifecycle phases', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'bridge-background-restart-log-'));
+  try {
+    const entryPath = '/opt/codex-feishu-bridge/dist/app/cli.js';
+    const alive = new Set([100]);
+    const spawned = recordingSpawn();
+    const output: string[] = [];
+    writeFileSync(join(root, 'bridge.pid'), '100\n', { mode: 0o600 });
+
+    const report = await runBackgroundCommand('restart', {
+      configHome: root,
+      entryPath,
+      spawnProcess: spawned.spawnProcess,
+      listProcesses: () => [],
+      isProcessAlive: (pid) => alive.has(pid),
+      killProcess: (pid, signal) => {
+        if (pid === 100 && signal === 'SIGTERM') {
+          alive.delete(pid);
+        }
+      },
+      delay: async () => undefined,
+      output: { write: (chunk) => output.push(String(chunk)) },
+    }, {});
+
+    assert.equal(report.running, true);
+    assert.match(output.join(''), /Bridge 正在停止后台服务，旧 PID: 100/);
+    assert.match(output.join(''), /Bridge 正在启动后台服务/);
+    assert.match(output.join(''), /Bridge 已重启，PID: 2000000000/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -102,6 +137,7 @@ test('background stop terminates every same-entry Bridge supervisor and worker',
     assert.equal(alive.has(300), true);
     assert.equal(alive.has(400), true);
     assert.equal(existsSync(join(root, 'bridge.pid')), false);
+    assert.match(output.join(''), /Bridge 正在停止后台服务，旧 PID: 100/);
     assert.match(output.join(''), /Bridge 后台服务已停止/);
   } finally {
     rmSync(root, { recursive: true, force: true });

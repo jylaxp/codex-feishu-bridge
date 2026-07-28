@@ -954,6 +954,51 @@ test('orchestrator exposes an unavailable Desktop owner in health callbacks and 
   orchestrator.abandonAll();
 });
 
+test('orchestrator opens the bound Desktop thread and retries once when the owner is missing', async () => {
+  const desktop = new MissingOwnerOnceDesktopTurnClient();
+  const cards = new RecordingCards();
+  const recoveredThreads: string[] = [];
+  const deliveryOutcomes: DesktopDeliveryOutcome[] = [];
+  const orchestrator = new InMemoryOrchestrator(config, desktop, cards, {
+    recoverDesktopThreadRoute: async (threadId) => {
+      recoveredThreads.push(threadId);
+      return true;
+    },
+    onDesktopDeliveryOutcome: (outcome) => deliveryOutcomes.push(outcome),
+  });
+
+  assert.equal(await orchestrator.handleInbound(inbound('owner-recovered', 'start'), binding), 'started');
+
+  assert.equal(desktop.starts.length, 2);
+  assert.deepEqual(recoveredThreads, ['thread-bound']);
+  assert.deepEqual(deliveryOutcomes.map((outcome) => outcome.status), ['succeeded']);
+  assert.equal(orchestrator.runtimeTaskHealth().active, 1);
+  orchestrator.abandonAll();
+});
+
+test('orchestrator keeps no-client-found terminal when route recovery cannot load the owner', async () => {
+  const desktop = new RejectingDesktopTurnClient();
+  const cards = new RecordingCards();
+  const recoveredThreads: string[] = [];
+  const orchestrator = new InMemoryOrchestrator(config, desktop, cards, {
+    recoverDesktopThreadRoute: async (threadId) => {
+      recoveredThreads.push(threadId);
+      return false;
+    },
+  });
+
+  assert.equal(await orchestrator.handleInbound(inbound('owner-still-missing', 'start'), binding), 'started');
+  await waitFor(() => cards.replacements.length > 0);
+
+  assert.equal(desktop.starts.length, 1);
+  assert.deepEqual(recoveredThreads, ['thread-bound']);
+  assert.match(
+    JSON.stringify(cards.replacements.at(-1)),
+    /任务启动未发送到 ChatGPT Desktop（no-client-found）/,
+  );
+  orchestrator.abandonAll();
+});
+
 test('Desktop delivery observers cannot change start, steer, or interrupt semantics', async () => {
   const desktop = new RecordingDesktopTurnClient();
   const orchestrator = new InMemoryOrchestrator(config, desktop, new RecordingCards(), {
@@ -1542,6 +1587,33 @@ class RejectingDesktopTurnClient extends RecordingDesktopTurnClient {
       undefined,
       'no-client-found',
     );
+  }
+}
+
+class MissingOwnerOnceDesktopTurnClient extends RecordingDesktopTurnClient {
+  override async startTurnTracked(params: TurnStartParams): Promise<Turn> {
+    this.starts.push(params);
+    if (this.starts.length === 1) {
+      throw new DesktopIpcRequestError(
+        'DESKTOP_IPC_REMOTE_REJECTED',
+        'PROVABLY_UNSENT',
+        7,
+        'thread-follower-start-turn',
+        'request-owner-missing',
+        undefined,
+        'no-client-found',
+      );
+    }
+    return {
+      id: `turn-${this.starts.length}`,
+      items: [],
+      itemsView: 'notLoaded',
+      status: 'inProgress',
+      error: null,
+      startedAt: null,
+      completedAt: null,
+      durationMs: null,
+    };
   }
 }
 

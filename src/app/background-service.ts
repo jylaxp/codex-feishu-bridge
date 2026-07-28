@@ -68,12 +68,17 @@ export async function runBackgroundCommand(
     return report;
   }
   if (command === 'stop') {
+    const previous = statusReport(command, paths, baseEnv, lifecycle.isAlive);
+    output.write(formatStopping(previous));
     const report = await stopService(paths, baseEnv, entryPath, lifecycle);
     output.write(report.running ? '❌ Bridge 未能停止。\n' : '✅ Bridge 后台服务已停止。\n');
     return report;
   }
   if (command === 'restart') {
+    const previous = statusReport(command, paths, baseEnv, lifecycle.isAlive);
+    output.write(formatStopping(previous));
     await stopService(paths, baseEnv, entryPath, lifecycle);
+    output.write(formatStarting());
     const report = startService(paths, options, baseEnv, 'restart');
     output.write(formatStarted(report, '重启'));
     return report;
@@ -83,7 +88,10 @@ export async function runBackgroundCommand(
     const args = ['install', '-g', UPDATE_REPOSITORY];
     if (options.forceUpdate) args.push('--force');
     (options.executeFile ?? execFileSync)(npm, args, { stdio: 'inherit' });
+    const previous = statusReport(command, paths, baseEnv, lifecycle.isAlive);
+    output.write(formatStopping(previous));
     await stopService(paths, baseEnv, entryPath, lifecycle);
+    output.write(formatStarting());
     const report = startService(paths, options, baseEnv, 'update');
     output.write(formatStarted(report, '更新并重启'));
     return report;
@@ -93,6 +101,7 @@ export async function runBackgroundCommand(
     output.write(`ℹ️ Bridge 已在后台运行，PID: ${existing.pid}\n`);
     return existing;
   }
+  output.write(formatStarting());
   const report = startService(paths, options, baseEnv, 'start');
   output.write(formatStarted(report, '启动'));
   return report;
@@ -385,4 +394,14 @@ function formatStarted(report: BackgroundServiceReport, action: string): string 
   return report.loggingEnabled
     ? `✅ Bridge 已${action}，PID: ${report.pid}\n标准日志: ${report.stdoutLog}\n错误日志: ${report.stderrLog}\n`
     : `✅ Bridge 已${action}，PID: ${report.pid}\n日志: 已关闭\n`;
+}
+
+function formatStarting(): string {
+  return '▶️ Bridge 正在启动后台服务\n';
+}
+
+function formatStopping(previous: BackgroundServiceReport): string {
+  return previous.running
+    ? `🛑 Bridge 正在停止后台服务，旧 PID: ${previous.pid}\n`
+    : '🛑 Bridge 正在停止后台服务，未发现旧后台进程\n';
 }

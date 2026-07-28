@@ -100,6 +100,8 @@ export interface InMemoryOrchestratorOptions {
   readonly onRuntimeHealthChanged?: () => void;
   /** Reports content-free Desktop delivery outcomes for logs and runtime health. */
   readonly onDesktopDeliveryOutcome?: (outcome: DesktopDeliveryOutcome) => void;
+  /** Attempts to make a missing Desktop owner load the bound thread before one safe start retry. */
+  readonly recoverDesktopThreadRoute?: (threadId: string) => Promise<boolean>;
   /** Releases process-owned image files after Codex no longer needs them. */
   readonly releaseInboundImages?: (paths: readonly string[]) => void;
   readonly releaseInboundImagesForBotKey?: (botKey: string, paths: readonly string[]) => void;
@@ -286,6 +288,7 @@ export class InMemoryOrchestrator {
   private readonly onActiveThreadsChanged: () => void;
   private readonly onRuntimeHealthChanged: () => void;
   private readonly onDesktopDeliveryOutcome: (outcome: DesktopDeliveryOutcome) => void;
+  private readonly recoverDesktopThreadRoute: ((threadId: string) => Promise<boolean>) | undefined;
   private readonly releaseInboundImages: (paths: readonly string[]) => void;
   private readonly releaseInboundImagesForBotKey:
     | ((botKey: string, paths: readonly string[]) => void)
@@ -323,6 +326,7 @@ export class InMemoryOrchestrator {
     this.onActiveThreadsChanged = options.onActiveThreadsChanged ?? (() => undefined);
     this.onRuntimeHealthChanged = options.onRuntimeHealthChanged ?? (() => undefined);
     this.onDesktopDeliveryOutcome = options.onDesktopDeliveryOutcome ?? (() => undefined);
+    this.recoverDesktopThreadRoute = options.recoverDesktopThreadRoute;
     this.releaseInboundImages = options.releaseInboundImages ?? (() => undefined);
     this.releaseInboundImagesForBotKey = options.releaseInboundImagesForBotKey;
     this.cardRetryDelayMs = options.cardRetryDelayMs ?? CARD_RETRY_BASE_DELAY_MS;
@@ -777,7 +781,7 @@ export class InMemoryOrchestrator {
     void this.refreshRateLimits(task);
     let turn: Turn;
     try {
-      turn = await this.desktop.startTurnTracked(buildStart(task), () => undefined);
+      turn = await this.startDesktopTurnWithRouteRecovery(task);
     } catch (error) {
       this.reportDesktopDelivery('start', 'failed', task, task.message.messageId, error);
       task.status = task.cancelRequested ? 'INTERRUPTED' : 'FAILED';
@@ -813,6 +817,28 @@ export class InMemoryOrchestrator {
     this.replayPending(task);
     this.requestCardUpdate(task, true);
     return 'started';
+  }
+
+  private async startDesktopTurnWithRouteRecovery(task: RuntimeTask): Promise<Turn> {
+    try {
+      return await this.desktop.startTurnTracked(buildStart(task), () => undefined);
+    } catch (error) {
+      if (!await this.tryRecoverMissingDesktopOwner(task, error)) {
+        throw error;
+      }
+    }
+    return this.desktop.startTurnTracked(buildStart(task), () => undefined);
+  }
+
+  private async tryRecoverMissingDesktopOwner(task: RuntimeTask, error: unknown): Promise<boolean> {
+    if (!missingDesktopOwner(error) || !this.recoverDesktopThreadRoute) {
+      return false;
+    }
+    try {
+      return await this.recoverDesktopThreadRoute(task.binding.threadId);
+    } catch {
+      return false;
+    }
   }
 
   private reportDesktopDelivery(
@@ -2982,6 +3008,12 @@ function deliveryFailureText(error: unknown, operation: string): string {
 function deliveryWasConfirmedNotUsed(error: unknown): boolean {
   return !(error instanceof DesktopIpcRequestError)
     || error.disposition !== 'OUTCOME_UNKNOWN';
+}
+
+function missingDesktopOwner(error: unknown): boolean {
+  return error instanceof DesktopIpcRequestError
+    && error.disposition === 'PROVABLY_UNSENT'
+    && error.remoteError === 'no-client-found';
 }
 
 function deliveryFailureCode(error: DesktopIpcRequestError): string {
