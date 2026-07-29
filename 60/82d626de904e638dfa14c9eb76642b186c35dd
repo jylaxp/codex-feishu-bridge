@@ -1,0 +1,240 @@
+test/app/group-access-policy.test.ts
+  s_7aa13d4c94b804::t_9b5c8590971b39 1-4,9-66,70,74,78,81-82,86,90,94-95,99,103,106-107,112
+  s_d0fb05ec6cbad2::t_9b880a65c9cdb3 5-8,67-69,71-73,75-77,79-80,83-85,87-89,91-93,96-98,100-102,104-105,108-111,113-119
+src/app/bot-config-store.ts
+  s_7aa13d4c94b804::t_9e8036be5458f8 432,486
+  s_7aa13d4c94b804::t_2a76c9cf6cd1d9 131,405,417,421,455-457
+  s_7aa13d4c94b804::t_5ca4756d6c9dee 43,190-191,197,289,305-306,326
+  s_7aa13d4c94b804::t_9acdf5fec14bfd 327
+  s_7aa13d4c94b804::t_d17f3a1b80bd6c 458
+  s_7aa13d4c94b804::t_69b64f7dfd863c 487
+  s_7aa13d4c94b804::t_20bd437981787a 49,55-61,438,463,492,497-541
+test/app/binding-store.test.ts
+  s_7aa13d4c94b804::t_c36d84353a1c7c 70-185
+  s_7aa13d4c94b804::t_6742e86392b446 60
+src/app/lark/event-server.ts
+  s_7aa13d4c94b804::t_fa78d55797278e 117-122,126
+src/app/main.ts
+  s_7aa13d4c94b804::t_7728edb6df217f 637
+  s_7aa13d4c94b804::t_6af02df79fa34f 624-626,632,643,660,707,714
+  s_7aa13d4c94b804::t_a434f9d4668cee 654-659
+  s_7aa13d4c94b804::t_2c12b81d03b808 317,520-548,561,644,661,675,704,708,715,768
+  s_7aa13d4c94b804::t_e217566661803d 629
+  s_7aa13d4c94b804::t_11542e0896e8b7 66,627,630,636
+  s_7aa13d4c94b804::t_d06d2093396288 314-316
+  s_7aa13d4c94b804::t_eb2b9227990e55 562
+  s_7aa13d4c94b804::t_71bacf60e15e6d 623
+  s_7aa13d4c94b804::t_62b0140b9c1c9d 628
+  s_7aa13d4c94b804::t_8e3db213896ca9 631
+  s_7aa13d4c94b804::t_4e030df0758a43 642
+  s_7aa13d4c94b804::t_668c714fb3737f 662-664,672-674
+  s_7aa13d4c94b804::t_a20b5869dbb477 676-678,701-703
+  s_7aa13d4c94b804::t_6c5e69c5eedf91 705-706
+  s_7aa13d4c94b804::t_8b29ec19e89ac1 709
+  s_7aa13d4c94b804::t_dfda5d83a411ba 46-52,58,202,241-242,312-313,411-424,482-490,665-671,679-700,718,721,745,762,770
+docs/plans/2026-07-28-002-feat-bot-to-bot-collaboration-plan.md
+  s_7aa13d4c94b804::t_8468e7967c9de8 1-92,95-114,117-120,122-509,512-541,543-561
+  s_7aa13d4c94b804::t_5d8eaf524b3f45 93-94
+  s_7aa13d4c94b804::t_f7032200cfd774 115-116
+  s_7aa13d4c94b804::t_b52a4f852e5c20 121
+  s_7aa13d4c94b804::t_27e17acf19295e 510-511
+  s_7aa13d4c94b804::t_35c7575fa9ccdd 542
+  s_7aa13d4c94b804::t_683164e2d84e0c 562-564
+  s_7aa13d4c94b804::t_706ade4c746749 565-566
+src/app/domain.ts
+  s_7aa13d4c94b804::t_dabf5ab2da54ac 85
+docs/plans/2026-07-27-001-feat-multi-lark-bot-bridge-plan.md
+  s_7aa13d4c94b804::t_6467c6107a6a21 469-470
+  s_7aa13d4c94b804::t_618c67f805b4aa 214
+  s_7aa13d4c94b804::t_6e53c07ce3a45c 33,212-213
+  s_7aa13d4c94b804::t_dc41a5b6cccac3 34
+src/app/config.ts
+  s_7aa13d4c94b804::t_14598f0180d5cd 196
+  s_7aa13d4c94b804::t_2fa5f7eb7f6a27 197
+test/app/lark-image-input.test.ts
+  s_7aa13d4c94b804::t_54cc58e3ff12fa 181-205,207-208,211-237,253-254,270,272-275,278
+  s_7aa13d4c94b804::t_89f9d9fe54659e 260,265,279,1036-1068
+  s_7aa13d4c94b804::t_5d64d3e040fad4 139-180
+  s_7aa13d4c94b804::t_2dfa5a895fcb0d 255-256,261-264,266-268,315-339
+  s_7aa13d4c94b804::t_5c399e98e6f066 206,209-210
+  s_984adf01c45580::t_7f9754589332b4 252,257-259,269,271,276-277
+src/app/conversation-binding-service-v3.ts
+  s_7aa13d4c94b804::t_a8c4091028298c 1151-1154
+  s_7aa13d4c94b804::t_672ccfabdd4238 1025-1026,1168,1170-1177,1184-1233,1238,1244
+  s_7aa13d4c94b804::t_d543d14577e53b 91,169
+  s_7aa13d4c94b804::t_75bab9690d9cce 104,109-112,115-116,300-304,309-334,340-341,344-347,349-350,352,354-355,358-359,1261
+  s_7aa13d4c94b804::t_5d1e126b871e82 305-308,335,342,1018,1023,1027,1169,1178-1183,1241
+  s_7aa13d4c94b804::t_d80be7bb47e75e 92
+  s_7aa13d4c94b804::t_43985c3aabd244 113-114
+  s_7aa13d4c94b804::t_1907436de4709e 336-339
+  s_7aa13d4c94b804::t_b67558ba186f45 343
+  s_7aa13d4c94b804::t_32451c9efa0c73 348
+  s_7aa13d4c94b804::t_802de2b63da7e3 351
+  s_7aa13d4c94b804::t_2f82ac7fb1e608 353
+  s_7aa13d4c94b804::t_fc96bdda521c8b 356-357
+  s_7aa13d4c94b804::t_4b4f7e0ff72503 360-362
+  s_7aa13d4c94b804::t_ffc32aca4c3ab7 1015-1017
+  s_7aa13d4c94b804::t_e563c7d0f68497 1019-1022
+  s_7aa13d4c94b804::t_fe65c35b15c56d 1024
+  s_7aa13d4c94b804::t_d94d0c66374be8 1155
+  s_7aa13d4c94b804::t_fddcadff57623b 1234-1237
+  s_7aa13d4c94b804::t_cd4ddbab28c450 1239-1240
+  s_7aa13d4c94b804::t_5a2599de53c086 1242-1243
+  s_7aa13d4c94b804::t_67cdbb65f0fd34 1245-1247,1258-1260
+  s_7aa13d4c94b804::t_b37383350bc579 1262-1264
+  s_7aa13d4c94b804::t_fa0069eef2ea6d 7,1012-1014,1248-1257
+src/app/bot-command.ts
+  s_7aa13d4c94b804::t_7c553b0e24e106 58,295
+  s_7aa13d4c94b804::t_912eb2797e4b22 323
+  s_7aa13d4c94b804::t_748452578c9b19 133-134,167
+  s_984adf01c45580::t_6a2bd34a132b22 60,168,297,325
+.env.example
+  s_7aa13d4c94b804::t_e55b2f600958fc 20-21,24,27
+  s_7aa13d4c94b804::t_200207bc6de4d7 22-23
+  s_7aa13d4c94b804::t_bc43d39309239e 25-26
+README.md
+  s_7aa13d4c94b804::t_6464b879ddaff8 275-276,306
+  s_7aa13d4c94b804::t_c27e258ae90e70 124
+  s_7aa13d4c94b804::t_cd2e37b5213da0 123,125
+  s_7aa13d4c94b804::t_af460dc6e161b9 126-128
+  s_7aa13d4c94b804::t_f91b04fa025262 307-309
+  s_7aa13d4c94b804::t_ef159d95483661 7-8,237-241,310-316
+docs/plans/2026-07-27-001-feat-multi-lark-bot-bridge-plan.zh-CN.md
+  s_7aa13d4c94b804::t_0e877c1003e52c 33,212-213
+  s_7aa13d4c94b804::t_c82769dd6b70c3 214
+  s_7aa13d4c94b804::t_ad747f4d3a06ec 469-470
+  s_7aa13d4c94b804::t_f1425551191983 34
+src/app/binding-store.ts
+  s_7aa13d4c94b804::t_4066d18663de02 202
+  s_7aa13d4c94b804::t_dabeed8a066e09 40-44,198-201,203-225,290,310,349-356,397,485,489
+  s_7aa13d4c94b804::t_d28d16e50189e3 326-337,463,466,473,476,490
+  s_7aa13d4c94b804::t_4d31f2f85909e7 311-313
+  s_7aa13d4c94b804::t_f3ba6f8e6c0be2 398-400
+  s_7aa13d4c94b804::t_5e210bbc35e0d5 460-462
+  s_7aa13d4c94b804::t_84c6daa0b51748 464-465
+  s_7aa13d4c94b804::t_e2a5fa0c01b658 467-472
+  s_7aa13d4c94b804::t_1efa08d0ff97a7 474-475
+  s_7aa13d4c94b804::t_59c668135f7331 477-479,482-484
+  s_7aa13d4c94b804::t_868c2f9bb9345a 486-488
+  s_7aa13d4c94b804::t_4b5ac08e1308f1 491-493
+  s_7aa13d4c94b804::t_1dc19a3e298436 17,314,401-407,431-434,480-481,494-503
+src/app/setup.ts
+  s_7aa13d4c94b804::t_9e6c4b183c6b2d 259,320
+  s_7aa13d4c94b804::t_fad5e330af7dc4 319
+  s_7aa13d4c94b804::t_aa810a707fbf81 260
+test/app/conversation-binding-service-v3.test.ts
+  s_7aa13d4c94b804::t_e1c2ddfb4d5025 2-4,7
+  s_7aa13d4c94b804::t_ca1638e3b0bafd 352-410,414-417,419-425,427-438,490-500,502,510,519-522,526,528-535,537-540,542,544,548-551,553,557,559,564-567
+  s_7aa13d4c94b804::t_937c2456e49bed 411-413
+  s_7aa13d4c94b804::t_4e11e440ea9d8b 418
+  s_7aa13d4c94b804::t_5e04d63ad961c3 426
+  s_7aa13d4c94b804::t_76f21959a36cfb 439-441,487-489
+  s_7aa13d4c94b804::t_059e61bc4170c3 501
+  s_7aa13d4c94b804::t_85a68357fb4c29 503-505,507-509
+  s_7aa13d4c94b804::t_2e7459fdc2844b 511-513,516-518
+  s_7aa13d4c94b804::t_33cde821f13639 523-525
+  s_7aa13d4c94b804::t_03cd2c5aef02b1 527
+  s_7aa13d4c94b804::t_3aa0a4d93b4280 536
+  s_7aa13d4c94b804::t_a5cdb7333df6b8 541
+  s_7aa13d4c94b804::t_4c512097b9ce5f 543
+  s_7aa13d4c94b804::t_92588426ec71a9 545-547
+  s_7aa13d4c94b804::t_598facffd22d9c 552
+  s_7aa13d4c94b804::t_04de439488e8f1 554-556
+  s_7aa13d4c94b804::t_42a55f70e86f7a 558
+  s_7aa13d4c94b804::t_760d4bb3a291d8 560-563
+  s_7aa13d4c94b804::t_8d0196342f551c 568-570
+  s_7aa13d4c94b804::t_b9144dae81e58b 442-486,506,514-515,571-576
+src/app/lark/intake.ts
+  s_7aa13d4c94b804::t_5a724fff77e8da 317-318,320-328,397
+  s_7aa13d4c94b804::t_cc6dba6e5fc717 88
+  s_7aa13d4c94b804::t_ce6249274cdc03 89-92,96-97
+  s_7aa13d4c94b804::t_7b10ca7139912c 243-262,266,270,368,398,436
+  s_7aa13d4c94b804::t_d75e75380e5ffa 391-393,396,418
+  s_7aa13d4c94b804::t_e3a4217cffbe33 331,333,337,340,400,404,407,411,413-417,438,441,445,450,548
+  s_7aa13d4c94b804::t_1f2454bcd7b724 39,47-48,93-94
+  s_984adf01c45580::t_91f852e317f949 2,55,95,263-265,267-269,271-272,329-330,332,334-336,338-339,341,344,399,401-403,405-406,408,410,412,435,437,439-440,442-444,446-449,451,503-504,512-513,546-547,549-550
+src/app/group-access-policy.ts
+  s_7aa13d4c94b804::t_0e0102a86c3381 1-12,28-29
+  s_7aa13d4c94b804::t_3b7263f2fcc59a 13-15,25-27
+  s_7aa13d4c94b804::t_7a0c54d74bca65 30-32
+  s_7aa13d4c94b804::t_edb3390cdaecc5 16-24,33-45
+src/app/doctor.ts
+  s_7aa13d4c94b804::t_844ad819c33349 48,51-53,60,81,91-92,101-112
+  s_984adf01c45580::t_ba24ba3846105e 26-27,113-120
+docs/plans/2026-07-28-004-feat-channel-adapter-abstraction-plan.md
+  s_984adf01c45580::t_648fc406b9b6b5 1-692
+docs/plans/2026-07-28-004-feat-channel-adapter-abstraction-plan.zh-CN.md
+  s_984adf01c45580::t_89d5f116880bf7 1-692
+src/app/cards/command-cards.ts
+  s_984adf01c45580::t_c4c2b6408ee87f 43-52
+src/app/runtime-health.ts
+  s_984adf01c45580::t_07e72d4b895a5d 24-31,67
+test/app/bot-config-store.test.ts
+  s_984adf01c45580::t_42a08252a23557 1-152
+test/app/doctor.test.ts
+  s_984adf01c45580::t_3a33dd533646f0 47,53-54,61-63
+test/app/handoff-coordinator.test.ts
+  s_984adf01c45580::t_1b19f63ad3f075 1-160
+docs/plans/2026-07-28-002-feat-bot-to-bot-collaboration-plan.zh-CN.md
+  s_7aa13d4c94b804::t_f0b3575e0a6cfb 1-566
+docs/plans/2026-07-28-003-feat-channel-neutral-message-renderer-plan.md
+  s_7aa13d4c94b804::t_79715b288721ef 1-271
+docs/plans/2026-07-28-003-feat-channel-neutral-message-renderer-plan.zh-CN.md
+  s_7aa13d4c94b804::t_4c07d989e22bd7 1-271
+docs/user-manual.zh-CN.md
+  s_7aa13d4c94b804::t_6da723f8b7eeeb 1-625
+src/app/collaboration/collaboration-context.ts
+  s_7aa13d4c94b804::t_c6723d28ee6dcc 1-68
+src/app/collaboration/handoff-chain-store.ts
+  s_7aa13d4c94b804::t_877516a83ef045 1-152
+src/app/collaboration/handoff-coordinator.ts
+  s_7aa13d4c94b804::t_db6af90b5fb9ae 1-187
+src/app/collaboration/handoff-directive.ts
+  s_7aa13d4c94b804::t_0f6a6cc0ff1635 1-237
+src/app/in-memory-orchestrator.ts
+  s_7aa13d4c94b804::t_bb7fb7e8e9cda5 31,109-112,182,302-305,342-343,776,836,838,844,989,1149-1152,1155,1158-1189,1640,1644-1648,1661-1672
+src/app/lark/handoff-message-emitter.ts
+  s_7aa13d4c94b804::t_bcd453b56e0d13 1-256
+test/app/collaboration-context.test.ts
+  s_d0fb05ec6cbad2::t_ed28b8b0fb9980 1-94
+test/app/handoff-chain-store.test.ts
+  s_7aa13d4c94b804::t_29d85682eade09 1-59
+test/app/handoff-directive.test.ts
+  s_7aa13d4c94b804::t_edf100dbf2f89c 1-52
+test/app/lark-handoff-message-emitter.test.ts
+  s_7aa13d4c94b804::t_752e7b286bf177 1-144
+test/app/platform-adapter.test.ts
+  s_7aa13d4c94b804::t_0a956460ec552a 1-17
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "6082d626de904e638dfa14c9eb76642b186c35dd",
+  "prompts": {},
+  "sessions": {
+    "s_7aa13d4c94b804": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fa36d-4ecc-7211-aef0-9010548d16a1",
+        "model": "gpt-5.5"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    },
+    "s_984adf01c45580": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f2381-33f5-7d11-92b6-842f566bb55b",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    },
+    "s_d0fb05ec6cbad2": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fa94a-6c13-7570-bb51-cbaf097f1589",
+        "model": "gpt-5.5"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    }
+  }
+}
