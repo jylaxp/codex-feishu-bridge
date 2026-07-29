@@ -28,6 +28,7 @@ import type {
 import { MAX_INBOUND_IMAGES, type InboundMessage } from './lark/intake';
 import type { RuntimeTaskHealth } from './runtime-health';
 import { ThreadTaskScheduler } from './task-scheduler';
+import type { TerminalHandoffContext, TerminalHandoffProjection } from './collaboration/handoff-coordinator';
 
 /** Desktop-owned execution capabilities; App Server clients cannot satisfy this boundary. */
 export type DesktopTurnClient = Pick<
@@ -105,6 +106,10 @@ export interface InMemoryOrchestratorOptions {
   /** Releases process-owned image files after Codex no longer needs them. */
   readonly releaseInboundImages?: (paths: readonly string[]) => void;
   readonly releaseInboundImagesForBotKey?: (botKey: string, paths: readonly string[]) => void;
+  readonly collaborationContextForBinding?: (binding: ChatThreadBinding) => string | null;
+  readonly handleTerminalHandoff?: (
+    context: TerminalHandoffContext,
+  ) => Promise<TerminalHandoffProjection | null>;
 }
 
 export type DesktopDeliveryOperation = 'start' | 'steer' | 'interrupt';
@@ -174,6 +179,7 @@ interface RuntimeTask {
   terminalConvergenceTimer: NodeJS.Timeout | undefined;
   updateTimer: NodeJS.Timeout | undefined;
   outputFilesUploaded: boolean;
+  handoffProcessed: boolean;
   cardDeliveryPending: boolean;
   nextToolGroupId: number;
   lastActivityKind: 'none' | 'text' | 'tool';
@@ -293,6 +299,10 @@ export class InMemoryOrchestrator {
   private readonly releaseInboundImagesForBotKey:
     | ((botKey: string, paths: readonly string[]) => void)
     | undefined;
+  private readonly collaborationContextForBinding: (binding: ChatThreadBinding) => string | null;
+  private readonly handleTerminalHandoff:
+    | ((context: TerminalHandoffContext) => Promise<TerminalHandoffProjection | null>)
+    | undefined;
   private readonly tasksById = new Map<string, RuntimeTask>();
   private readonly scheduler = new ThreadTaskScheduler<RuntimeTask, {
     readonly message: InboundMessage;
@@ -329,6 +339,8 @@ export class InMemoryOrchestrator {
     this.recoverDesktopThreadRoute = options.recoverDesktopThreadRoute;
     this.releaseInboundImages = options.releaseInboundImages ?? (() => undefined);
     this.releaseInboundImagesForBotKey = options.releaseInboundImagesForBotKey;
+    this.collaborationContextForBinding = options.collaborationContextForBinding ?? (() => null);
+    this.handleTerminalHandoff = options.handleTerminalHandoff;
     this.cardRetryDelayMs = options.cardRetryDelayMs ?? CARD_RETRY_BASE_DELAY_MS;
     this.terminalConvergenceTimeoutMs = Math.max(
       1,
@@ -761,6 +773,7 @@ export class InMemoryOrchestrator {
       terminalConvergenceTimer: undefined,
       updateTimer: undefined,
       outputFilesUploaded: false,
+      handoffProcessed: false,
       cardDeliveryPending: false,
       nextToolGroupId: 0,
       lastActivityKind: 'none',
@@ -820,14 +833,15 @@ export class InMemoryOrchestrator {
   }
 
   private async startDesktopTurnWithRouteRecovery(task: RuntimeTask): Promise<Turn> {
+    const collaborationContext = this.collaborationContextForBinding(task.binding);
     try {
-      return await this.desktop.startTurnTracked(buildStart(task), () => undefined);
+      return await this.desktop.startTurnTracked(buildStart(task, collaborationContext), () => undefined);
     } catch (error) {
       if (!await this.tryRecoverMissingDesktopOwner(task, error)) {
         throw error;
       }
     }
-    return this.desktop.startTurnTracked(buildStart(task), () => undefined);
+    return this.desktop.startTurnTracked(buildStart(task, collaborationContext), () => undefined);
   }
 
   private async tryRecoverMissingDesktopOwner(task: RuntimeTask, error: unknown): Promise<boolean> {
@@ -972,6 +986,7 @@ export class InMemoryOrchestrator {
       terminalConvergenceTimer: undefined,
       updateTimer: undefined,
       outputFilesUploaded: false,
+      handoffProcessed: false,
       cardDeliveryPending: false,
       nextToolGroupId: 0,
       lastActivityKind: 'none',
@@ -1131,11 +1146,47 @@ export class InMemoryOrchestrator {
       task.terminalConvergenceTimer = undefined;
     }
     task.pendingTerminalStatus = null;
+    void this.finalizeTaskAsync(task, status);
+  }
+
+  private async finalizeTaskAsync(task: RuntimeTask, status: TaskStatus): Promise<void> {
     task.status = status;
     task.completedAtMs = this.now();
+    await this.materializeTerminalHandoff(task);
     void this.refreshRateLimits(task);
     void this.uploadFilesForSuccessfulTask(task);
-    void this.flushCard(task, true).finally(() => this.finish(task));
+    await this.flushCard(task, true);
+    this.finish(task);
+  }
+
+  private async materializeTerminalHandoff(task: RuntimeTask): Promise<void> {
+    if (
+      task.handoffProcessed
+      || task.status !== 'SUCCEEDED'
+      || !task.finalAnswer.trim()
+      || !this.handleTerminalHandoff
+    ) {
+      return;
+    }
+    task.handoffProcessed = true;
+    try {
+      const projection = await this.handleTerminalHandoff({
+        sourceBotKey: task.binding.botKey ?? task.message.botKey ?? DEFAULT_BOT_KEY,
+        tenantKey: task.message.tenantKey,
+        chatId: task.message.chatId,
+        rootMessageId: task.message.rootMessageId,
+        messageId: task.message.messageId,
+        threadId: task.binding.threadId,
+        finalAnswer: task.finalAnswer,
+        binding: task.binding,
+        ...(task.message.handoffEnvelope ? { inboundEnvelope: task.message.handoffEnvelope } : {}),
+      });
+      if (projection) {
+        task.finalAnswer = projection.finalAnswer;
+      }
+    } catch (error) {
+      this.onCardError(toError(error));
+    }
   }
 
   private applyPostTerminalNotification(
@@ -1586,11 +1637,15 @@ export class InMemoryOrchestrator {
   }
 }
 
-function buildStart(task: RuntimeTask): TurnStartParams {
+function buildStart(task: RuntimeTask, collaborationContext: string | null = null): TurnStartParams {
   return {
     threadId: task.binding.threadId,
     clientUserMessageId: task.message.messageId,
-    input: taskInput(task.message.text, task.binding, task.message.localImagePaths),
+    input: taskInput(
+      modelPrompt(task.message.text, collaborationContext),
+      task.binding,
+      task.message.localImagePaths,
+    ),
     cwd: task.binding.workspaceId,
     approvalPolicy: 'on-request',
     approvalsReviewer: 'user',
@@ -1601,6 +1656,18 @@ function buildStart(task: RuntimeTask): TurnStartParams {
       ? { personality: task.binding.personality }
       : {}),
   };
+}
+
+function modelPrompt(prompt: string, collaborationContext: string | null): string {
+  if (!collaborationContext?.trim()) {
+    return prompt;
+  }
+  return [
+    collaborationContext.trim(),
+    '',
+    'User-visible task:',
+    prompt,
+  ].join('\n');
 }
 
 function buildSteer(

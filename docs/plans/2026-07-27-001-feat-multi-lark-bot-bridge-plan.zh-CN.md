@@ -30,7 +30,8 @@ date: 2026-07-27
 - R7. 当一个 thread 有多个机器人/聊天绑定时，Desktop 侧发起的 turn 不得自动投影到所有机器人；没有明确发起 Bridge task 时 fan-out 不安全。
 - R8. 现有单机器人配置必须继续可用，并提供确定性的迁移路径到多机器人配置模型。
 - R9. runtime health、doctor 输出、日志和 setup/reset 流程必须报告机器人级状态，但不得记录 prompt、answer、reasoning、approval payload 或 CardKit payload。
-- R10. 群聊支持必须 fail-closed：机器人只处理已配置或显式授权的聊天事件；群消息只在事件是允许的机器人 mention 时接收，除非未来显式增加群全量消息模式。
+- R10. 群聊支持必须保持 mention-gated：群消息只在事件是当前 bot mention 时接收，除非未来显式增加群全量消息模式。
+  外部群成员的普通 mention 默认通过 binding 级策略允许，不要求 sender tenant 或 chat allowlist 校验；owner 可以按群手动关闭该策略。
 - R11. 群聊有两条通道：owner-only 的当前群管理通道，以及绑定后的普通 `@current bot` 任务消息通道。非 owner 用户和 bot sender 永远不能执行群管理命令，例如 bind、unbind、model、CWD、access、setup 或 diagnostics。
 - R12. Desktop 审批决策必须 admin-only。群成员在绑定策略允许时可以发起任务，但只有机器人的 owner/admin approval set 可以决定审批。
 - R13. 任何群绑定或配置动作都必须指向一个具体的群身份。群内管理指向当前事件的 `botKey + tenantKey + chatId`；私聊管理指向按同一身份显式选择的已发现群。群名只用于展示，不能作为绑定 key。
@@ -208,6 +209,9 @@ date: 2026-07-27
 
 - 群必须先绑定，才能启动任务。
 - 群消息只有在 mention 当前机器人并通过该 binding 的 mention access policy 时才会被接受。
+- 外部群成员默认可以 mention 当前机器人发起普通任务消息。
+  该宽松路径跳过 sender tenant 和 chat allowlist 校验，但不授权群管理命令、卡片审批或 bot sender 任务。
+- 外部群成员访问策略存储在当前群 binding 上。owner 可以在对应群中使用 `@current bot /external off` 停止响应外部群成员 mention，使用 `@current bot /external on` 恢复默认允许。
 - 接受的群消息在移除当前机器人 mention 后，作为普通 task input。
 - 非 owner 群 slash commands 和 management commands 不支持。它们不得修改 binding state、修改 settings 或触发 approval decisions。
 - 其他用户或机器人只有在群 binding policy 允许该 sender class 时，才可以 mention 当前机器人。
@@ -462,6 +466,8 @@ sequenceDiagram
 
 **测试场景：**
 - Happy path：群 `@current bot` text message 被接受并移除 bot mention。
+- Happy path：外部群成员的 `@current bot` text message 默认被接受，即使 sender tenant 不同
+  且 chat 不在 bot allowlist。
 - Happy path：binding 允许 all group users 时，允许的非 admin 群成员可以启动普通任务。
 - Happy path：未绑定群 owner 执行 `@current bot /bind`，创建 pending group candidate 并为当前群打开 binding picker。
 - Happy path：未绑定群 non-owner 执行 `@current bot`，只创建或刷新 pending group candidate，不启动任务。

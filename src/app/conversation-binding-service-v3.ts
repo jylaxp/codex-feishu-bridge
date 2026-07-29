@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import { basename, join, normalize, sep } from 'node:path';
 
 import { type BindingStore, type ChatThreadBinding } from './binding-store';
-import { DEFAULT_BOT_KEY } from './bot-config-store';
+import { DEFAULT_BOT_KEY, type LarkBotConfig } from './bot-config-store';
 import { createTaskCard, type CardKitJson } from './cards/layouts';
 import { sanitizeCardMarkdown, sanitizeCardPlainText, sanitizeCardText } from './cards/sanitizer';
 import { type ThreadNavigation } from './codex/app-navigation-adapter';
@@ -88,6 +88,8 @@ export class ConversationBindingServiceV3 {
     private readonly workspaceStateReader: () => Promise<BindingWorkspaceState> = readWorkspaceState,
     private readonly readRateLimits: (() => Promise<unknown>) | undefined = undefined,
     private readonly projectActiveDesktopTurn: ((binding: ChatThreadBinding) => Promise<boolean>) | undefined = undefined,
+    private readonly onBindingCreated: ((binding: ChatThreadBinding) => void) | undefined = undefined,
+    private readonly listBots: (() => readonly LarkBotConfig[]) | undefined = undefined,
   ) {}
 
   public getBinding(
@@ -99,9 +101,17 @@ export class ConversationBindingServiceV3 {
   }
 
   public async handleCommand(message: InboundTextMessage): Promise<boolean> {
-    const command = firstCommand(message.text);
+    const command = firstCommand(message.text).toLowerCase();
     if (command === '/bind' || command === '/l' || command === '/list' || command === '/ll') {
       await this.sendPicker(message, command === '/ll');
+      return true;
+    }
+    if (command === '/external') {
+      await this.updateExternalGroupUserPolicy(message);
+      return true;
+    }
+    if (command === '/collab') {
+      await this.updateCollaborationPolicy(message);
       return true;
     }
     if (command === '/binding') {
@@ -156,6 +166,7 @@ export class ConversationBindingServiceV3 {
       threadTitle: choice.title,
       workspaceId,
     });
+    this.onBindingCreated?.(binding);
     if (pending) {
       for (const [token, context] of this.pendingBindingCards) {
         if (context.cardId === pending.cardId) {
@@ -284,6 +295,69 @@ export class ConversationBindingServiceV3 {
       ? createToken(binding.threadId, binding.revision, message, this.config.larkAppSecret, this.now)
       : undefined;
     await this.reply(message, statusCard(binding, token), 'status');
+  }
+
+  private async updateExternalGroupUserPolicy(message: InboundTextMessage): Promise<void> {
+    if (!this.config.authorizedUsers.includes(message.senderOpenId)) {
+      await this.reply(message, externalGroupUserPolicyCard(undefined, 'unauthorized'), 'external-policy');
+      return;
+    }
+    if ((message.chatType ?? 'p2p') !== 'group') {
+      await this.reply(message, externalGroupUserPolicyCard(undefined, 'not_group'), 'external-policy');
+      return;
+    }
+    const binding = this.getBinding(message.tenantKey, message.chatId, message.botKey);
+    if (!binding) {
+      await this.reply(message, externalGroupUserPolicyCard(undefined, 'not_bound'), 'external-policy');
+      return;
+    }
+    const action = parseExternalGroupUserPolicyAction(message.text);
+    if (!action) {
+      await this.reply(message, externalGroupUserPolicyCard(binding, 'usage'), 'external-policy');
+      return;
+    }
+    if (action === 'status') {
+      await this.reply(message, externalGroupUserPolicyCard(binding, 'status'), 'external-policy');
+      return;
+    }
+    const updated = this.store.updateExternalGroupUserMentionPolicy(
+      message.tenantKey,
+      message.chatId,
+      action === 'enable',
+      message.botKey,
+    );
+    this.logger?.info('external_group_user_policy_updated', {
+      chatId: message.chatId,
+      enabled: action === 'enable',
+      revision: updated?.revision ?? binding.revision,
+    });
+    await this.reply(message, externalGroupUserPolicyCard(updated ?? binding, 'updated'), 'external-policy');
+  }
+
+  private async updateCollaborationPolicy(message: InboundTextMessage): Promise<void> {
+    if (message.senderType === 'bot' || !this.config.authorizedUsers.includes(message.senderOpenId)) {
+      await this.reply(message, collaborationPolicyCard(undefined, 'unauthorized'), 'collab-policy');
+      return;
+    }
+    if ((message.chatType ?? 'p2p') !== 'group') {
+      await this.reply(message, collaborationPolicyCard(undefined, 'not_group'), 'collab-policy');
+      return;
+    }
+    const binding = this.getBinding(message.tenantKey, message.chatId, message.botKey);
+    if (!binding) {
+      await this.reply(message, collaborationPolicyCard(undefined, 'not_bound'), 'collab-policy');
+      return;
+    }
+    const parts = message.text.trim().split(/\s+/).filter(Boolean);
+    if (parts.length > 1) {
+      await this.reply(message, collaborationPolicyCard(binding, 'usage'), 'collab-policy');
+      return;
+    }
+    await this.reply(
+      message,
+      collaborationPolicyCard(binding, 'status', this.listBots?.(), this.store.list()),
+      'collab-policy',
+    );
   }
 
   private async openBoundThread(message: InboundTextMessage): Promise<void> {
@@ -935,6 +1009,22 @@ function firstCommand(text: string): string {
   return text.trim().split(/\s+/, 1)[0] ?? '';
 }
 
+function parseExternalGroupUserPolicyAction(
+  text: string,
+): 'enable' | 'disable' | 'status' | null {
+  const raw = text.trim().split(/\s+/, 2)[1]?.toLowerCase();
+  if (!raw || raw === 'status' || raw === '状态') {
+    return 'status';
+  }
+  if (['on', 'enable', 'enabled', 'true', '1', 'allow', 'open', '开启', '启用', '允许'].includes(raw)) {
+    return 'enable';
+  }
+  if (['off', 'disable', 'disabled', 'false', '0', 'deny', 'close', '关闭', '禁用', '拒绝'].includes(raw)) {
+    return 'disable';
+  }
+  return null;
+}
+
 async function pickerCard(
   entries: readonly { readonly choice: ThreadChoice; readonly token: string }[],
   table: boolean,
@@ -1058,7 +1148,11 @@ function statusCard(binding: ChatThreadBinding | undefined, token: string | unde
   }
   const elements: Record<string, unknown>[] = [{
     tag: 'markdown',
-    content: `当前已绑定会话：${shortId(binding.threadId)}\n工作区：${binding.workspaceId}`,
+    content: [
+      `当前已绑定会话：${shortId(binding.threadId)}`,
+      `工作区：${binding.workspaceId}`,
+      `外部群成员 @ 机器人：${binding.allowExternalGroupUserMentions === false ? '不响应' : '响应'}`,
+    ].join('\n'),
   }];
   if (token) {
     elements.push({
@@ -1069,6 +1163,103 @@ function statusCard(binding: ChatThreadBinding | undefined, token: string | unde
     });
   }
   return baseCard('ChatGPT 会话绑定', 'green', elements);
+}
+
+function externalGroupUserPolicyCard(
+  binding: ChatThreadBinding | undefined,
+  state: 'status' | 'updated' | 'usage' | 'unauthorized' | 'not_group' | 'not_bound',
+): CardKitJson {
+  if (state === 'unauthorized') {
+    return baseCard('外部群成员访问策略', 'orange', [{
+      tag: 'markdown',
+      content: '你没有调整当前群访问策略的权限。',
+    }]);
+  }
+  if (!binding || state === 'not_bound') {
+    if (state === 'not_group') {
+      return baseCard('外部群成员访问策略', 'orange', [{
+        tag: 'markdown',
+        content: '外部群成员访问策略只能在群聊中调整。',
+      }]);
+    }
+    return baseCard('外部群成员访问策略', 'orange', [{
+      tag: 'markdown',
+      content: '当前群尚未绑定 ChatGPT 会话。请先发送 `/bind` 完成绑定。',
+    }]);
+  }
+  if (state === 'usage') {
+    return baseCard('外部群成员访问策略', 'orange', [{
+      tag: 'markdown',
+      content: '命令格式：`/external on`、`/external off` 或 `/external`。',
+    }]);
+  }
+  const enabled = binding.allowExternalGroupUserMentions !== false;
+  return baseCard('外部群成员访问策略', enabled ? 'green' : 'orange', [{
+    tag: 'markdown',
+    content: `${state === 'updated' ? '已更新。' : '当前状态：'}外部群成员 @ 机器人：${enabled ? '响应' : '不响应'}`,
+  }]);
+}
+
+function collaborationPolicyCard(
+  binding: ChatThreadBinding | undefined,
+  state:
+    | 'status'
+    | 'usage'
+    | 'unauthorized'
+    | 'not_group'
+    | 'not_bound',
+  bots: readonly LarkBotConfig[] = [],
+  groupBindings: readonly ChatThreadBinding[] = [],
+): CardKitJson {
+  if (state === 'unauthorized') {
+    return baseCard('机器人协作状态', 'orange', [{
+      tag: 'markdown',
+      content: '你没有查看当前群机器人协作状态的权限。',
+    }]);
+  }
+  if (state === 'not_group') {
+    return baseCard('机器人协作状态', 'orange', [{
+      tag: 'markdown',
+      content: '机器人协作状态只能在群聊中查看。',
+    }]);
+  }
+  if (!binding || state === 'not_bound') {
+    return baseCard('机器人协作状态', 'orange', [{
+      tag: 'markdown',
+      content: '当前群尚未绑定 ChatGPT 会话。请先发送 `/bind` 完成绑定。',
+    }]);
+  }
+  if (state === 'usage') {
+    return baseCard('机器人协作状态', 'orange', [{
+      tag: 'markdown',
+      content: [
+        'MVP 只支持 `/collab` 查看当前群机器人协作状态。',
+        '协作默认开放，不需要 accept、deny 或 target add。',
+        '需要关闭当前机器人响应其他机器人 @ 时，请关闭该机器人的群机器人 @ 响应开关。',
+      ].join('\n'),
+    }]);
+  }
+  const bindingBotKey = binding.botKey ?? DEFAULT_BOT_KEY;
+  const currentBot = bots.find((bot) => bot.botKey === bindingBotKey);
+  const respondsToBotMentions = currentBot?.allowGroupBotMentions !== false;
+  const boundBotKeys = new Set(groupBindings
+    .filter((candidate) => candidate.tenantKey === binding.tenantKey && candidate.chatId === binding.chatId)
+    .map((candidate) => candidate.botKey ?? DEFAULT_BOT_KEY));
+  const availableBots = bots
+    .filter((bot) => bot.botKey !== bindingBotKey
+      && bot.enabled
+      && bot.allowGroupBotMentions
+      && boundBotKeys.has(bot.botKey))
+    .map((bot) => bot.displayName ? `${bot.displayName} (${bot.botKey})` : bot.botKey);
+  return baseCard('机器人协作状态', respondsToBotMentions ? 'green' : 'orange', [{
+    tag: 'markdown',
+    content: [
+      'MVP 当前为默认开放协作，不维护 source-target 授权列表。',
+      `当前机器人响应其他机器人 @：${respondsToBotMentions ? '响应' : '不响应'}`,
+      `当前群绑定 thread：${binding.threadTitle ?? binding.threadId}`,
+      `本地可见且会响应群 @ 的其他机器人：${availableBots.length > 0 ? availableBots.join('、') : '无'}`,
+    ].join('\n'),
+  }]);
 }
 
 function openResultCard(result: { readonly type: 'success' | 'warning' }): CardKitJson {

@@ -136,6 +136,105 @@ test('group messages require the current bot mention and strip only that mention
   assert.equal(result.message.text, '请处理 @_user_2 的问题');
 });
 
+test('authorized group /bind can bootstrap a chat outside the allowlist', () => {
+  const base = messageEvent('text', JSON.stringify({ text: '@_bot /bind' }));
+  const result = normalizeInboundMessage({
+    ...base,
+    message: {
+      ...base.message,
+      chat_id: 'new-chat',
+      chat_type: 'group',
+      mentions: [{ key: '@_bot', id: { open_id: 'bot-open-id' } }],
+    },
+  }, {
+    ...config,
+    larkBotOpenId: 'bot-open-id',
+  }, () => 1_000_000_001_000);
+
+  assert.equal(result.accepted, true);
+  if (!result.accepted) {
+    return;
+  }
+  assert.equal(result.message.chatId, 'new-chat');
+  assert.equal(result.message.chatType, 'group');
+  assert.equal(result.message.text, '/bind');
+});
+
+test('unlisted group task mentions remain rejected before binding', () => {
+  const base = messageEvent('text', JSON.stringify({ text: '@_bot 请处理' }));
+  const result = normalizeInboundMessage({
+    ...base,
+    message: {
+      ...base.message,
+      chat_id: 'new-chat',
+      chat_type: 'group',
+      mentions: [{ key: '@_bot', id: { open_id: 'bot-open-id' } }],
+    },
+  }, {
+    ...config,
+    larkBotOpenId: 'bot-open-id',
+  }, () => 1_000_000_001_000);
+
+  assert.deepEqual(result, { accepted: false, reason: 'CHAT_NOT_ALLOWED' });
+});
+
+test('external group user mentions are accepted without tenant or chat allowlist checks by default', () => {
+  const base = messageEvent('text', JSON.stringify({ text: '@_bot hi' }));
+  const result = normalizeInboundMessage({
+    ...base,
+    sender: {
+      sender_type: 'user',
+      tenant_key: 'external-tenant',
+      sender_id: { open_id: 'external-user' },
+    },
+    message: {
+      ...base.message,
+      chat_id: 'external-chat',
+      chat_type: 'group',
+      mentions: [{ key: '@_bot', id: { open_id: 'bot-open-id' } }],
+    },
+  }, {
+    ...config,
+    larkBotOpenId: 'bot-open-id',
+  }, () => 1_000_000_001_000);
+
+  assert.equal(result.accepted, true);
+  if (!result.accepted) {
+    return;
+  }
+  assert.equal(result.message.tenantKey, 'tenant');
+  assert.equal(result.message.eventTenantKey, 'tenant');
+  assert.equal(result.message.chatId, 'external-chat');
+  assert.equal(result.message.senderOpenId, 'external-user');
+  assert.equal(result.message.senderTenantKey, 'external-tenant');
+  assert.equal(result.message.externalGroupUser, true);
+  assert.equal(result.message.text, 'hi');
+});
+
+test('external group user mentions can be disabled explicitly', () => {
+  const base = messageEvent('text', JSON.stringify({ text: '@_bot hi' }));
+  const result = normalizeInboundMessage({
+    ...base,
+    sender: {
+      sender_type: 'user',
+      tenant_key: 'external-tenant',
+      sender_id: { open_id: 'external-user' },
+    },
+    message: {
+      ...base.message,
+      chat_id: 'external-chat',
+      chat_type: 'group',
+      mentions: [{ key: '@_bot', id: { open_id: 'bot-open-id' } }],
+    },
+  }, {
+    ...config,
+    larkBotOpenId: 'bot-open-id',
+    allowExternalGroupUserMentions: false,
+  }, () => 1_000_000_001_000);
+
+  assert.deepEqual(result, { accepted: false, reason: 'TENANT_MISMATCH' });
+});
+
 test('group messages mentioning another bot are rejected', () => {
   const base = messageEvent('text', JSON.stringify({ text: '@_user_2 请处理' }));
   const result = normalizeInboundMessage({
@@ -148,6 +247,34 @@ test('group messages mentioning another bot are rejected', () => {
   }, { ...config, larkBotOpenId: 'bot-open-id' }, () => 1_000_000_001_000);
 
   assert.deepEqual(result, { accepted: false, reason: 'BOT_NOT_MENTIONED' });
+});
+
+test('group bot sender mentions are normalized without sender tenant allowlist checks', () => {
+  const base = messageEvent('text', JSON.stringify({ text: '@_bot hi' }));
+  const result = normalizeInboundMessage({
+    ...base,
+    sender: {
+      sender_type: 'bot',
+      tenant_key: 'external-tenant',
+      sender_id: { open_id: 'ou_source_bot' },
+    },
+    message: {
+      ...base.message,
+      chat_type: 'group',
+      mentions: [{ key: '@_bot', id: { open_id: 'bot-open-id' } }],
+    },
+  }, {
+    ...config,
+    larkBotOpenId: 'bot-open-id',
+  }, () => 1_000_000_001_000);
+
+  assert.equal(result.accepted, true);
+  if (!result.accepted) {
+    return;
+  }
+  assert.equal(result.message.senderType, 'bot');
+  assert.equal(result.message.senderOpenId, 'ou_source_bot');
+  assert.equal(result.message.text, 'hi');
 });
 
 test('reply context accepts current bot group mentions without task policy checks', () => {
@@ -183,6 +310,31 @@ test('reply context accepts current bot group mentions without task policy check
     senderType: 'user',
     createdAtMs: 1_000_000_000_000,
   });
+});
+
+test('reply context accepts external group user mentions for unavailable reason replies', () => {
+  const base = messageEvent('text', JSON.stringify({ text: '@_bot 请处理' }));
+  const context = normalizeInboundReplyContext({
+    ...base,
+    sender: {
+      sender_type: 'user',
+      tenant_key: 'external-tenant',
+      sender_id: { open_id: 'external-user' },
+    },
+    message: {
+      ...base.message,
+      chat_id: 'external-chat',
+      chat_type: 'group',
+      mentions: [{ key: '@_bot', id: { open_id: 'bot-open-id' } }],
+    },
+  }, {
+    ...config,
+    larkBotOpenId: 'bot-open-id',
+  }, () => 1_000_000_001_000, 'bot_release_test');
+
+  assert.equal(context?.tenantKey, 'tenant');
+  assert.equal(context?.chatId, 'external-chat');
+  assert.equal(context?.senderOpenId, 'external-user');
 });
 
 test('reply context rejects group mentions for a different bot', () => {
@@ -879,6 +1031,39 @@ test('pending image card action is normalized with its operator and scope', () =
     token: 'opaque_token',
     taskDescription: '比较图片并给出修改建议',
   });
+});
+
+test('binding card action can bootstrap a chat outside the allowlist for an authorized operator', () => {
+  const action = normalizeCardAction({
+    tenant_key: 'tenant',
+    context: { open_chat_id: 'new-chat', open_message_id: 'card-message' },
+    operator: { open_id: 'user' },
+    action: {
+      value: { action: 'binding' },
+      option: 'thread.payload.signature',
+    },
+  }, config);
+
+  assert.deepEqual(action, {
+    botKey: 'default',
+    tenantKey: 'tenant',
+    chatId: 'new-chat',
+    messageId: 'card-message',
+    operatorOpenId: 'user',
+    action: 'binding',
+    token: 'thread.payload.signature',
+  });
+});
+
+test('non-binding card actions from unlisted chats are rejected', () => {
+  const action = normalizeCardAction({
+    tenant_key: 'tenant',
+    context: { open_chat_id: 'new-chat', open_message_id: 'card-message' },
+    operator: { open_id: 'user' },
+    action: { value: { action: 'image-run', token: 'opaque_token' } },
+  }, config);
+
+  assert.equal(action, null);
 });
 
 test('pending image card action accepts an empty optional description', () => {

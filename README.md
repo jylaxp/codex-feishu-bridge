@@ -4,6 +4,8 @@
 
 Bridge 不读取或修改 ChatGPT/Codex 数据库、不注入 Electron，也不保存 prompt、回复、推理、审批、队列或卡片状态。唯一跨重启文件是 `bindings.json`：它记录“当前飞书 chat 绑定到哪个 ChatGPT thread”及静态执行设置。
 
+日常安装、绑定、群聊、多机器人协作和排障步骤见 [使用手册](docs/user-manual.zh-CN.md)。
+
 ## 运行链路
 
 ```text
@@ -118,6 +120,12 @@ LARK_TENANT_KEY=
 ALLOWED_CHATS=
 AUTHORIZED_USERS=
 ALLOWED_APPROVERS=
+ALLOW_GROUP_USER_MENTIONS=true
+# 外部群成员 @ 机器人发起普通任务的默认值；群绑定后可用 /external off/on 按群调整。
+ALLOW_EXTERNAL_GROUP_USER_MENTIONS=true
+# 群内其他机器人 @ 当前机器人时是否允许发起普通任务。
+# MVP 默认允许；显式改为 false 时当前机器人不会响应其他机器人的 @。
+ALLOW_GROUP_BOT_MENTIONS=true
 # 是否按任务汇总审批卡：0 = 默认，每项审批各发一张卡；1 = 同一任务的全部审批汇总为一张卡。
 APPROVAL_SUMMARY_MODE=0
 
@@ -226,9 +234,11 @@ codex-feishu-bridge compatibility --approve
 `--approve` 只允许加入 schema 已匹配的精确版本，不接受未知 schema，也不会修改源码或 `package.json`。
 
 `doctor` 会生成配置 binary 的完整 experimental schema digest，并报告
-`protocolProfileId`、`codexVersion`、`schemaDigest`、`appServerMode` 和
-`appServerIdentityAssurance`。doctor 只做本机探测；正式启动还会用 initialize identity 核对实际 App Server
-版本。`managed_proxy` 的 assurance 会明确显示为操作员信任的版本佐证，而不是远端 schema 证明。
+`protocolProfileId`、`codexVersion`、`schemaDigest`、`appServerMode`、
+`appServerIdentityAssurance`、当前平台和 bot 协作就绪摘要。doctor 只做本机探测；正式启动还会用
+initialize identity 核对实际 App Server 版本。`managed_proxy` 的 assurance 会明确显示为操作员信任的版本佐证，
+而不是远端 schema 证明。当前 Desktop-attached 执行只声明 macOS 支持；Windows 在 native named-pipe probe
+和 owner/session attestation 完成前会保持 not ready。
 
 `LOG_TO_FILE=true` 时可实时查看后台输出日志：
 
@@ -262,6 +272,8 @@ codex-feishu-bridge config reset --confirm --destructive
 | `/bind`、`/l`、`/list` | 按本地项目分组显示会话下拉列表；若聊天已有绑定，同时推送最近一条已完成历史记录 |
 | `/ll` | 以 Table 表格显示会话名称和所属项目，并在卡片底部选择绑定；保留旧版尾随参数形式 |
 | `/binding` | 显示当前精确绑定和“在 ChatGPT 中打开”按钮 |
+| `/external [on\|off]` | 查询或调整当前群的外部群成员 @ 策略；默认 on，只允许 owner 在群内操作 |
+| `/collab` | 查询当前群的机器人协作状态；MVP 只读，不维护 source-target 授权策略 |
 | `/open` | 打开当前绑定的 ChatGPT Desktop 会话，不改变投递目标 |
 | `/unbind` | 只解除当前飞书聊天的绑定，不归档 ChatGPT 会话 |
 | `/new [名称]`、`/create [名称]` | 创建、命名、绑定并打开新会话；名称省略时自动生成 |
@@ -291,7 +303,17 @@ codex-feishu-bridge config reset --confirm --destructive
 
 飞书消息必须先显式绑定既有会话。普通任务通过 Desktop follower IPC 进入这个精确 thread：新 root 走 start，同 root 运行期间的补充消息走 steer，不同 root 排队。`@技能名称` 文本会原样保留并进入 Desktop runtime；当前 Desktop follower 协议没有独立的结构化 skill 字段，Bridge 不会猜测或重写技能内容。
 
-会话可见性由 `ALLOWED_CHATS` 决定。首次安装时这些飞书内部 ID 都可以为空：第一个私聊机器人的用户会自动成为 owner，并绑定当前单聊。绑定后卡片会作为发起消息的 reply，始终留在原会话/原话题，而不是临时会话。群聊不会自动放开；需要先完成单聊 owner 绑定，再由 owner 显式允许群聊。
+会话可见性由 `ALLOWED_CHATS` 决定。首次安装时这些飞书内部 ID 都可以为空：第一个私聊机器人的用户会自动成为 owner，并绑定当前单聊。绑定后卡片会作为发起消息的 reply，始终留在原会话/原话题，而不是临时会话。群聊需要先由 owner 在群里 `@机器人 /bind` 绑定会话；绑定后普通群成员显式 `@` 当前机器人即可发起普通任务。外部群成员默认允许发起普通任务，Bridge 不校验其 sender tenant 或 `ALLOWED_CHATS`；需要关闭时由 owner 在对应群里发送 `@机器人 /external off`，恢复时发送 `@机器人 /external on`。
+
+多个机器人在同一群协作时，不要求这些机器人由同一个 owner 管理，也不要求由同一个群成员邀请进群；飞书群内的普通成员可以按群权限邀请一个或多个机器人。Bridge 不把“谁拉进群”作为授权条件，每个机器人仍由它自己的 owner/admin 管理，并且每个机器人都必须先在该群绑定会话，确认机器人 @ 响应开关为 on。MVP 默认开放：
+人可以 @ 机器人，机器人可以 @ 机器人，机器人也可以 @ 人；Bridge 不校验 tenant_key、成员白名单、bot sender
+白名单或 source-target grant。模型可以在最终答案中发出 `cfb-handoff` directive，Bridge 会把源机器人结果继续用
+卡片展示，并额外发送一条真实飞书 `post` 消息 @ 目标机器人；如果 `post` 被飞书拒绝，会降级发送 `text`
+@ 消息。卡片中的 `@` 只用于展示，不作为自动触发路径。目标机器人收到的 bot sender 消息只能进入普通任务，
+不能执行 `/bind`、`/model`、`/cwd`、审批或其他管理命令。同一个群里不同机器人可以绑定不同 ChatGPT 会话，
+也可以绑定同一会话；同一会话继续按 thread ID 串行。Windows/macOS 都可以使用飞书协作协议；实际执行
+runner 当前以 macOS Desktop-attached 为已验证路径，跨平台群协作应优先使用 App Server stable 路由，
+Windows Desktop-attached 在 native probe 完成前保持不可用。
 
 ## 卡片和审批
 

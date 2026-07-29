@@ -23,6 +23,8 @@ export interface DoctorReport {
   readonly appServerIdentityAssurance: AppServerIdentityAssurance;
   readonly protocolProfileId: AppServerProtocolProfileId;
   readonly approvalCardMode: BridgeConfig['approvalCardMode'];
+  readonly platform: NodeJS.Platform;
+  readonly desktopAttachedSupported: boolean;
   readonly schemaDigest: string;
   readonly bindingCount: number;
   readonly bindingsFileBytes: number;
@@ -43,14 +45,19 @@ export interface DoctorBotReport {
   readonly authorizedUserCount: number;
   readonly allowedApproverCount: number;
   readonly allowGroupUserMentions: boolean;
+  readonly allowExternalGroupUserMentions: boolean;
   readonly allowGroupBotMentions: boolean;
   readonly identityResolved: boolean;
+  readonly roleProfileConfigured: boolean;
+  readonly groupBindingCount: number;
+  readonly groupBotMentionReadyCount: number;
   readonly displayName?: string;
 }
 
 export interface DoctorDependencies {
   readonly verifyRuntimeContract?: typeof verifyCodexRuntimeContract;
   readonly nodeVersion?: string;
+  readonly platform?: NodeJS.Platform;
 }
 
 /** Reports runtime capabilities without opening a database or reading task history. */
@@ -71,6 +78,7 @@ export async function runDoctor(
   );
   adapterForAppServerProfile(contract.protocolProfile);
   const bindingsFileBytes = statSync(store.filePath, { throwIfNoEntry: false })?.size ?? 0;
+  const platform = dependencies.platform ?? process.platform;
   return Object.freeze({
     ok: true,
     nodeVersion: preflight.nodeVersion,
@@ -80,6 +88,8 @@ export async function runDoctor(
     appServerIdentityAssurance: appServerIdentityAssurance(preflight.config.appServerMode),
     protocolProfileId: contract.protocolProfile.id,
     approvalCardMode: preflight.config.approvalCardMode,
+    platform,
+    desktopAttachedSupported: platform === 'darwin',
     schemaDigest: contract.schemaDigest,
     bindingCount: store.list().length,
     bindingsFileBytes,
@@ -88,18 +98,25 @@ export async function runDoctor(
     allowedApproverCount: preflight.config.allowedApprovers.length,
     botCount: botStore.list().length,
     enabledBotCount: botStore.activeBots().length,
-    bots: Object.freeze(botStore.list().map((bot) => Object.freeze({
-      botKey: bot.botKey,
-      appId: bot.appId,
-      enabled: bot.enabled,
-      tenantKeyConfigured: bot.tenantKey.length > 0,
-      allowedChatCount: bot.allowedChats.length,
-      authorizedUserCount: bot.authorizedUsers.length,
-      allowedApproverCount: bot.allowedApprovers.length,
-      allowGroupUserMentions: bot.allowGroupUserMentions,
-      allowGroupBotMentions: bot.allowGroupBotMentions,
-      identityResolved: Boolean(bot.botOpenId),
-      ...(bot.displayName ? { displayName: bot.displayName } : {}),
-    }))),
+    bots: Object.freeze(botStore.list().map((bot) => {
+      const botBindings = store.list().filter((binding) => (binding.botKey ?? 'default') === bot.botKey);
+      return Object.freeze({
+        botKey: bot.botKey,
+        appId: bot.appId,
+        enabled: bot.enabled,
+        tenantKeyConfigured: bot.tenantKey.length > 0,
+        allowedChatCount: bot.allowedChats.length,
+        authorizedUserCount: bot.authorizedUsers.length,
+        allowedApproverCount: bot.allowedApprovers.length,
+        allowGroupUserMentions: bot.allowGroupUserMentions,
+        allowExternalGroupUserMentions: bot.allowExternalGroupUserMentions,
+        allowGroupBotMentions: bot.allowGroupBotMentions,
+        identityResolved: Boolean(bot.botOpenId),
+        roleProfileConfigured: Boolean(bot.roleProfile),
+        groupBindingCount: botBindings.length,
+        groupBotMentionReadyCount: bot.allowGroupBotMentions ? botBindings.length : 0,
+        ...(bot.displayName ? { displayName: bot.displayName } : {}),
+      });
+    })),
   });
 }

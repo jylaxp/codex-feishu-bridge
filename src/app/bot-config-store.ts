@@ -40,14 +40,23 @@ export interface LarkBotConfig {
   readonly authorizedUsers: readonly string[];
   readonly allowedApprovers: readonly string[];
   readonly allowGroupUserMentions: boolean;
+  readonly allowExternalGroupUserMentions: boolean;
   readonly allowGroupBotMentions: boolean;
   readonly botOpenId?: string;
   readonly displayName?: string;
   readonly avatarUrl?: string;
   readonly activateStatus?: number;
+  readonly roleProfile?: LarkBotRoleProfile;
   readonly source: LarkBotConfigSource;
   readonly createdAtMs: number;
   readonly updatedAtMs: number;
+}
+
+export interface LarkBotRoleProfile {
+  readonly roleName?: string;
+  readonly ownerLabel?: string;
+  readonly domainDescription?: string;
+  readonly collaborationInstructions?: string;
 }
 
 export interface BotIdentity {
@@ -119,7 +128,7 @@ export class BotConfigStore {
     } catch (error) {
       throw new BotConfigStoreError('lark-bots.json is not valid JSON', { cause: error });
     }
-    for (const bot of parseDocument(document).bots) {
+    for (const bot of parseDocument(document, baseConfig).bots) {
       this.addLoadedBot(bot);
     }
   }
@@ -178,11 +187,14 @@ export class BotConfigStore {
       authorizedUsers: patch.authorizedUsers ?? existing.authorizedUsers,
       allowedApprovers: patch.allowedApprovers ?? existing.allowedApprovers,
       allowGroupUserMentions: patch.allowGroupUserMentions ?? existing.allowGroupUserMentions,
+      allowExternalGroupUserMentions:
+        patch.allowExternalGroupUserMentions ?? existing.allowExternalGroupUserMentions,
       allowGroupBotMentions: patch.allowGroupBotMentions ?? existing.allowGroupBotMentions,
       botOpenId: patch.botOpenId ?? existing.botOpenId,
       displayName: patch.displayName ?? existing.displayName,
       avatarUrl: patch.avatarUrl ?? existing.avatarUrl,
       activateStatus: patch.activateStatus ?? existing.activateStatus,
+      roleProfile: patch.roleProfile ?? existing.roleProfile,
       source: patch.source ?? existing.source,
     });
   }
@@ -274,6 +286,7 @@ export function botConfigToBridgeConfig(baseConfig: BridgeConfig, bot: LarkBotCo
     authorizedUsers: bot.authorizedUsers,
     allowedApprovers: bot.allowedApprovers,
     allowGroupUserMentions: bot.allowGroupUserMentions,
+    allowExternalGroupUserMentions: bot.allowExternalGroupUserMentions,
     allowGroupBotMentions: bot.allowGroupBotMentions,
   });
 }
@@ -289,7 +302,8 @@ export function synthesizeDefaultBot(baseConfig: BridgeConfig, now: number): Lar
     authorizedUsers: Object.freeze([...baseConfig.authorizedUsers]),
     allowedApprovers: Object.freeze([...baseConfig.allowedApprovers]),
     allowGroupUserMentions: baseConfig.allowGroupUserMentions !== false,
-    allowGroupBotMentions: baseConfig.allowGroupBotMentions === true,
+    allowExternalGroupUserMentions: baseConfig.allowExternalGroupUserMentions !== false,
+    allowGroupBotMentions: baseConfig.allowGroupBotMentions !== false,
     ...(baseConfig.larkBotOpenId ? { botOpenId: baseConfig.larkBotOpenId } : {}),
     ...(baseConfig.larkBotName ? { displayName: baseConfig.larkBotName } : {}),
     source: 'legacy-env',
@@ -309,7 +323,8 @@ export function materializeDefaultBot(baseConfig: BridgeConfig, identity: BotIde
     authorizedUsers: baseConfig.authorizedUsers,
     allowedApprovers: baseConfig.allowedApprovers,
     allowGroupUserMentions: baseConfig.allowGroupUserMentions !== false,
-    allowGroupBotMentions: baseConfig.allowGroupBotMentions === true,
+    allowExternalGroupUserMentions: baseConfig.allowExternalGroupUserMentions !== false,
+    allowGroupBotMentions: baseConfig.allowGroupBotMentions !== false,
     botOpenId: identity.botOpenId ?? baseConfig.larkBotOpenId,
     displayName: identity.displayName ?? baseConfig.larkBotName,
     avatarUrl: identity.avatarUrl,
@@ -387,7 +402,7 @@ export async function hydrateBotIdentity(
   });
 }
 
-function parseDocument(value: unknown): BotDocument {
+function parseDocument(value: unknown, baseConfig: BridgeConfig): BotDocument {
   if (!isRecord(value) || hasUnknownKeys(value, ['schemaVersion', 'bots'])) {
     throw new BotConfigStoreError('lark-bots.json has an invalid document shape');
   }
@@ -399,11 +414,11 @@ function parseDocument(value: unknown): BotDocument {
   }
   return Object.freeze({
     schemaVersion: BOTS_SCHEMA_VERSION,
-    bots: Object.freeze(value.bots.map(parseBot)),
+    bots: Object.freeze(value.bots.map((bot) => parseBot(bot, baseConfig))),
   });
 }
 
-function parseBot(value: unknown): LarkBotConfig {
+function parseBot(value: unknown, baseConfig: BridgeConfig): LarkBotConfig {
   if (!isRecord(value) || hasUnknownKeys(value, [
     'botKey',
     'appId',
@@ -414,11 +429,13 @@ function parseBot(value: unknown): LarkBotConfig {
     'authorizedUsers',
     'allowedApprovers',
     'allowGroupUserMentions',
+    'allowExternalGroupUserMentions',
     'allowGroupBotMentions',
     'botOpenId',
     'displayName',
     'avatarUrl',
     'activateStatus',
+    'roleProfile',
     'source',
     'createdAtMs',
     'updatedAtMs',
@@ -435,11 +452,15 @@ function parseBot(value: unknown): LarkBotConfig {
     authorizedUsers: stringArray(value.authorizedUsers, 'authorizedUsers'),
     allowedApprovers: stringArray(value.allowedApprovers, 'allowedApprovers'),
     allowGroupUserMentions: value.allowGroupUserMentions !== false,
-    allowGroupBotMentions: value.allowGroupBotMentions === true,
+    allowExternalGroupUserMentions: typeof value.allowExternalGroupUserMentions === 'boolean'
+      ? value.allowExternalGroupUserMentions
+      : baseConfig.allowExternalGroupUserMentions !== false,
+    allowGroupBotMentions: value.allowGroupBotMentions !== false,
     botOpenId: optionalText(value.botOpenId, 'botOpenId'),
     displayName: optionalText(value.displayName, 'displayName'),
     avatarUrl: optionalText(value.avatarUrl, 'avatarUrl'),
     activateStatus: typeof value.activateStatus === 'number' ? value.activateStatus : undefined,
+    roleProfile: parseRoleProfile(value.roleProfile),
     source: parseSource(value.source),
   });
   return Object.freeze({
@@ -462,12 +483,59 @@ function normalizeBotInput(
     authorizedUsers: Object.freeze(uniqueStrings(input.authorizedUsers)),
     allowedApprovers: Object.freeze(uniqueStrings(input.allowedApprovers)),
     allowGroupUserMentions: input.allowGroupUserMentions !== false,
-    allowGroupBotMentions: input.allowGroupBotMentions === true,
+    allowExternalGroupUserMentions: input.allowExternalGroupUserMentions !== false,
+    allowGroupBotMentions: input.allowGroupBotMentions !== false,
     ...(optionalText(input.botOpenId, 'botOpenId') ? { botOpenId: optionalText(input.botOpenId, 'botOpenId') } : {}),
     ...(optionalText(input.displayName, 'displayName') ? { displayName: optionalText(input.displayName, 'displayName') } : {}),
     ...(optionalText(input.avatarUrl, 'avatarUrl') ? { avatarUrl: optionalText(input.avatarUrl, 'avatarUrl') } : {}),
     ...(typeof input.activateStatus === 'number' ? { activateStatus: input.activateStatus } : {}),
+    ...(normalizeRoleProfile(input.roleProfile) ? { roleProfile: normalizeRoleProfile(input.roleProfile) } : {}),
     source: input.source,
+  });
+}
+
+function parseRoleProfile(value: unknown): LarkBotRoleProfile | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!isRecord(value) || hasUnknownKeys(value, [
+    'roleName',
+    'ownerLabel',
+    'domainDescription',
+    'collaborationInstructions',
+  ])) {
+    throw new BotConfigStoreError('roleProfile has an invalid shape');
+  }
+  return normalizeRoleProfile({
+    roleName: optionalText(value.roleName, 'roleProfile.roleName'),
+    ownerLabel: optionalText(value.ownerLabel, 'roleProfile.ownerLabel'),
+    domainDescription: optionalText(value.domainDescription, 'roleProfile.domainDescription'),
+    collaborationInstructions: optionalText(
+      value.collaborationInstructions,
+      'roleProfile.collaborationInstructions',
+    ),
+  });
+}
+
+function normalizeRoleProfile(value: LarkBotRoleProfile | undefined): LarkBotRoleProfile | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const roleName = optionalText(value.roleName, 'roleProfile.roleName');
+  const ownerLabel = optionalText(value.ownerLabel, 'roleProfile.ownerLabel');
+  const domainDescription = optionalText(value.domainDescription, 'roleProfile.domainDescription');
+  const collaborationInstructions = optionalText(
+    value.collaborationInstructions,
+    'roleProfile.collaborationInstructions',
+  );
+  if (!roleName && !ownerLabel && !domainDescription && !collaborationInstructions) {
+    return undefined;
+  }
+  return Object.freeze({
+    ...(roleName ? { roleName } : {}),
+    ...(ownerLabel ? { ownerLabel } : {}),
+    ...(domainDescription ? { domainDescription } : {}),
+    ...(collaborationInstructions ? { collaborationInstructions } : {}),
   });
 }
 

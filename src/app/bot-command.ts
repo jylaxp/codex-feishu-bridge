@@ -55,7 +55,9 @@ export interface BotCommandBotView {
   readonly authorizedUserCount: number;
   readonly allowedApproverCount: number;
   readonly allowGroupUserMentions: boolean;
+  readonly allowExternalGroupUserMentions: boolean;
   readonly allowGroupBotMentions: boolean;
+  readonly roleProfileConfigured: boolean;
   readonly botOpenId?: string;
   readonly displayName?: string;
   readonly activateStatus?: number;
@@ -128,7 +130,8 @@ async function addBot(
     authorizedUsers: [],
     allowedApprovers: [],
     allowGroupUserMentions: baseConfig.allowGroupUserMentions !== false,
-    allowGroupBotMentions: baseConfig.allowGroupBotMentions === true,
+    allowExternalGroupUserMentions: baseConfig.allowExternalGroupUserMentions !== false,
+    allowGroupBotMentions: baseConfig.allowGroupBotMentions !== false,
     botOpenId: identity.botOpenId,
     displayName: identity.displayName,
     avatarUrl: identity.avatarUrl,
@@ -161,7 +164,8 @@ async function importBot(
     authorizedUsers: [],
     allowedApprovers: [],
     allowGroupUserMentions: baseConfig.allowGroupUserMentions !== false,
-    allowGroupBotMentions: baseConfig.allowGroupBotMentions === true,
+    allowExternalGroupUserMentions: baseConfig.allowExternalGroupUserMentions !== false,
+    allowGroupBotMentions: baseConfig.allowGroupBotMentions !== false,
     botOpenId: identity.botOpenId,
     displayName: identity.displayName,
     avatarUrl: identity.avatarUrl,
@@ -288,7 +292,9 @@ function botView(bot: LarkBotConfig): BotCommandBotView {
     authorizedUserCount: bot.authorizedUsers.length,
     allowedApproverCount: bot.allowedApprovers.length,
     allowGroupUserMentions: bot.allowGroupUserMentions,
+    allowExternalGroupUserMentions: bot.allowExternalGroupUserMentions,
     allowGroupBotMentions: bot.allowGroupBotMentions,
+    roleProfileConfigured: Boolean(bot.roleProfile),
     ...(bot.botOpenId ? { botOpenId: bot.botOpenId } : {}),
     ...(bot.displayName ? { displayName: bot.displayName } : {}),
     ...(bot.activateStatus !== undefined ? { activateStatus: bot.activateStatus } : {}),
@@ -314,7 +320,9 @@ function formatBotReport(report: BotCommandReport): string {
         `状态=${bot.enabled ? 'enabled' : 'disabled'}`,
         `openId=${bot.botOpenId ?? '未获取'}`,
         `群成员@=${bot.allowGroupUserMentions ? 'on' : 'off'}`,
+        `外部群成员默认@=${bot.allowExternalGroupUserMentions ? 'on' : 'off'}`,
         `机器人@=${bot.allowGroupBotMentions ? 'on' : 'off'}`,
+        `角色=${bot.roleProfileConfigured ? '已配置' : '未配置'}`,
         `chats=${bot.allowedChatCount}`,
         `admins=${bot.allowedApproverCount}`,
       ].join(' | '));

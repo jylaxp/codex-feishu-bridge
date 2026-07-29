@@ -44,17 +44,23 @@ test('doctor reports selected profile and managed proxy trust boundary', async (
         };
       },
       nodeVersion: '20.17.0',
+      platform: 'win32',
     });
 
     assert.equal(detectionCount, 1);
     assert.equal(report.protocolProfileId, 'app-server-0.145.0-alpha.18');
     assert.equal(report.appServerMode, 'managed_proxy');
+    assert.equal(report.platform, 'win32');
+    assert.equal(report.desktopAttachedSupported, false);
     assert.equal(
       report.appServerIdentityAssurance,
       'operator_trusted_managed_proxy',
     );
     assert.equal(report.schemaDigest, APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18.schemaDigest);
     assert.equal(report.bindingCount, 0);
+    assert.equal(report.bots[0]?.roleProfileConfigured, false);
+    assert.equal(report.bots[0]?.allowGroupBotMentions, true);
+    assert.equal(report.bots[0]?.groupBotMentionReadyCount, 0);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

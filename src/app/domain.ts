@@ -82,6 +82,7 @@ export interface BridgeConfig {
   readonly authorizedUsers: readonly string[];
   readonly allowedApprovers: readonly string[];
   readonly allowGroupUserMentions?: boolean;
+  readonly allowExternalGroupUserMentions?: boolean;
   readonly allowGroupBotMentions?: boolean;
   /** Defaults to individual cards to preserve the established Feishu workflow. */
   readonly approvalCardMode: ApprovalCardMode;

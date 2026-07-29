@@ -14,7 +14,7 @@ import { dirname, join } from 'node:path';
 
 import { DEFAULT_BOT_KEY } from './bot-config-store';
 
-const BINDINGS_SCHEMA_VERSION = 2;
+const BINDINGS_SCHEMA_VERSION = 3;
 const MAX_BINDINGS_FILE_BYTES = 1024 * 1024;
 const MAX_BINDING_COUNT = 10_000;
 const MAX_IDENTIFIER_LENGTH = 512;
@@ -37,6 +37,11 @@ export interface ChatThreadBinding extends BindingSettings {
   readonly threadId: string;
   readonly threadTitle?: string;
   readonly workspaceId: string;
+  readonly allowExternalGroupUserMentions?: boolean;
+  readonly allowBotSenderMentions?: boolean;
+  readonly allowedBotSenderKeys?: readonly string[];
+  readonly allowedBotSenderOpenIds?: readonly string[];
+  readonly allowedHandoffTargetBotKeys?: readonly string[];
   readonly revision: number;
   readonly updatedAtMs: number;
 }
@@ -190,6 +195,34 @@ export class BindingStore {
     }
   }
 
+  public updateExternalGroupUserMentionPolicy(
+    tenantKey: string,
+    chatId: string,
+    allowExternalGroupUserMentions: boolean,
+    botKey: string = DEFAULT_BOT_KEY,
+  ): ChatThreadBinding | undefined {
+    const key = bindingKey(botKey, tenantKey, chatId);
+    const previous = this.bindings.get(key);
+    if (!previous) {
+      return undefined;
+    }
+    const { allowExternalGroupUserMentions: _previousPolicy, ...previousWithoutPolicy } = previous;
+    const next = Object.freeze({
+      ...previousWithoutPolicy,
+      ...(allowExternalGroupUserMentions ? {} : { allowExternalGroupUserMentions: false }),
+      revision: previous.revision + 1,
+      updatedAtMs: safeNow(this.now),
+    });
+    this.bindings.set(key, next);
+    try {
+      this.persist();
+      return next;
+    } catch (error) {
+      this.bindings.set(key, previous);
+      throw error;
+    }
+  }
+
   public removeBotBindings(botKey: string): number {
     const normalizedBotKey = requiredBotKey(botKey);
     const removed: [string, ChatThreadBinding][] = [];
@@ -254,10 +287,7 @@ function parseDocument(value: unknown): BindingDocument {
   if (!isRecord(value) || hasUnknownKeys(value, ['schemaVersion', 'bindings'])) {
     throw new BindingStoreError('bindings.json has an invalid document shape');
   }
-  if (
-    (value.schemaVersion !== 1 && value.schemaVersion !== BINDINGS_SCHEMA_VERSION)
-    || !Array.isArray(value.bindings)
-  ) {
+  if (!isSupportedSchemaVersion(value.schemaVersion) || !Array.isArray(value.bindings)) {
     throw new BindingStoreError('bindings.json schema version is unsupported');
   }
   if (value.bindings.length > MAX_BINDING_COUNT) {
@@ -277,6 +307,11 @@ function parseBinding(value: unknown, schemaVersion: unknown): ChatThreadBinding
     'threadId',
     'threadTitle',
     'workspaceId',
+    'allowExternalGroupUserMentions',
+    'allowBotSenderMentions',
+    'allowedBotSenderKeys',
+    'allowedBotSenderOpenIds',
+    'allowedHandoffTargetBotKeys',
     'model',
     'personality',
     'style',
@@ -287,6 +322,18 @@ function parseBinding(value: unknown, schemaVersion: unknown): ChatThreadBinding
     'updatedAtMs',
   ])) {
     throw new BindingStoreError('bindings.json contains an invalid binding');
+  }
+  if (
+    value.allowExternalGroupUserMentions !== undefined
+    && typeof value.allowExternalGroupUserMentions !== 'boolean'
+  ) {
+    throw new BindingStoreError('binding allowExternalGroupUserMentions must be a boolean when present');
+  }
+  if (
+    value.allowBotSenderMentions !== undefined
+    && typeof value.allowBotSenderMentions !== 'boolean'
+  ) {
+    throw new BindingStoreError('binding allowBotSenderMentions must be a boolean when present');
   }
   const normalized = normalizeBindingInput({
     botKey: schemaVersion === 1
@@ -299,6 +346,14 @@ function parseBinding(value: unknown, schemaVersion: unknown): ChatThreadBinding
       ? { threadTitle: optionalText(value.threadTitle, 'threadTitle') }
       : {}),
     workspaceId: requiredText(value.workspaceId, 'workspaceId'),
+    ...(value.allowExternalGroupUserMentions === false ? { allowExternalGroupUserMentions: false } : {}),
+    ...(value.allowBotSenderMentions === true ? { allowBotSenderMentions: true } : {}),
+    allowedBotSenderKeys: botKeyArray(value.allowedBotSenderKeys, 'allowedBotSenderKeys'),
+    allowedBotSenderOpenIds: stringArray(value.allowedBotSenderOpenIds, 'allowedBotSenderOpenIds'),
+    allowedHandoffTargetBotKeys: botKeyArray(
+      value.allowedHandoffTargetBotKeys,
+      'allowedHandoffTargetBotKeys',
+    ),
     ...(optionalText(value.model, 'model') ? { model: optionalText(value.model, 'model') } : {}),
     ...(optionalText(value.personality, 'personality')
       ? { personality: optionalText(value.personality, 'personality') }
@@ -339,6 +394,17 @@ function normalizeBindingInput(
       ? { threadTitle: optionalText(input.threadTitle, 'threadTitle') }
       : {}),
     workspaceId: requiredText(input.workspaceId, 'workspaceId'),
+    ...(input.allowExternalGroupUserMentions === false ? { allowExternalGroupUserMentions: false } : {}),
+    ...(input.allowBotSenderMentions === true ? { allowBotSenderMentions: true } : {}),
+    ...nonEmptyStringArray('allowedBotSenderKeys', botKeyArray(input.allowedBotSenderKeys, 'allowedBotSenderKeys')),
+    ...nonEmptyStringArray(
+      'allowedBotSenderOpenIds',
+      stringArray(input.allowedBotSenderOpenIds, 'allowedBotSenderOpenIds'),
+    ),
+    ...nonEmptyStringArray(
+      'allowedHandoffTargetBotKeys',
+      botKeyArray(input.allowedHandoffTargetBotKeys, 'allowedHandoffTargetBotKeys'),
+    ),
     ...(optionalText(input.model, 'model') ? { model: optionalText(input.model, 'model') } : {}),
     ...(optionalText(input.personality, 'personality')
       ? { personality: optionalText(input.personality, 'personality') }
@@ -360,6 +426,10 @@ function requiredBotKey(value: unknown): string {
     throw new BindingStoreError('botKey is invalid');
   }
   return key;
+}
+
+function isSupportedSchemaVersion(value: unknown): boolean {
+  return value === 1 || value === 2 || value === BINDINGS_SCHEMA_VERSION;
 }
 
 function requiredText(value: unknown, label: string): string {
@@ -385,6 +455,50 @@ function optionalText(value: unknown, label: string): string | undefined {
     throw new BindingStoreError(`${label} is invalid`);
   }
   return text;
+}
+
+function stringArray(value: unknown, label: string): readonly string[] {
+  if (value === undefined) {
+    return Object.freeze([]);
+  }
+  if (!Array.isArray(value)) {
+    throw new BindingStoreError(`${label} must be an array when present`);
+  }
+  return Object.freeze(uniqueStrings(value, label));
+}
+
+function botKeyArray(value: unknown, label: string): readonly string[] {
+  if (value === undefined) {
+    return Object.freeze([]);
+  }
+  if (!Array.isArray(value)) {
+    throw new BindingStoreError(`${label} must be an array when present`);
+  }
+  return Object.freeze([...new Set(value.map((item) => requiredBotKey(item)))]);
+}
+
+function uniqueStrings(values: readonly unknown[], label: string): readonly string[] {
+  const normalized: string[] = [];
+  for (const value of values) {
+    if (typeof value !== 'string') {
+      throw new BindingStoreError(`${label} must contain only strings`);
+    }
+    const text = optionalText(value, label);
+    if (text) {
+      normalized.push(text);
+    }
+  }
+  return Object.freeze([...new Set(normalized)]);
+}
+
+function nonEmptyStringArray(
+  key: 'allowedBotSenderKeys' | 'allowedBotSenderOpenIds' | 'allowedHandoffTargetBotKeys',
+  values: readonly string[],
+): Partial<Pick<
+  ChatThreadBinding,
+  'allowedBotSenderKeys' | 'allowedBotSenderOpenIds' | 'allowedHandoffTargetBotKeys'
+>> {
+  return values.length > 0 ? { [key]: values } : {};
 }
 
 function bindingKey(botKey: string, tenantKey: string, chatId: string): string {

@@ -43,11 +43,19 @@ import { BridgeCommandService } from './command-service';
 import { ConversationBindingServiceV3 } from './conversation-binding-service-v3';
 import { DesktopApprovalService } from './desktop-approval-service';
 import { BridgeConfig } from './domain';
+import { buildCollaborationContext } from './collaboration/collaboration-context';
+import { HandoffCoordinator } from './collaboration/handoff-coordinator';
+import { parseHandoffEnvelope } from './collaboration/handoff-directive';
+import {
+  evaluateGroupBotSenderMention,
+  shouldSuppressExternalGroupUserMention,
+} from './group-access-policy';
 import {
   InMemoryOrchestrator,
   type DesktopDeliveryOutcome,
 } from './in-memory-orchestrator';
 import { CachedTenantTokenProvider, createLarkRuntimeClients } from './lark/client';
+import { HandoffMessageEmitter, type LarkHandoffMessageApi } from './lark/handoff-message-emitter';
 import {
   LarkMessageAcknowledgement,
   type LarkMessageAcknowledgementApi,
@@ -55,6 +63,7 @@ import {
 import { OutputFileUploader, type FileUploadApi } from './lark/output-file-uploader';
 import { LarkEventServer, toast, type LarkUnavailableReason } from './lark/event-server';
 import {
+  isGroupManagementCommandText,
   isTextOnlyInboundMessage,
   type InboundMessage,
   type InboundReplyContext,
@@ -190,6 +199,7 @@ export async function startBridge(
   let desktopRouteState: DesktopRouteState = 'unknown';
   let lastDesktopDeliveryErrorCode: string | null = null;
   const unavailableDesktopThreads = new Set<string>();
+  let handoffCoordinator: HandoffCoordinator | undefined;
   let larkConnection: LarkWebsocketConnectionSnapshot = Object.freeze({
     state: 'idle',
     reconnectCount: 0,
@@ -228,6 +238,8 @@ export async function startBridge(
         lark: larkConnection,
         tasks: orchestrator?.runtimeTaskHealth()
           ?? Object.freeze({ active: 0, queued: 0, pendingCardDeliveries: 0 }),
+        collaboration: handoffCoordinator?.snapshot()
+          ?? Object.freeze({ emitted: 0, accepted: 0, blocked: 0, duplicate: 0, loopBlocked: 0 }),
       }));
     } catch (error) {
       logger.error('runtime_health_write_failed', error);
@@ -297,6 +309,12 @@ export async function startBridge(
     return runtime;
   };
   const cardsForBotKey = (botKey: string): CardKitClient | undefined => botRuntimes.get(botKey)?.cards;
+  const handoffEmitterForBotKey = (botKey: string): HandoffMessageEmitter | undefined => {
+    const runtime = botRuntimes.get(botKey);
+    return runtime
+      ? new HandoffMessageEmitter(runtime.lark.api as unknown as LarkHandoffMessageApi)
+      : undefined;
+  };
   const approveNotificationImages = (notification: ServerNotification): void => {
     const paths = notificationLocalImagePaths(notification);
     if (paths.length === 0) {
@@ -390,6 +408,20 @@ export async function startBridge(
     config.rateLimitQueryIntervalMs,
   );
   const navigation = new CodexAppNavigationAdapter();
+  handoffCoordinator = new HandoffCoordinator({
+    bots: () => botStore.list(),
+    bindingFor: (tenantKey, chatId, targetBotKey) => bindings.get(tenantKey, chatId, targetBotKey),
+    emitterForSourceBot: handoffEmitterForBotKey,
+    runnerReadinessForBinding: () => {
+      if (process.platform === 'win32') {
+        return { ready: false, reason: 'windows_desktop_attached_not_ready' };
+      }
+      if (desktopState !== 'READY') {
+        return { ready: false, reason: 'desktop_ipc_not_ready' };
+      }
+      return { ready: true };
+    },
+  });
   orchestrator = new InMemoryOrchestrator(config, desktop, defaultRuntime.cards, {
     onCardError: (error) => logger.error('card_update_failed', error),
     cardClientForBotKey: cardsForBotKey,
@@ -447,6 +479,15 @@ export async function startBridge(
         });
       });
     },
+    collaborationContextForBinding: (binding) => buildCollaborationContext({
+      binding,
+      currentBot: botStore.get(binding.botKey ?? DEFAULT_BOT_KEY),
+      bots: botStore.list(),
+      targetBindings: bindings.list().filter((candidate) => (
+        candidate.tenantKey === binding.tenantKey && candidate.chatId === binding.chatId
+      )),
+    }),
+    handleTerminalHandoff: (context) => handoffCoordinator?.handleTerminalHandoff(context) ?? Promise.resolve(null),
   });
   const approvals = new DesktopApprovalService(config, desktop, defaultRuntime.cards, orchestrator, Date.now, {
     configForBotKey,
@@ -476,6 +517,35 @@ export async function startBridge(
     }
     return true;
   };
+  const persistAllowedBindingChat = (binding: ChatThreadBinding): void => {
+    const runtime = botRuntimes.get(binding.botKey ?? DEFAULT_BOT_KEY);
+    if (!runtime) {
+      return;
+    }
+    const currentConfig = runtime.config;
+    const nextTenantKey = currentConfig.larkTenantKey || binding.tenantKey;
+    const nextAllowedChats = currentConfig.allowedChats.includes(binding.chatId)
+      ? currentConfig.allowedChats
+      : Object.freeze([...currentConfig.allowedChats, binding.chatId]);
+    if (nextTenantKey === currentConfig.larkTenantKey && nextAllowedChats === currentConfig.allowedChats) {
+      return;
+    }
+    Object.assign(currentConfig, {
+      larkTenantKey: nextTenantKey,
+      allowedChats: nextAllowedChats,
+    });
+    botConfigs.set(runtime.botKey, currentConfig);
+    persistBotScope(runtime.botKey, {
+      tenantKey: nextTenantKey,
+      allowedChats: nextAllowedChats.join(','),
+      authorizedUsers: currentConfig.authorizedUsers.join(','),
+      allowedApprovers: currentConfig.allowedApprovers.join(','),
+    }, botStore, config, preflight.configHome);
+    logger.info('binding_scope_chat_allowed', {
+      botKey: runtime.botKey,
+      chatId: binding.chatId,
+    });
+  };
   for (const runtime of botRuntimes.values()) {
     conversationBindingsByBot.set(runtime.botKey, new ConversationBindingServiceV3(
       runtime.config,
@@ -488,6 +558,8 @@ export async function startBridge(
       undefined,
       () => rateLimits.get(),
       projectActiveDesktopTurn,
+      persistAllowedBindingChat,
+      () => botStore.list(),
     ));
     commandsByBot.set(runtime.botKey, new BridgeCommandService(
       runtime.config,
@@ -548,18 +620,27 @@ export async function startBridge(
     const conversationBindings = conversationBindingsFor(botKey);
     const commands = commandsFor(botKey);
     const cards = runtime.cards;
-    if ((message.chatType ?? 'p2p') === 'group' && isTextOnlyInboundMessage(message) && message.text.startsWith('/')) {
-      return false;
+    const botSender = message.senderType === 'bot';
+    const groupSlashCommand = (message.chatType ?? 'p2p') === 'group'
+      && isTextOnlyInboundMessage(message)
+      && message.text.startsWith('/');
+    const groupManagementCommand = groupSlashCommand
+      && !botSender
+      && runtime.config.authorizedUsers.includes(message.senderOpenId)
+      && isGroupManagementCommandText(message.text);
+    if (!botSender && isTextOnlyInboundMessage(message)) {
+      if (!groupSlashCommand && await commands.handle(message)) {
+        await syncDesktopThreadFollowing();
+        return true;
+      }
+      const routeToBindingCommands = !groupSlashCommand || groupManagementCommand;
+      if (routeToBindingCommands && await conversationBindings.handleCommand(message)) {
+        await syncDesktopThreadFollowing();
+        return true;
+      }
     }
-    if (isTextOnlyInboundMessage(message)) {
-      if (await commands.handle(message)) {
-        await syncDesktopThreadFollowing();
-        return true;
-      }
-      if (await conversationBindings.handleCommand(message)) {
-        await syncDesktopThreadFollowing();
-        return true;
-      }
+    if (groupSlashCommand && !botSender) {
+      return false;
     }
     const binding = conversationBindings.getBinding(message.tenantKey, message.chatId, botKey);
     if (!binding) {
@@ -570,18 +651,74 @@ export async function startBridge(
       await conversationBindings.ensureBoundOrPrompt(message);
       return false;
     }
+    if (shouldSuppressExternalGroupUserMention(message, binding)) {
+      logger.info('external_group_user_mention_suppressed', {
+        botKey,
+        chatId: message.chatId,
+        messageId: message.messageId,
+      });
+      return false;
+    }
+    if (botSender) {
+      const sourceBot = configuredBots.find((bot) => bot.botOpenId === message.senderOpenId);
+      const decision = evaluateGroupBotSenderMention(
+        message,
+        binding,
+        sourceBot,
+        runtime.config.allowGroupBotMentions !== false,
+      );
+      if (!decision.accepted) {
+        logger.info('group_bot_sender_mention_suppressed', {
+          botKey,
+          sourceBotKey: sourceBot?.botKey ?? null,
+          reason: decision.reason,
+          chatId: message.chatId,
+          messageId: message.messageId,
+        });
+        return false;
+      }
+    }
+    let taskMessage = message;
+    if (botSender) {
+      const parsedHandoff = parseHandoffEnvelope(message.text);
+      if (!parsedHandoff) {
+        logger.info('group_bot_sender_mention_suppressed', {
+          botKey,
+          reason: 'handoff_envelope_missing',
+          chatId: message.chatId,
+          messageId: message.messageId,
+        });
+        return false;
+      }
+      const chainDecision = handoffCoordinator?.acceptInboundHandoff(parsedHandoff.envelope, botKey)
+        ?? { accepted: false as const, reason: 'handoff_not_ready' };
+      if (!chainDecision.accepted) {
+        logger.info('group_bot_sender_mention_suppressed', {
+          botKey,
+          reason: `handoff_${chainDecision.reason}`,
+          chatId: message.chatId,
+          messageId: message.messageId,
+        });
+        return false;
+      }
+      taskMessage = {
+        ...message,
+        text: parsedHandoff.taskText,
+        handoffEnvelope: parsedHandoff.envelope,
+      };
+    }
     await syncDesktopThreadFollowing();
     if (generation !== inboundGeneration) {
       return false;
     }
-    const imageReferences = message.imageReferences
-      ?? (message.imageKey ? [{ messageId: message.messageId, imageKey: message.imageKey }] : []);
+    const imageReferences = taskMessage.imageReferences
+      ?? (taskMessage.imageKey ? [{ messageId: taskMessage.messageId, imageKey: taskMessage.imageKey }] : []);
     if (imageReferences.length > MAX_INBOUND_IMAGES) {
       const cardId = await cards.createCard(createImageCountErrorCard(MAX_INBOUND_IMAGES));
-      await cards.replyCard(message.rootMessageId, cardId, `image-count:${message.eventId}`);
+      await cards.replyCard(taskMessage.rootMessageId, cardId, `image-count:${taskMessage.eventId}`);
       return false;
     }
-    let preparedMessage = message;
+    let preparedMessage = taskMessage;
     if (imageReferences.length > 0) {
       const paths: string[] = [];
       try {
@@ -605,7 +742,7 @@ export async function startBridge(
           messageId: message.messageId,
         });
         const cardId = await cards.createCard(createImageInputErrorCard());
-        await cards.replyCard(message.rootMessageId, cardId, `image-error:${message.eventId}`);
+        await cards.replyCard(taskMessage.rootMessageId, cardId, `image-error:${taskMessage.eventId}`);
         return false;
       }
     }
@@ -622,15 +759,15 @@ export async function startBridge(
     }
     if (outcome === 'rejected_image_limit') {
       const cardId = await cards.createCard(createImageCountErrorCard(MAX_INBOUND_IMAGES));
-      await cards.replyCard(message.rootMessageId, cardId, `image-count:${message.eventId}`);
+      await cards.replyCard(taskMessage.rootMessageId, cardId, `image-count:${taskMessage.eventId}`);
       return false;
     }
     if (outcome === 'rejected_queue_full') {
       const cardId = await cards.createCard(createQueueFullCard(config.maxQueuedTasks));
       await cards.replyCard(
-        message.rootMessageId,
+        taskMessage.rootMessageId,
         cardId,
-        `queue-full:${message.eventId}`,
+        `queue-full:${taskMessage.eventId}`,
       );
       return false;
     }

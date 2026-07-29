@@ -30,7 +30,8 @@ The current Bridge is built around one Lark app credential pair and one event se
 - R7. Desktop-originated turns on a thread with multiple bot/chat bindings must not be auto-projected to all bots; fan-out is unsafe without an explicit originating Bridge task.
 - R8. Existing single-bot configuration must continue to work, with a deterministic migration path to the multi-bot config model.
 - R9. Runtime health, doctor output, logs, and setup/reset flows must report bot-level status without recording prompt, answer, reasoning, approval payloads, or CardKit payloads.
-- R10. Group chat support must stay fail-closed: a bot only handles events for configured or explicitly authorized chats, and group messages are accepted only when the event is for an allowed bot mention unless a future explicit all-group-message mode is added.
+- R10. Group chat support must stay mention-gated: group messages are accepted only when the event is for the current bot mention unless a future explicit all-group-message mode is added.
+  Ordinary external group-member mentions are allowed by default through a binding-level policy and do not require sender tenant or chat allowlist checks; owners can manually disable that policy for each group.
 - R11. Group chats have two lanes: owner-only management for the current group, and ordinary `@current bot` task messages after binding. Non-owner users and bot senders must never execute group management commands such as bind, unbind, model, CWD, access, setup, or diagnostics.
 - R12. Desktop approval decisions must be admin-only. A group member may start a task when the binding policy allows it, but only the bot's owner/admin approval set can decide approvals.
 - R13. Any group binding or configuration action must target a concrete group identity. In-group management targets the current event's `botKey + tenantKey + chatId`; private-chat management targets an explicit discovered group selected by that same identity. Group names are display-only and cannot be the binding key.
@@ -208,6 +209,9 @@ The current Bridge is built around one Lark app credential pair and one event se
 
 - A group must already be bound before it can start tasks.
 - A group message is accepted only when it mentions the current robot and passes that binding's mention access policy.
+- External group users may mention the current robot for ordinary task messages by default.
+  This relaxed path skips sender tenant and chat allowlist checks, but it does not authorize group management commands, card approvals, or bot-sender tasks.
+- The external group-member access policy is stored on the current group binding. The owner can use `@current bot /external off` in that group to stop responding to external group-member mentions, and `@current bot /external on` to restore the default.
 - The accepted group message body is treated as ordinary task input after removing the current robot mention.
 - Non-owner group slash commands and management commands are not supported. They must not mutate binding state, change settings, or trigger approval decisions.
 - Other users or robots may mention the current robot only when the group binding policy allows that sender class.
@@ -462,6 +466,8 @@ sequenceDiagram
 
 **Test scenarios:**
 - Happy path: group `@current bot` text message is accepted and bot mention is stripped.
+- Happy path: external group user `@current bot` text message is accepted by default even when the sender tenant differs
+  and the chat is not in the bot allowlist.
 - Happy path: allowed non-admin group member can start an ordinary task when the binding allows all group users.
 - Happy path: unbound group owner `@current bot /bind` creates a pending group candidate and opens a binding picker for the current group.
 - Happy path: unbound group non-owner `@current bot` creates or refreshes a pending group candidate without starting a task.

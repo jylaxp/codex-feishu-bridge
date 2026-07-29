@@ -114,10 +114,16 @@ export function normalizeCardAction(
   const messageId = nonBlank(event.context?.open_message_id);
   const operatorOpenId = nonBlank(event.operator?.open_id);
   const value = event.action?.value;
+  const action = isRecord(value) ? nonBlank(value.action) : null;
+  const chatAllowed = !!chatId
+    && (config.allowedChats.length === 0 || config.allowedChats.includes(chatId));
+  const bindingBootstrap = action === 'binding'
+    && !!operatorOpenId
+    && config.authorizedUsers.includes(operatorOpenId);
   if (
     tenantKey !== config.larkTenantKey
     || !chatId
-    || !config.allowedChats.includes(chatId)
+    || (!chatAllowed && !bindingBootstrap)
     || !messageId
     || !operatorOpenId
     || !isRecord(value)
@@ -125,7 +131,6 @@ export function normalizeCardAction(
     return null;
   }
 
-  const action = nonBlank(value.action);
   const selectedOption = selectedOptionValue(event.action?.option);
   const token = action === 'binding' || action === 'model' || action === 'skill'
     ? selectedOption ?? nonBlank(value.token)

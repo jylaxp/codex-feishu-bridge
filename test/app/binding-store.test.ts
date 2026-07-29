@@ -57,11 +57,127 @@ test('binding store scopes the same tenant chat by bot key', () => {
       readonly schemaVersion: number;
       readonly bindings: readonly { readonly botKey?: string }[];
     };
-    assert.equal(document.schemaVersion, 2);
+    assert.equal(document.schemaVersion, 3);
     assert.deepEqual(document.bindings.map((binding) => binding.botKey).sort(), [
       'bot_aaaaaaaaaaaa',
       'bot_bbbbbbbbbbbb',
     ]);
+  } finally {
+    rmSync(configHome, { recursive: true, force: true });
+  }
+});
+
+test('binding store persists external group member access policy per binding', () => {
+  const configHome = mkdtempSync(join(tmpdir(), 'bridge-binding-external-policy-'));
+  try {
+    let tick = 1_000;
+    const store = new BindingStore(configHome, { now: () => tick });
+    const initial = store.bind({
+      botKey: 'bot_aaaaaaaaaaaa',
+      tenantKey: 'tenant',
+      chatId: 'chat',
+      threadId: 'thread',
+      workspaceId: '/workspace',
+    });
+    assert.equal(initial.allowExternalGroupUserMentions, undefined);
+
+    tick = 2_000;
+    const disabled = store.updateExternalGroupUserMentionPolicy(
+      'tenant',
+      'chat',
+      false,
+      'bot_aaaaaaaaaaaa',
+    );
+    assert.equal(disabled?.allowExternalGroupUserMentions, false);
+    assert.equal(disabled?.revision, 2);
+
+    let document = JSON.parse(readFileSync(join(configHome, 'bindings.json'), 'utf8')) as {
+      readonly bindings: readonly { readonly allowExternalGroupUserMentions?: boolean }[];
+    };
+    assert.equal(document.bindings[0]?.allowExternalGroupUserMentions, false);
+
+    tick = 3_000;
+    const enabled = store.updateExternalGroupUserMentionPolicy(
+      'tenant',
+      'chat',
+      true,
+      'bot_aaaaaaaaaaaa',
+    );
+    assert.equal(enabled?.allowExternalGroupUserMentions, undefined);
+    assert.equal(enabled?.revision, 3);
+
+    document = JSON.parse(readFileSync(join(configHome, 'bindings.json'), 'utf8')) as {
+      readonly bindings: readonly { readonly allowExternalGroupUserMentions?: boolean }[];
+    };
+    assert.equal('allowExternalGroupUserMentions' in (document.bindings[0] ?? {}), false);
+  } finally {
+    rmSync(configHome, { recursive: true, force: true });
+  }
+});
+
+test('binding store loads old bindings with bot collaboration disabled', () => {
+  const configHome = mkdtempSync(join(tmpdir(), 'bridge-binding-collab-default-'));
+  try {
+    writeFileSync(join(configHome, 'bindings.json'), JSON.stringify({
+      schemaVersion: 2,
+      bindings: [{
+        botKey: 'bot_aaaaaaaaaaaa',
+        tenantKey: 'tenant',
+        chatId: 'chat',
+        threadId: 'thread',
+        workspaceId: '/workspace',
+        revision: 1,
+        updatedAtMs: 1,
+      }],
+    }));
+    const store = new BindingStore(configHome);
+    store.load();
+
+    const loaded = store.get('tenant', 'chat', 'bot_aaaaaaaaaaaa');
+    assert.equal(loaded?.allowBotSenderMentions, undefined);
+    assert.deepEqual(loaded?.allowedBotSenderKeys ?? [], []);
+    assert.deepEqual(loaded?.allowedBotSenderOpenIds ?? [], []);
+    assert.deepEqual(loaded?.allowedHandoffTargetBotKeys ?? [], []);
+  } finally {
+    rmSync(configHome, { recursive: true, force: true });
+  }
+});
+
+test('binding store persists bot collaboration policy per binding', () => {
+  const configHome = mkdtempSync(join(tmpdir(), 'bridge-binding-collab-policy-'));
+  try {
+    const store = new BindingStore(configHome, { now: () => 1_000 });
+    const binding = store.bind({
+      botKey: 'bot_aaaaaaaaaaaa',
+      tenantKey: 'tenant',
+      chatId: 'chat',
+      threadId: 'thread',
+      workspaceId: '/workspace',
+      allowBotSenderMentions: true,
+      allowedBotSenderKeys: ['bot_bbbbbbbbbbbb', 'bot_bbbbbbbbbbbb'],
+      allowedBotSenderOpenIds: ['ou_source', 'ou_source'],
+      allowedHandoffTargetBotKeys: ['bot_cccccccccccc'],
+    });
+
+    assert.equal(binding.allowBotSenderMentions, true);
+    assert.deepEqual(binding.allowedBotSenderKeys, ['bot_bbbbbbbbbbbb']);
+    assert.deepEqual(binding.allowedBotSenderOpenIds, ['ou_source']);
+    assert.deepEqual(binding.allowedHandoffTargetBotKeys, ['bot_cccccccccccc']);
+
+    const document = JSON.parse(readFileSync(join(configHome, 'bindings.json'), 'utf8')) as {
+      readonly schemaVersion: number;
+      readonly bindings: readonly {
+        readonly allowBotSenderMentions?: boolean;
+        readonly allowedBotSenderKeys?: readonly string[];
+        readonly allowedBotSenderOpenIds?: readonly string[];
+        readonly allowedHandoffTargetBotKeys?: readonly string[];
+      }[];
+    };
+    assert.equal(document.schemaVersion, 3);
+    assert.equal(document.bindings[0]?.allowBotSenderMentions, true);
+    assert.deepEqual(document.bindings[0]?.allowedBotSenderKeys, ['bot_bbbbbbbbbbbb']);
+    assert.deepEqual(document.bindings[0]?.allowedBotSenderOpenIds, ['ou_source']);
+    assert.deepEqual(document.bindings[0]?.allowedHandoffTargetBotKeys, ['bot_cccccccccccc']);
   } finally {
     rmSync(configHome, { recursive: true, force: true });
   }

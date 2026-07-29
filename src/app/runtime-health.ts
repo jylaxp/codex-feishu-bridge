@@ -21,6 +21,14 @@ export interface RuntimeTaskHealth {
   readonly pendingCardDeliveries: number;
 }
 
+export interface RuntimeCollaborationHealth {
+  readonly emitted: number;
+  readonly accepted: number;
+  readonly blocked: number;
+  readonly duplicate: number;
+  readonly loopBlocked: number;
+}
+
 /** Whether a followed task thread currently has a routable ChatGPT Desktop owner. */
 export type DesktopRouteState = 'unknown' | 'ready' | 'unavailable';
 
@@ -56,6 +64,7 @@ export interface RuntimeHealthSnapshot {
   };
   readonly lark: LarkWebsocketConnectionSnapshot;
   readonly tasks: RuntimeTaskHealth;
+  readonly collaboration?: RuntimeCollaborationHealth;
 }
 
 /** Resolves readiness without treating an IPC handshake as proof of a routable Desktop owner. */

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import type { HandoffEnvelope } from '../collaboration/handoff-directive';
 import { DEFAULT_BOT_KEY } from '../bot-config-store';
 import { BridgeConfig } from '../domain';
 
@@ -35,6 +36,7 @@ export interface RawMessageEvent {
 export interface InboundMessage {
   readonly botKey?: string;
   readonly tenantKey: string;
+  readonly eventTenantKey?: string;
   readonly eventId: string;
   readonly messageId: string;
   readonly chatId: string;
@@ -42,12 +44,15 @@ export interface InboundMessage {
   readonly rootMessageId: string;
   readonly senderOpenId: string;
   readonly senderType?: 'user' | 'bot';
+  readonly senderTenantKey?: string;
+  readonly externalGroupUser?: boolean;
   readonly messageType?: 'text' | 'image' | 'post';
   readonly hasExplicitText?: boolean;
   readonly text: string;
   readonly imageKey?: string;
   readonly imageReferences?: readonly InboundImageReference[];
   readonly localImagePaths?: readonly string[];
+  readonly handoffEnvelope?: HandoffEnvelope;
   readonly payloadDigest: string;
   readonly createdAtMs: number;
 }
@@ -80,6 +85,16 @@ export function isTextOnlyInboundMessage(message: InboundMessage): boolean {
     && (message.localImagePaths?.length ?? 0) === 0;
 }
 
+export function isGroupManagementCommandText(text: string): boolean {
+  const command = text.trim().split(/\s+/, 1)[0]?.toLowerCase();
+  return command === '/bind'
+    || command === '/l'
+    || command === '/list'
+    || command === '/ll'
+    || command === '/external'
+    || command === '/collab';
+}
+
 export type IntakeRejectionReason =
   | 'APP_MISMATCH'
   | 'TENANT_MISMATCH'
@@ -89,7 +104,6 @@ export type IntakeRejectionReason =
   | 'CHAT_NOT_ALLOWED'
   | 'USER_NOT_ALLOWED'
   | 'BOT_NOT_MENTIONED'
-  | 'GROUP_BOT_SENDER_DISABLED'
   | 'MESSAGE_NOT_TEXT'
   | 'EVENT_ID_MISSING'
   | 'MESSAGE_ID_MISSING'
@@ -226,6 +240,36 @@ function normalizeText(text: string, mentionKeys: readonly string[]): string | n
     .trim() || null;
 }
 
+function isExternalGroupUserSender(
+  chatType: InboundMessage['chatType'],
+  senderType: string | undefined,
+  tenantKey: string | null,
+  senderTenantKey: string | null,
+  config: BridgeConfig,
+): boolean {
+  if (
+    chatType !== 'group'
+    || senderType !== 'user'
+    || config.allowGroupUserMentions === false
+    || config.allowExternalGroupUserMentions === false
+    || !config.larkTenantKey
+  ) {
+    return false;
+  }
+  return (tenantKey !== null && tenantKey !== config.larkTenantKey)
+    || (senderTenantKey !== null && senderTenantKey !== config.larkTenantKey);
+}
+
+function isRelaxedGroupBotSender(
+  chatType: InboundMessage['chatType'],
+  senderType: string | undefined,
+  config: BridgeConfig,
+): boolean {
+  return chatType === 'group'
+    && senderType === 'bot'
+    && config.allowGroupBotMentions !== false;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -270,22 +314,42 @@ export function normalizeInboundReplyContext(
     return null;
   }
 
+  const rawMessage = event.message;
+  const chatType = normalizeChatType(rawMessage?.chat_type);
   const tenantKey = nonBlank(event.tenant_key);
-  if (!tenantKey || (config.larkTenantKey && tenantKey !== config.larkTenantKey)) {
+  const senderTenantKey = nonBlank(event.sender?.tenant_key);
+  const externalGroupUserSender = isExternalGroupUserSender(
+    chatType,
+    event.sender?.sender_type,
+    tenantKey,
+    senderTenantKey,
+    config,
+  );
+  const relaxedGroupBotSender = isRelaxedGroupBotSender(
+    chatType,
+    event.sender?.sender_type,
+    config,
+  );
+  const resolvedTenantKey = config.larkTenantKey || tenantKey;
+  if (
+    !resolvedTenantKey
+    || (
+      !externalGroupUserSender
+      && !relaxedGroupBotSender
+      && (!tenantKey || (config.larkTenantKey && tenantKey !== config.larkTenantKey))
+    )
+  ) {
     return null;
   }
-  const senderTenantKey = nonBlank(event.sender?.tenant_key);
-  if (senderTenantKey !== null && senderTenantKey !== tenantKey) {
+  if (!externalGroupUserSender && !relaxedGroupBotSender && senderTenantKey !== null && senderTenantKey !== tenantKey) {
     return null;
   }
 
-  const rawMessage = event.message;
   const chatId = nonBlank(rawMessage?.chat_id);
   const messageId = nonBlank(rawMessage?.message_id);
   if (!rawMessage || !chatId || !messageId) {
     return null;
   }
-  const chatType = normalizeChatType(rawMessage.chat_type);
   if (chatType === 'group' && currentBotMentionKeysFor(rawMessage.mentions ?? [], config).length === 0) {
     return null;
   }
@@ -301,7 +365,7 @@ export function normalizeInboundReplyContext(
   const senderOpenId = nonBlank(event.sender?.sender_id?.open_id);
   return Object.freeze({
     botKey,
-    tenantKey,
+    tenantKey: resolvedTenantKey,
     eventId,
     messageId,
     chatId,
@@ -324,39 +388,67 @@ export function normalizeInboundMessage(
     return { accepted: false, reason: 'APP_MISMATCH' };
   }
 
+  const rawMessage = event.message;
+  const chatType = normalizeChatType(rawMessage?.chat_type);
+  const senderType = event.sender?.sender_type === 'bot' ? 'bot' : 'user';
   const tenantKey = nonBlank(event.tenant_key);
   const senderTenantKey = nonBlank(event.sender?.tenant_key);
+  const externalGroupUserSender = isExternalGroupUserSender(
+    chatType,
+    event.sender?.sender_type,
+    tenantKey,
+    senderTenantKey,
+    config,
+  );
+  const relaxedGroupBotSender = isRelaxedGroupBotSender(
+    chatType,
+    event.sender?.sender_type,
+    config,
+  );
+  const resolvedTenantKey = config.larkTenantKey || tenantKey;
   if (
-    tenantKey !== config.larkTenantKey
-    || (senderTenantKey !== null && senderTenantKey !== config.larkTenantKey)
+    !resolvedTenantKey
+    || (
+      !externalGroupUserSender
+      && !relaxedGroupBotSender
+      && (
+        tenantKey !== config.larkTenantKey
+        || (senderTenantKey !== null && senderTenantKey !== config.larkTenantKey)
+      )
+    )
   ) {
     return { accepted: false, reason: 'TENANT_MISMATCH' };
   }
 
-  const rawMessage = event.message;
-  const chatType = normalizeChatType(rawMessage?.chat_type);
-  const senderType = event.sender?.sender_type === 'bot' ? 'bot' : 'user';
   if (event.sender?.sender_type !== 'user' && event.sender?.sender_type !== 'bot') {
     return { accepted: false, reason: 'SENDER_NOT_ALLOWED' };
   }
   if (chatType !== 'group' && event.sender?.sender_type !== 'user') {
     return { accepted: false, reason: 'SENDER_NOT_USER' };
   }
-  if (chatType === 'group' && senderType === 'bot' && config.allowGroupBotMentions !== true) {
-    return { accepted: false, reason: 'GROUP_BOT_SENDER_DISABLED' };
-  }
-
   const senderOpenId = nonBlank(event.sender.sender_id?.open_id);
   if (!senderOpenId) {
     return { accepted: false, reason: 'SENDER_MISSING' };
   }
 
   const chatId = nonBlank(rawMessage?.chat_id);
-  if (
-    !rawMessage
-    || !chatId
-    || (config.allowedChats.length > 0 && !config.allowedChats.includes(chatId))
-  ) {
+  if (!rawMessage || !chatId) {
+    return { accepted: false, reason: 'CHAT_NOT_ALLOWED' };
+  }
+  const mentions = rawMessage.mentions ?? [];
+  const currentBotMentionKeys = currentBotMentionKeysFor(mentions, config);
+  const chatAllowed = externalGroupUserSender
+    || relaxedGroupBotSender
+    || config.allowedChats.length === 0
+    || config.allowedChats.includes(chatId);
+  const groupManagementCommand = !chatAllowed
+    && chatType === 'group'
+    && senderType === 'user'
+    && config.authorizedUsers.includes(senderOpenId)
+    && currentBotMentionKeys.length > 0
+    && rawMessage.message_type === 'text'
+    && isGroupManagementCommandContent(rawMessage.content, currentBotMentionKeys);
+  if (!chatAllowed && !groupManagementCommand) {
     return { accepted: false, reason: 'CHAT_NOT_ALLOWED' };
   }
   if (
@@ -366,8 +458,6 @@ export function normalizeInboundMessage(
   ) {
     return { accepted: false, reason: 'USER_NOT_ALLOWED' };
   }
-  const mentions = rawMessage.mentions ?? [];
-  const currentBotMentionKeys = currentBotMentionKeysFor(mentions, config);
   if (chatType === 'group' && currentBotMentionKeys.length === 0) {
     return { accepted: false, reason: 'BOT_NOT_MENTIONED' };
   }
@@ -410,7 +500,8 @@ export function normalizeInboundMessage(
     accepted: true,
     message: Object.freeze({
       botKey,
-      tenantKey,
+      tenantKey: resolvedTenantKey,
+      ...(tenantKey ? { eventTenantKey: tenantKey } : {}),
       eventId,
       messageId,
       chatId,
@@ -418,6 +509,8 @@ export function normalizeInboundMessage(
       rootMessageId,
       senderOpenId,
       senderType,
+      ...(senderTenantKey ? { senderTenantKey } : {}),
+      ...(externalGroupUserSender ? { externalGroupUser: true } : {}),
       messageType,
       hasExplicitText,
       text,
@@ -448,6 +541,11 @@ function currentBotMentionKeysFor(
     ? mentions.filter((mention) => mentionOpenId(mention) === botOpenId)
     : mentions;
   return Object.freeze(currentMentions.map((mention) => mentionKey(mention) ?? '').filter(Boolean));
+}
+
+function isGroupManagementCommandContent(content: string | undefined, mentionKeys: readonly string[]): boolean {
+  return typeof content === 'string'
+    && isGroupManagementCommandText(extractText(content, mentionKeys) ?? '');
 }
 
 function extractMessageContent(

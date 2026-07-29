@@ -40,6 +40,16 @@ export function createHelpCard(_allowedShellCommands: readonly string[]): CardKi
         + '- 每个任务最多 8 张图片，支持 JPG、PNG、WebP，单张不超过 20 MB。',
     },
   });
+  card.body.elements.push({
+    tag: 'div',
+    text: {
+      tag: 'lark_md',
+      content: '🤝 **群机器人协作**\n'
+        + '- MVP 默认开放：人可以 @ 机器人，机器人可以 @ 机器人，也可以 @ 人。\n'
+        + '- `/collab` 查看当前群协作状态。\n'
+        + '- 关闭当前机器人响应其他机器人 @ 时，使用 bot 配置里的机器人 @ 开关。',
+    },
+  });
   return card as unknown as CardKitJson;
 }
 
