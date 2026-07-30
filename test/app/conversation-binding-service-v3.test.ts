@@ -350,6 +350,80 @@ for (const command of ['/l', '/ll']) {
   });
 }
 
+test('group binding card action persists chat type metadata', async () => {
+  const configHome = mkdtempSync(join(tmpdir(), 'bridge-binding-card-chat-type-'));
+  try {
+    const store = new BindingStore(configHome, { now: () => 1_000 });
+    const catalog: BindingCatalogV3 = {
+      request: async <TResult>(method: string): Promise<TResult> => {
+        if (method !== 'thread/list') {
+          throw new Error(`unexpected method: ${method}`);
+        }
+        return {
+          data: [{
+            id: 'thread-bridge',
+            name: 'bridge',
+            cwd: '/workspace',
+            updatedAt: 1_000,
+          }],
+          nextCursor: null,
+          backwardsCursor: null,
+        } as TResult;
+      },
+    };
+    let createdCard: CardKitJson | undefined;
+    const cards: BindingCardsV3 = {
+      createCard: async (card: CardKitJson) => {
+        createdCard = card;
+        return 'card';
+      },
+      replyCard: async () => 'message',
+      sendCard: async () => 'picker-message',
+      replaceCard: async (_cardId, _card, sequence) => sequence + 1,
+    };
+    const service = new ConversationBindingServiceV3(
+      config,
+      store,
+      catalog,
+      cards,
+      () => 1_000,
+      undefined,
+      undefined,
+      async () => emptyWorkspaceStateForTest(),
+      undefined,
+      async () => true,
+    );
+
+    await service.handleCommand({
+      botKey: 'default',
+      tenantKey: 'tenant',
+      eventId: 'event',
+      messageId: 'message',
+      chatId: 'chat',
+      chatType: 'group',
+      rootMessageId: 'message',
+      senderOpenId: 'user',
+      text: '/bind',
+      payloadDigest: 'digest',
+      createdAtMs: 1_000,
+    });
+    const token = firstPickerToken(createdCard);
+    const response = await service.handleCardAction({
+      botKey: 'default',
+      tenantKey: 'tenant',
+      chatId: 'chat',
+      messageId: 'picker-message',
+      operatorOpenId: 'user',
+      token,
+    });
+
+    assert.equal((response as { readonly toast?: { readonly type?: unknown } }).toast?.type, 'success');
+    assert.equal(store.get('tenant', 'chat')?.chatType, 'group');
+  } finally {
+    rmSync(configHome, { recursive: true, force: true });
+  }
+});
+
 test('owner can toggle external group member access policy for the current binding', async () => {
   const configHome = mkdtempSync(join(tmpdir(), 'bridge-binding-policy-command-'));
   try {
@@ -574,3 +648,28 @@ test('bot sender cannot mutate collaboration policy', async () => {
     rmSync(configHome, { recursive: true, force: true });
   }
 });
+
+function emptyWorkspaceStateForTest() {
+  return {
+    savedWorkspaces: ['/workspace'],
+    workspaceLabels: {},
+    projectlessThreadIds: [],
+    localProjects: {},
+    threadProjectAssignments: {},
+  };
+}
+
+function firstPickerToken(card: CardKitJson | undefined): string {
+  assert.ok(card);
+  const body = card.body as { readonly elements?: readonly unknown[] };
+  const elements = body.elements ?? [];
+  const picker = elements
+    .map((element) => element as { readonly tag?: unknown; readonly options?: readonly unknown[] })
+    .find((element) => element.tag === 'select_static');
+  const option = picker?.options?.[0] as { readonly value?: unknown } | undefined;
+  const value = option?.value;
+  if (typeof value !== 'string') {
+    throw new Error('picker token is missing');
+  }
+  return value;
+}

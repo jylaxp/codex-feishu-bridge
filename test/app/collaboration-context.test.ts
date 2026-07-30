@@ -28,6 +28,28 @@ test('collaboration context includes enabled responding bots bound to the same g
   assert.doesNotMatch(context ?? '', /Pricing Bot/);
 });
 
+test('collaboration context includes discovered external bots in the same group', () => {
+  const context = buildCollaborationContext({
+    binding: sourceBinding,
+    currentBot: searchBot,
+    bots: [searchBot],
+    targetBindings: [],
+    externalTargets: [{
+      sourceBotKey: 'bot_aaaaaaaaaaaa',
+      tenantKey: 'tenant',
+      chatId: 'chat',
+      botOpenId: 'ou_external_order',
+      displayName: 'External Order Bot',
+      discoveredAtMs: 1,
+      updatedAtMs: 1,
+    }],
+  });
+
+  assert.match(context ?? '', /External Order Bot/);
+  assert.match(context ?? '', /externalBotOpenId=ou_external_order/);
+  assert.match(context ?? '', /external=true/);
+});
+
 const sourceBinding: ChatThreadBinding = {
   botKey: 'bot_aaaaaaaaaaaa',
   tenantKey: 'tenant',

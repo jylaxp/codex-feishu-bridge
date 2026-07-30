@@ -23,7 +23,7 @@ The bridge is evolving from a single remote-control bot into a multi-agent work 
 - Order Bot: owned by the order team, trained/configured with booking and order-domain knowledge and data.
 - Other future bots: pricing, policy, settlement, after-sales, release, SRE, and QA.
 
-The business goal is that a user can ask one bot to investigate, and that bot can autonomously involve another domain bot when the task crosses team boundaries. The bridge must support AI decision, AI work, and AI troubleshooting while preserving visible group collaboration, task serialization, and loop protection.
+The business goal is that a user can ask one bot to investigate, and that bot can autonomously involve another domain bot when the task crosses team boundaries. The bridge must support AI decision, AI work, and AI troubleshooting while preserving visible group collaboration, task serialization, and runaway-message protection.
 
 ---
 
@@ -38,7 +38,7 @@ The business goal is that a user can ask one bot to investigate, and that bot ca
 - R7. Bot senders may start only ordinary task turns. They must never execute group management commands, mutate bindings, change model/CWD/access settings, or decide approvals.
 - R8. Handoffs must preserve the visible Feishu message boundary: source bot output, target bot mention, target task, and final result are visible in the group or thread.
 - R9. Handoffs must be idempotent by `chainId + handoffId + source message id + target bot`.
-- R10. The chain must carry loop protection: hop limit, visited bot keys, TTL, and per-pair rate limiting.
+- R10. The chain must carry bounded-execution protection: hop limit, TTL, duplicate handoff tracking, and per-pair rate limiting. MVP does not reject a handoff only because the target appears in the advisory visited set.
 - R11. A target bot may bind the same group to a different ChatGPT thread than the source bot, or both bots may bind to the same thread. Same-thread execution must keep the existing per-thread serialization.
 - R12. A disabled, unknown, removed, or unbound target bot must not accept the handoff. Locally configured disabled/unavailable/unbound bots may return a safe reason; unknown/removed bots remain silent.
 - R13. Handoff payloads must avoid dumping long prompts, private chain-of-thought, credentials, raw logs, or unbounded task history into the group.
@@ -58,7 +58,7 @@ The business goal is that a user can ask one bot to investigate, and that bot ca
 - No cross-bridge distributed locking in the first implementation. Collaboration is reliable for bots managed by the same local bridge process; external bridge instances are future work.
 - No hidden fan-out to all domain bots. A handoff targets one explicit bot per directive unless a later policy explicitly adds fan-out.
 - No automatic training-data sharing between teams. A bot exposes only its configured role description and accepts bounded task input; its owner-managed data remains behind that bot's runtime.
-- No unlimited autonomous loops. Multi-hop is allowed only within configured hop and TTL limits.
+- No unlimited autonomous chatter. Multi-hop is allowed only within configured hop, TTL, duplicate, and cooldown limits.
 - No claim that Windows Desktop-attached execution is supported in the first implementation. Windows remains fail-closed unless a native probe can attest the named-pipe endpoint.
 - The Feishu handoff protocol is cross-platform, but whether the resulting task can execute is determined by the selected runtime route.
 
@@ -153,12 +153,13 @@ The envelope is intentionally human-readable. Bridge may parse the structured he
 - MVP collaboration is open by default. The bridge does not require source-target grants, sender allowlists, member allowlists, or tenant-key checks.
 - The target bot's enabled state and group-mention response switch are the only response gates in the MVP.
 - Add a bot role profile separate from response control. Role profiles help AI decide who to call, but they do not grant or deny access.
+- Maintain a per-source-bot external bot directory for bots owned by other Bridge instances or other owners. The directory stores only `sourceBotKey + tenantKey + chatId + external bot open_id + display name`, and is used only to render a real Feishu `@external bot` mention.
 - Drive AI decision through an explicit directive contract. The model may request a handoff by emitting a bounded `cfb-handoff` directive in its final output. Bridge validates and materializes it as a real Feishu `@target bot` message.
 - Keep the directive parser conservative. Invalid, unknown-target, disabled-target, unbound-target, overlong, or expired directives are ignored or converted to a visible non-actionable note, never executed optimistically.
 - Keep bot-sender messages task-only. If a bot sender text begins with `/`, it is never routed to command services.
 - Use `chainId`, `handoffId`, `parentMessageId`, source `botKey`, target `botKey`, target `chatId`, and target `threadId` for dedupe and audit.
 - Use the existing thread scheduler for same-thread concurrency. Collaboration adds cross-bot ingress, not a second execution lock.
-- Prefer one-hop automatic handoff for the MVP. Multi-hop works only after chain guard, visited set, and per-pair cooldowns are proven.
+- Prefer one-hop automatic handoff for the MVP. Multi-hop works only within the configured hop, TTL, duplicate, and per-pair cooldown guards.
 - Reply with clear reasons only for locally known disabled/unavailable/unbound target bots. Unknown or removed bot events remain silent.
 - Separate collaboration protocol from execution runner. Feishu receive/send, handoff parsing, chain guards, and response toggles must be OS-neutral; runtime routing decides whether the accepted task can execute through macOS Desktop IPC, Windows Desktop IPC, or App Server stable.
 - Treat macOS Desktop-attached as the initial Desktop-supported collaboration route.
@@ -253,8 +254,12 @@ The envelope is intentionally human-readable. Bridge may parse the structured he
 
 **Files:**
 - `src/app/lark/handoff-message-emitter.ts`
+- `src/app/external-bot-directory.ts`
+- `src/app/lark/group-bot-discovery.ts`
 - `src/app/lark/client.ts`
 - `src/app/main.ts`
+- `test/app/external-bot-directory.test.ts`
+- `test/app/group-bot-discovery.test.ts`
 - `test/app/lark-handoff-message-emitter.test.ts`
 
 **Approach:**
@@ -262,6 +267,9 @@ The envelope is intentionally human-readable. Bridge may parse the structured he
 - Add a small sender that uses the source bot's Lark credentials to send or reply with a text/post message into the current group.
 - For bot-to-bot handoff, include a real target-bot mention and a bounded human-readable handoff envelope.
 - For bot-to-human notification, include a real user mention and a short notification body. This must not create a bridge task.
+- For externally owned bots, refresh Feishu's group-bot list through `GET /open-apis/im/v1/chats/:chat_id/members/bots` when the source bot receives a group message, completes a group binding, starts with new-version group bindings, or receives bot membership events. Store discovered external bot open IDs in `external-bots.json`.
+- New bindings store `chatType` metadata, and startup backfill scans only `chatType=group` bindings. Older bindings without that field are refreshed by the next group mention or by re-running `/bind`, avoiding accidental bulk group-member calls for private bindings.
+- Treat bot membership events as accelerators, not the only discovery path. Feishu's bot-added event is delivered to the newly added bot and robot-invites-robot may not trigger it, so ordinary group-message refresh remains required.
 - Do not use task result cards, card `lark_md`, or card title mentions as the automatic trigger for the target bot. Cards may include a visible handoff summary and manual controls, but the target bot must be invoked by the separate text/post message.
 - Prefer `post` for structured handoff content because it can carry a target mention, summary, evidence, and expected output in a readable shape. Keep `text` as the fallback for the smallest viable trigger.
 - Use Feishu `uuid` for send de-duplication based on `chainId + handoffId + sourceBotKey + targetBotKey`.
@@ -275,6 +283,8 @@ The envelope is intentionally human-readable. Bridge may parse the structured he
 - Emitter builds a human notification message with a real user mention and no handoff header.
 - Emitter sends bot handoff as `post` or `text`, never as an `interactive` card.
 - Source task card can display a handoff summary, but removing that summary does not affect whether the target-bot trigger message is emitted.
+- Group-bot discovery records external bot open IDs and names, filters local configured bots, and throttles repeated refreshes for the same source bot and group.
+- Handoff can target a discovered external bot by display name or open ID without importing that target bot's app secret into the source Bridge.
 - Oversized handoff content is summarized/truncated before send.
 - Same handoff id sends at most once within the dedupe window.
 - Missing target bot open ID or user open ID fails closed before calling Feishu.
@@ -320,7 +330,7 @@ The envelope is intentionally human-readable. Bridge may parse the structured he
 - Well-formed directive resolves a target bot and creates a handoff request.
 - Unknown target, disabled target, unbound target, malformed directive, and oversized directive are rejected.
 - A final answer without directive behaves exactly as today.
-- A directive from a bot-sender task respects hop and visited-bot limits.
+- A directive from a bot-sender task respects hop, TTL, duplicate, and cooldown limits.
 - Directive payload redaction removes credentials, local file paths, and raw large logs.
 
 **Verification:** Search Bot can decide to call Order Bot by emitting the directive; bridge posts one visible Feishu handoff message.
@@ -362,9 +372,9 @@ The envelope is intentionally human-readable. Bridge may parse the structured he
 
 **Verification:** Search Bot knows Order Bot exists and when to hand off, but cannot invent unavailable targets.
 
-### U6. Enforce Chain State, Loop Guard, and Rate Limits
+### U6. Enforce Chain State and Rate Limits
 
-**Goal:** Prevent autonomous bot loops and duplicate handoffs.
+**Goal:** Prevent unbounded autonomous chatter and duplicate handoffs.
 
 **Requirements:** R9, R10, R11, R12, R14
 
@@ -380,14 +390,14 @@ The envelope is intentionally human-readable. Bridge may parse the structured he
 
 - Keep current-process chain state with TTL:
   - `chainId`,
-  - visited bot keys,
+  - advisory visited bot keys for traceability,
   - emitted handoff IDs,
   - hop count,
   - parent message IDs,
   - per source-target pair cooldown.
 - Default max hop count to 1 for MVP validation. Raise to 2 only after one-hop behavior is stable.
-- Stop on repeated target, expired chain, duplicate handoff ID, or cooldown breach.
-- Publish content-free counters: emitted, accepted, blocked, duplicate, loop-blocked.
+- Stop on expired chain, max-hop breach, duplicate handoff ID, or cooldown breach. Do not stop solely because the target appears in the advisory visited set.
+- Publish content-free counters: emitted, accepted, blocked, and duplicate. Keep the deprecated loop-blocked field at zero for health-schema compatibility while visited-loop validation is disabled.
 - Treat restart as loss of in-memory guard; rely on Feishu message IDs and send UUIDs for duplicate reduction after restart.
 
 **Patterns to follow:** Existing in-memory task scheduler and runtime health publisher.
@@ -395,11 +405,11 @@ The envelope is intentionally human-readable. Bridge may parse the structured he
 **Test scenarios:**
 - First handoff in a chain is accepted and recorded.
 - Duplicate handoff ID is rejected.
-- A-B-A loop is rejected when target already appears in visited set.
+- A target already present in the advisory visited set is still allowed in the MVP.
 - Max hop and TTL are enforced.
 - Rate-limited source-target pair does not emit another message.
 
-**Verification:** Misbehaving prompts cannot create infinite bot chatter in one bridge runtime.
+**Verification:** Misbehaving prompts cannot create unbounded bot chatter in one bridge runtime because max hop, TTL, duplicate, and cooldown guards still apply.
 
 ### U7. Add Readiness Diagnostics and Documentation
 
@@ -513,7 +523,7 @@ The envelope is intentionally human-readable. Bridge may parse the structured he
 
 - Raise hop limit only after one-hop behavior is stable.
 - Add audit improvements and operator summaries.
-- Consider source bot follow-up after target bot result only if loop guard remains stable.
+- Consider source bot follow-up after target bot result only after stable cross-bridge participant identity is available.
 - Design stricter access policy only if MVP validation shows that default-open collaboration is insufficient.
 
 ---
@@ -522,7 +532,7 @@ The envelope is intentionally human-readable. Bridge may parse the structured he
 
 | Risk | Mitigation |
 | --- | --- |
-| Infinite bot loops | Chain TTL, max hops, visited set, per-pair cooldown, one handoff per final answer initially |
+| Infinite bot loops | Chain TTL, max hops, duplicate handoff IDs, per-pair cooldown, one handoff per final answer initially |
 | MVP default-open bot invocation is too broad | Keep only for validation groups, expose bot enabled/responding switches, log content-free chain IDs, and revisit stricter policy after MVP |
 | Bot sender executes management commands | Hard route bot senders only to ordinary tasks; slash commands ignored before command services |
 | Feishu permission missing | Doctor readiness and rollout checklist require `im:message.group_at_msg.include_bot:readonly` on target bots |
@@ -543,7 +553,7 @@ The envelope is intentionally human-readable. Bridge may parse the structured he
 - If Order Bot is disabled, not responding to group mentions, or not bound to the group, Search Bot may still complete its own answer, but bridge does not start Order Bot work. The group receives a short safe reason only when Order Bot is locally known.
 - If Order Bot lacks Feishu bot-including `@bot` event permission, doctor reports not-ready and the live handoff does not silently appear successful.
 - If Search Bot tries to call Order Bot twice with the same handoff ID, only one Feishu message is emitted.
-- If Order Bot tries to hand back to Search Bot in the same chain after the hop limit or visited guard is reached, bridge blocks the handoff and posts no recursive task.
+- If Order Bot tries to hand back to Search Bot in the same chain after the hop limit is reached, bridge blocks the handoff and posts no recursive task.
 - If Search Bot and Order Bot bind to the same ChatGPT thread, their turns are serialized by the existing thread scheduler.
 - On macOS, a Desktop-attached target can accept a handoff only after the macOS endpoint is attested and the route is healthy.
 - On Windows without a native Desktop IPC probe, a Desktop-attached target is reported as not ready and no target task is created.
@@ -555,6 +565,8 @@ The envelope is intentionally human-readable. Bridge may parse the structured he
 
 - Start with two internal bots in a dedicated test group: Search Bot and Order Bot.
 - Require each target bot app to add Feishu permission `im:message.group_at_msg.include_bot:readonly` and publish the app version.
+- Require source bot apps that need external bot discovery to add Feishu permission `im:chat.members:read` and publish the app version.
+- Subscribe to Feishu `im.chat.member.bot.added_v1` and `im.chat.member.bot.deleted_v1` where available, but rely on group-message refresh for eventual discovery of other bots.
 - Keep MVP collaboration default-open for configured/enabled bots that respond to group mentions.
 - Use the existing bot response switch to stop a bot from responding to group `@` messages.
 - Do not configure tenant-key checks, member allowlists, bot-sender allowlists, or source-target grants for MVP validation.

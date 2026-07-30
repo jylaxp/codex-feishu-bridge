@@ -21,17 +21,29 @@ test('handoff chain store accepts first inbound handoff and rejects duplicates',
   });
 });
 
-test('handoff chain store blocks loops and hop overflow', () => {
+test('handoff chain store allows visited targets and still blocks hop overflow', () => {
   const store = new HandoffChainStore({ now: () => 1_000, maxHops: 2 });
 
   assert.deepEqual(store.acceptInbound(
     handoffEnvelope({ visitedBotKeys: ['bot_aaaaaaaaaaaa', 'bot_bbbbbbbbbbbb'] }),
     'bot_bbbbbbbbbbbb',
-  ), { accepted: false, reason: 'loop' });
+  ), { accepted: true });
   assert.deepEqual(store.acceptInbound(
     handoffEnvelope({ hop: 3 }),
     'bot_bbbbbbbbbbbb',
   ), { accepted: false, reason: 'max_hops' });
+});
+
+test('handoff chain store does not reject outbound handoffs only because target was visited', () => {
+  const store = new HandoffChainStore({ now: () => 1_000, cooldownMs: 1 });
+
+  assert.deepEqual(store.reserveOutbound(
+    handoffEnvelope({
+      handoffId: 'hf_visited_target_allowed',
+      visitedBotKeys: ['bot_aaaaaaaaaaaa', 'bot_bbbbbbbbbbbb'],
+    }),
+    'bot_bbbbbbbbbbbb',
+  ), { accepted: true });
 });
 
 test('handoff chain store rate limits source-target outbound pairs', () => {

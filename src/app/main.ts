@@ -43,6 +43,7 @@ import { BridgeCommandService } from './command-service';
 import { ConversationBindingServiceV3 } from './conversation-binding-service-v3';
 import { DesktopApprovalService } from './desktop-approval-service';
 import { BridgeConfig } from './domain';
+import { ExternalBotDirectoryStore } from './external-bot-directory';
 import { buildCollaborationContext } from './collaboration/collaboration-context';
 import { HandoffCoordinator } from './collaboration/handoff-coordinator';
 import { parseHandoffEnvelope } from './collaboration/handoff-directive';
@@ -55,6 +56,7 @@ import {
   type DesktopDeliveryOutcome,
 } from './in-memory-orchestrator';
 import { CachedTenantTokenProvider, createLarkRuntimeClients } from './lark/client';
+import { GroupBotDiscoveryService } from './lark/group-bot-discovery';
 import { HandoffMessageEmitter, type LarkHandoffMessageApi } from './lark/handoff-message-emitter';
 import {
   LarkMessageAcknowledgement,
@@ -151,11 +153,13 @@ export async function startBridge(
   });
   const bindings = new BindingStore(preflight.configHome);
   const botStore = new BotConfigStore(preflight.configHome);
+  const externalBotDirectory = new ExternalBotDirectoryStore(preflight.configHome);
   let runtimeContract: Awaited<ReturnType<typeof verifyCodexRuntimeContract>>;
   let protocolAdapter: ReturnType<typeof adapterForAppServerProfile>;
   try {
     bindings.load();
     botStore.load(config);
+    externalBotDirectory.load();
     runtimeContract = await verifyCodexRuntimeContract(
       config,
       effectiveEnv,
@@ -408,10 +412,60 @@ export async function startBridge(
     config.rateLimitQueryIntervalMs,
   );
   const navigation = new CodexAppNavigationAdapter();
+  const groupBotDiscovery = new GroupBotDiscoveryService(externalBotDirectory, {
+    localBots: () => botStore.list(),
+    logger: {
+      info: (event, fields) => logger.info(event, scalarLogFields(fields)),
+      warn: (event, fields) => logger.warn(event, scalarLogFields(fields)),
+    },
+  });
+  const refreshExternalGroupBots = async (
+    runtime: BotRuntime,
+    tenantKey: string,
+    chatId: string,
+    force = false,
+  ): Promise<void> => {
+    try {
+      await groupBotDiscovery.refreshGroup({
+        sourceBot: runtime.bot,
+        tenantKey,
+        chatId,
+        force,
+      });
+    } catch (error) {
+      logger.error('lark_group_bots_discovery_failed', error, {
+        botKey: runtime.botKey,
+        tenantKey,
+        chatId,
+      });
+    }
+  };
+  const refreshKnownGroupBotDirectories = async (): Promise<void> => {
+    const groupBindings = bindings.list().filter((binding) => binding.chatType === 'group');
+    if (groupBindings.length === 0) {
+      return;
+    }
+    let attempted = 0;
+    for (const binding of groupBindings) {
+      const runtime = botRuntimes.get(binding.botKey ?? DEFAULT_BOT_KEY);
+      if (!runtime || !runtime.bot.enabled) {
+        continue;
+      }
+      attempted += 1;
+      await refreshExternalGroupBots(runtime, binding.tenantKey, binding.chatId, true);
+    }
+    logger.info('lark_group_bots_startup_discovery_completed', {
+      groupBindingCount: groupBindings.length,
+      attempted,
+    });
+  };
   handoffCoordinator = new HandoffCoordinator({
     bots: () => botStore.list(),
     bindingFor: (tenantKey, chatId, targetBotKey) => bindings.get(tenantKey, chatId, targetBotKey),
     emitterForSourceBot: handoffEmitterForBotKey,
+    externalBotDirectoryForGroup: (sourceBotKey, tenantKey, chatId, selector) => (
+      externalBotDirectory.resolveForGroup(sourceBotKey, tenantKey, chatId, selector)
+    ),
     runnerReadinessForBinding: () => {
       if (process.platform === 'win32') {
         return { ready: false, reason: 'windows_desktop_attached_not_ready' };
@@ -486,6 +540,11 @@ export async function startBridge(
       targetBindings: bindings.list().filter((candidate) => (
         candidate.tenantKey === binding.tenantKey && candidate.chatId === binding.chatId
       )),
+      externalTargets: externalBotDirectory.listForGroup(
+        binding.botKey ?? DEFAULT_BOT_KEY,
+        binding.tenantKey,
+        binding.chatId,
+      ),
     }),
     handleTerminalHandoff: (context) => handoffCoordinator?.handleTerminalHandoff(context) ?? Promise.resolve(null),
   });
@@ -546,6 +605,17 @@ export async function startBridge(
       chatId: binding.chatId,
     });
   };
+  const handleBindingCreated = (binding: ChatThreadBinding): void => {
+    persistAllowedBindingChat(binding);
+    if (binding.chatType !== 'group') {
+      return;
+    }
+    const runtime = botRuntimes.get(binding.botKey ?? DEFAULT_BOT_KEY);
+    if (!runtime || !runtime.bot.enabled) {
+      return;
+    }
+    void refreshExternalGroupBots(runtime, binding.tenantKey, binding.chatId, true);
+  };
   for (const runtime of botRuntimes.values()) {
     conversationBindingsByBot.set(runtime.botKey, new ConversationBindingServiceV3(
       runtime.config,
@@ -558,7 +628,7 @@ export async function startBridge(
       undefined,
       () => rateLimits.get(),
       projectActiveDesktopTurn,
-      persistAllowedBindingChat,
+      handleBindingCreated,
       () => botStore.list(),
     ));
     commandsByBot.set(runtime.botKey, new BridgeCommandService(
@@ -570,6 +640,8 @@ export async function startBridge(
       navigation,
       undefined,
       rateLimits,
+      undefined,
+      handleBindingCreated,
     ));
   }
   const conversationBindingsFor = (botKey: string): ConversationBindingServiceV3 => {
@@ -902,12 +974,34 @@ export async function startBridge(
           return;
         }
         void runtime.acknowledgements.ack(message);
+        if (message.chatType === 'group') {
+          await refreshExternalGroupBots(runtime, message.tenantKey, message.chatId);
+        }
         void messageAggregator.accept(message).catch((error: unknown) => {
           logger.error('lark_async_message_failed', toError(error), {
             botKey: message.botKey ?? DEFAULT_BOT_KEY,
             chatId: message.chatId,
             messageId: message.messageId,
           });
+        });
+      },
+      onBotAdded: async (event) => {
+        logger.info('lark_bot_membership_added', {
+          botKey: event.botKey,
+          tenantKey: event.tenantKey,
+          chatId: event.chatId,
+          eventId: event.eventId,
+        });
+        await refreshExternalGroupBots(runtimeForBotKey(event.botKey), event.tenantKey, event.chatId, true);
+      },
+      onBotDeleted: async (event) => {
+        const removed = groupBotDiscovery.removeGroup(event.botKey, event.tenantKey, event.chatId);
+        logger.info('lark_bot_membership_deleted', {
+          botKey: event.botKey,
+          tenantKey: event.tenantKey,
+          chatId: event.chatId,
+          eventId: event.eventId,
+          removed,
         });
       },
       onUnavailableMessage: async (context, reason) => {
@@ -1032,6 +1126,9 @@ export async function startBridge(
       desktopIpcContract: DESKTOP_IPC_CONTRACT.id,
       larkBotCount: botRuntimes.size,
       runtimeInstance: randomUUID().slice(0, 8),
+    });
+    void refreshKnownGroupBotDirectories().catch((error: unknown) => {
+      logger.error('lark_group_bots_startup_discovery_failed', toError(error));
     });
   } catch (error) {
     inboundGeneration += 1;
@@ -1309,4 +1406,22 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function textField(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value : null;
+}
+
+function scalarLogFields(fields: Record<string, unknown> | undefined): Record<string, string | number | boolean | null> {
+  if (!fields) {
+    return {};
+  }
+  const result: Record<string, string | number | boolean | null> = {};
+  for (const [key, value] of Object.entries(fields)) {
+    if (
+      typeof value === 'string'
+      || typeof value === 'number'
+      || typeof value === 'boolean'
+      || value === null
+    ) {
+      result[key] = value;
+    }
+  }
+  return result;
 }

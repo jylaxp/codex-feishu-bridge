@@ -23,7 +23,7 @@ bridge 正在从单个远程控制机器人演进成多 agent 工作界面。在
 - Order Bot：订单团队拥有，配置/训练了预订和订单领域知识和数据。
 - 未来其他机器人：价格、政策、结算、售后、发布、SRE、QA。
 
-业务目标是：用户可以让一个机器人开始排查，当任务跨团队边界时，该机器人可以自主拉起另一个领域机器人。bridge 必须支持 AI 决策、AI 工作和 AI 排障，同时保留可见群协作、任务串行和循环保护。
+业务目标是：用户可以让一个机器人开始排查，当任务跨团队边界时，该机器人可以自主拉起另一个领域机器人。bridge 必须支持 AI 决策、AI 工作和 AI 排障，同时保留可见群协作、任务串行和防刷屏保护。
 
 ---
 
@@ -38,7 +38,7 @@ bridge 正在从单个远程控制机器人演进成多 agent 工作界面。在
 - R7. 机器人发送者只能启动普通任务轮次，绝不能执行群管理命令、修改绑定、修改模型/CWD/访问设置，或决定审批。
 - R8. handoff 必须保留可见的飞书消息边界：源机器人输出、目标机器人 mention、目标任务和最终结果都能在群里或话题中看到。
 - R9. handoff 必须按 `chainId + handoffId + source message id + target bot` 幂等。
-- R10. chain 必须携带循环保护：跳数限制、已访问 bot key、TTL 和每对 bot 的限流。
+- R10. chain 必须携带有边界执行保护：跳数限制、TTL、重复 handoff 记录和每对 bot 的限流。MVP 不因为目标出现在 advisory visited set 中就拒绝 handoff。
 - R11. 目标机器人可以把同一个群绑定到与源机器人不同的 ChatGPT 线程，也可以绑定到同一个线程。同线程执行必须沿用现有按线程串行。
 - R12. 禁用、未知、已移除或未绑定的目标机器人不得接受 handoff。本地已配置的禁用/不可用/未绑定机器人可以返回安全原因；未知或已移除机器人保持静默。
 - R13. handoff payload 不得把长 prompt、私有思维链、凭证、原始日志或无边界任务历史倾倒到群里。
@@ -58,7 +58,7 @@ bridge 正在从单个远程控制机器人演进成多 agent 工作界面。在
 - 首版不做跨 bridge 进程的分布式锁。协作在同一本地 bridge 进程管理的机器人之间可靠；外部 bridge 实例是后续工作。
 - 不做隐藏 fan-out 到所有领域机器人。除非后续策略明确增加 fan-out，否则一个 directive 只指向一个明确机器人。
 - 不自动共享团队训练数据。机器人只暴露配置的角色描述并接受有边界任务输入；owner 管理的数据仍留在该机器人的 runtime 后面。
-- 不允许无限自主循环。多跳只有在配置的跳数和 TTL 限制内才允许。
+- 不允许无限自主刷屏。多跳只有在配置的跳数、TTL、重复和 cooldown 限制内才允许。
 - 首版不声明支持 Windows Desktop-attached 执行。除非 native probe 能证明 named-pipe endpoint，否则 Windows 保持 fail-closed。
 - 飞书 handoff 协议跨平台，但最终任务能否执行由选定 runtime route 决定。
 
@@ -153,12 +153,13 @@ envelope 刻意保持人类可读。bridge 可以解析结构化 header，但群
 - MVP 协作默认开放。bridge 不要求 source-target grant、sender 白名单、成员白名单或 tenant_key 校验。
 - 目标机器人的 enabled 状态和群 @ 响应开关是 MVP 唯一响应闸门。
 - 新增机器人角色 profile，但它和响应控制分离。角色 profile 帮助 AI 判断该调用谁，但不授予或拒绝访问。
+- 为其他 Bridge 实例或其他 owner 管理的机器人维护按 source bot 分组的外部机器人目录。目录只保存 `sourceBotKey + tenantKey + chatId + 外部机器人 open_id + 展示名称`，仅用于渲染真实飞书 `@外部机器人` mention。
 - 通过显式 directive contract 驱动 AI 决策。模型可以在最终输出里发出有边界的 `cfb-handoff` directive；bridge 校验后把它物化成真实飞书 `@target bot` 消息。
 - directive parser 保持保守。无效、未知目标、禁用目标、未绑定目标、超长或过期 directive 要么忽略，要么转成可见但不可执行的说明，绝不乐观执行。
 - 机器人发送者消息只允许进入任务路径。如果机器人发送者文本以 `/` 开头，绝不路由到命令服务。
 - 使用 `chainId`、`handoffId`、`parentMessageId`、source `botKey`、target `botKey`、target `chatId` 和 target `threadId` 做去重和审计。
 - 同线程并发继续使用现有 thread scheduler。协作只是新增跨 bot 入站，不新增第二套执行锁。
-- MVP 优先只做一跳自动 handoff。只有 chain guard、visited set 和每对 bot cooldown 验证稳定后才开放多跳。
+- MVP 优先只做一跳自动 handoff。多跳只能在配置的 hop、TTL、重复和每对 bot cooldown guard 内运行。
 - 只对本地已知的禁用/不可用/未绑定目标机器人返回明确原因。未知或已移除机器人事件保持静默。
 - 协作协议与执行 runner 分离。飞书接收/发送、handoff 解析、chain guard 和响应开关必须 OS-neutral；runtime routing 决定已接受任务能否通过 macOS Desktop IPC、Windows Desktop IPC 或 App Server stable 执行。
 - macOS Desktop-attached 作为初始 Desktop 支持路线。
@@ -253,8 +254,12 @@ envelope 刻意保持人类可读。bridge 可以解析结构化 header，但群
 
 **文件：**
 - `src/app/lark/handoff-message-emitter.ts`
+- `src/app/external-bot-directory.ts`
+- `src/app/lark/group-bot-discovery.ts`
 - `src/app/lark/client.ts`
 - `src/app/main.ts`
+- `test/app/external-bot-directory.test.ts`
+- `test/app/group-bot-discovery.test.ts`
 - `test/app/lark-handoff-message-emitter.test.ts`
 
 **实现思路：**
@@ -262,6 +267,9 @@ envelope 刻意保持人类可读。bridge 可以解析结构化 header，但群
 - 新增一个小型 sender，用源机器人的 Lark 凭据向当前群 send 或 reply 一条 text/post 消息。
 - bot-to-bot handoff 包含真实目标机器人 mention 和有边界的人类可读 handoff envelope。
 - bot-to-human notification 包含真实用户 mention 和短通知正文，但不得创建 bridge task。
+- 对外部 owner 管理的机器人，在源机器人收到群消息、完成群绑定、Bridge 启动后发现新版本群绑定，或收到机器人成员事件时，通过 `GET /open-apis/im/v1/chats/:chat_id/members/bots` 刷新飞书群机器人列表，并把发现到的外部机器人 open ID 写入 `external-bots.json`。
+- 新绑定写入 `chatType` 元数据，启动回填只扫描 `chatType=group` 的绑定。历史绑定没有该字段时，通过下一次群内 @ 或重新 `/bind` 补齐发现目录，避免把私聊绑定误当群聊批量调用群成员接口。
+- 将机器人成员事件视为加速器，而不是唯一发现路径。飞书 bot-added 事件会推送给新进群机器人，且机器人邀请机器人可能不触发该事件，因此仍需要普通群消息刷新兜底。
 - 不把任务结果卡片、卡片 `lark_md` 或卡片标题 mention 当作自动触发目标机器人的路径。卡片可以展示 handoff 摘要和人工控件，但目标机器人必须由单独 text/post 消息调用。
 - 优先用 `post` 表达结构化 handoff 内容，因为它能携带目标 mention、摘要、证据和期望输出；保留 `text` 作为最小可用 fallback。
 - 使用基于 `chainId + handoffId + sourceBotKey + targetBotKey` 的飞书 `uuid` 做发送去重。
@@ -275,6 +283,8 @@ envelope 刻意保持人类可读。bridge 可以解析结构化 header，但群
 - emitter 构建包含真实用户 mention 且没有 handoff header 的人工通知消息。
 - emitter 以 `post` 或 `text` 发送 bot handoff，绝不使用 `interactive` card。
 - 源任务卡片可以展示 handoff 摘要，但移除该摘要不影响目标 bot trigger 消息发出。
+- 群机器人发现会记录外部机器人 open ID 和名称、过滤本地已配置机器人，并对同一个 source bot 和群的重复刷新做节流。
+- handoff 可以通过展示名称或 open ID 交接给已发现的外部机器人，不需要把目标机器人的 app secret 导入源 Bridge。
 - 超大 handoff 内容会在发送前摘要/截断。
 - 同一个 handoff id 在去重窗口内最多发送一次。
 - 缺少目标 bot open ID 或 user open ID 时，在调用飞书前 fail closed。
@@ -320,7 +330,7 @@ envelope 刻意保持人类可读。bridge 可以解析结构化 header，但群
 - 格式正确的 directive 可以解析目标机器人并创建 handoff request。
 - 未知目标、禁用目标、未绑定目标、格式错误 directive 和超长 directive 被拒绝。
 - 没有 directive 的最终答案行为与今天完全一致。
-- 来自 bot-sender 任务的 directive 遵守 hop 和 visited-bot 限制。
+- 来自 bot-sender 任务的 directive 遵守 hop、TTL、重复和 cooldown 限制。
 - directive payload redaction 会移除凭证、本地路径和原始大日志。
 
 **验证：** Search Bot 可以通过输出 directive 决定调用 Order Bot；bridge 会发送一条可见的飞书 handoff 消息。
@@ -362,9 +372,9 @@ envelope 刻意保持人类可读。bridge 可以解析结构化 header，但群
 
 **验证：** Search Bot 知道 Order Bot 存在以及何时 handoff，但不能编造不可用目标。
 
-### U6. 强制 Chain State、Loop Guard 和限流
+### U6. 强制 Chain State 和限流
 
-**目标：** 防止自主机器人循环和重复 handoff。
+**目标：** 防止无边界自主刷屏和重复 handoff。
 
 **需求：** R9, R10, R11, R12, R14
 
@@ -380,14 +390,14 @@ envelope 刻意保持人类可读。bridge 可以解析结构化 header，但群
 
 - 维护当前进程内带 TTL 的 chain state：
   - `chainId`,
-  - visited bot keys,
+  - 仅用于追踪的 advisory visited bot keys,
   - emitted handoff IDs,
   - hop count,
   - parent message IDs,
   - per source-target pair cooldown。
 - MVP 验证默认最大跳数为 1。只有一跳行为稳定后才提高到 2。
-- 遇到重复 target、过期 chain、重复 handoff ID 或 cooldown 命中时停止。
-- 发布无内容计数器：emitted、accepted、blocked、duplicate、loop-blocked。
+- 遇到过期 chain、超过最大跳数、重复 handoff ID 或 cooldown 命中时停止。不因为目标出现在 advisory visited set 中就停止。
+- 发布无内容计数器：emitted、accepted、blocked、duplicate。为了兼容 health schema，visited-loop 校验禁用后已废弃的 loop-blocked 字段保持为 0。
 - 重启会丢失内存 guard；重启后依赖飞书 message ID 和 send UUID 降低重复风险。
 
 **遵循模式：** 现有 in-memory task scheduler 和 runtime health publisher。
@@ -395,11 +405,11 @@ envelope 刻意保持人类可读。bridge 可以解析结构化 header，但群
 **测试场景：**
 - chain 中第一个 handoff 被接受并记录。
 - 重复 handoff ID 被拒绝。
-- 当目标已在 visited set 中时，A-B-A 循环被拒绝。
+- MVP 中，即使目标已在 advisory visited set 中也允许 handoff。
 - max hop 和 TTL 被执行。
 - 被限流的 source-target pair 不再发送另一条消息。
 
-**验证：** 错误 prompt 不能在一个 bridge runtime 内制造无限 bot 聊天。
+**验证：** 错误 prompt 不能在一个 bridge runtime 内制造无边界 bot 聊天，因为 max hop、TTL、重复和 cooldown guard 仍然生效。
 
 ### U7. 添加就绪诊断和文档
 
@@ -513,7 +523,7 @@ envelope 刻意保持人类可读。bridge 可以解析结构化 header，但群
 
 - 只有一跳行为稳定后才提高 hop limit。
 - 增加 audit 改进和 operator 摘要。
-- 只有 loop guard 稳定后，才考虑 target bot 结果之后 source bot 自动 follow-up。
+- 只有具备稳定的跨 bridge participant identity 后，才考虑 target bot 结果之后 source bot 自动 follow-up。
 - 只有 MVP 验证说明默认开放不够时，才设计更严格访问策略。
 
 ---
@@ -522,7 +532,7 @@ envelope 刻意保持人类可读。bridge 可以解析结构化 header，但群
 
 | 风险 | 缓解 |
 | --- | --- |
-| 无限机器人循环 | Chain TTL、最大跳数、visited set、每对 bot cooldown，初期每个最终答案只允许一个 handoff |
+| 无限机器人循环 | Chain TTL、最大跳数、重复 handoff ID、每对 bot cooldown，初期每个最终答案只允许一个 handoff |
 | MVP 默认开放调用范围过宽 | 只在验证群使用，暴露 bot enabled/responding 开关，记录无内容 chain ID，MVP 后再评估是否需要更严格策略 |
 | 机器人发送者执行管理命令 | 机器人发送者强制只进入普通任务路径；slash command 在 command service 前被忽略 |
 | 飞书权限缺失 | Doctor readiness 和 rollout checklist 要求目标 bot 具备 `im:message.group_at_msg.include_bot:readonly` |
@@ -543,7 +553,7 @@ envelope 刻意保持人类可读。bridge 可以解析结构化 header，但群
 - 如果 Order Bot 禁用、不响应群 @ 或未绑定该群，Search Bot 仍可完成自己的答案，但 bridge 不启动 Order Bot 工作。只有 Order Bot 本地已知时，群里才收到简短安全原因。
 - 如果 Order Bot 缺少飞书“包含机器人发送者的 @ 机器人事件”权限，doctor 报告 not-ready，live handoff 不会静默表现为成功。
 - 如果 Search Bot 用同一个 handoff ID 重复调用 Order Bot，只发送一条飞书消息。
-- 如果 Order Bot 在同一 chain 中超过 hop limit 或 visited guard 后回调 Search Bot，bridge 阻断 handoff 且不产生递归任务。
+- 如果 Order Bot 在同一 chain 中超过 hop limit 后回调 Search Bot，bridge 阻断 handoff 且不产生递归任务。
 - 如果 Search Bot 和 Order Bot 绑定到同一个 ChatGPT thread，它们的 turn 由现有 thread scheduler 串行。
 - macOS 上，Desktop-attached 目标只有在 macOS endpoint attested 且 route healthy 后才可接受 handoff。
 - Windows 上没有 native Desktop IPC probe 时，Desktop-attached 目标报告 not ready，且不创建目标任务。
@@ -555,6 +565,8 @@ envelope 刻意保持人类可读。bridge 可以解析结构化 header，但群
 
 - 从一个专用测试群里的两个内部机器人开始：Search Bot 和 Order Bot。
 - 要求每个目标 bot app 增加飞书权限 `im:message.group_at_msg.include_bot:readonly`，并发布应用版本。
+- 需要外部机器人发现的源 bot app 还需要增加飞书权限 `im:chat.members:read`，并发布应用版本。
+- 在可用时订阅飞书 `im.chat.member.bot.added_v1` 和 `im.chat.member.bot.deleted_v1`；但其它 bot 的最终发现仍以群消息刷新兜底。
 - MVP 对配置、启用且响应群 @ 的机器人默认开放协作。
 - 用已有 bot response switch 停止某个 bot 响应群 `@` 消息。
 - MVP 验证不配置 tenant_key 校验、成员白名单、bot sender 白名单或 source-target grant。

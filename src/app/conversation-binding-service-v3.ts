@@ -66,6 +66,7 @@ interface ThreadChoice {
 interface PendingBindingCard {
   readonly cardId: string;
   readonly messageId: string;
+  readonly chatType?: ChatThreadBinding['chatType'];
   readonly card: CardKitJson;
   readonly choice: ThreadChoice;
   readonly expiresAtMs: number;
@@ -162,6 +163,7 @@ export class ConversationBindingServiceV3 {
       botKey: action.botKey,
       tenantKey: action.tenantKey,
       chatId: action.chatId,
+      ...((pending?.chatType ?? payload.chatType) ? { chatType: pending?.chatType ?? payload.chatType } : {}),
       threadId: payload.threadId,
       threadTitle: choice.title,
       workspaceId,
@@ -227,6 +229,7 @@ export class ConversationBindingServiceV3 {
       this.pendingBindingCards.set(entry.token, Object.freeze({
         cardId,
         messageId,
+        ...(message.chatType ? { chatType: message.chatType } : {}),
         card,
         choice: entry.choice,
         expiresAtMs,
@@ -1498,6 +1501,7 @@ function createToken(
     botKey: message.botKey ?? DEFAULT_BOT_KEY,
     tenantKey: message.tenantKey,
     chatId: message.chatId,
+    ...(message.chatType ? { chatType: message.chatType } : {}),
     expiresAtMs: now() + TOKEN_TTL_MS,
   })).toString('base64url');
   const signature = createHmac('sha256', secret).update(payload).digest('base64url');
@@ -1509,7 +1513,11 @@ function verifyToken(
   action: BindingActionV3,
   secret: string,
   now: () => number,
-): { readonly threadId: string; readonly revision: number } | null {
+): {
+  readonly threadId: string;
+  readonly revision: number;
+  readonly chatType?: ChatThreadBinding['chatType'];
+} | null {
   const [payload, signature, extra] = token.split('.');
   if (!payload || !signature || extra) {
     return null;
@@ -1527,6 +1535,7 @@ function verifyToken(
       || typeof parsed.chatId !== 'string'
       || typeof parsed.expiresAtMs !== 'number'
       || (typeof parsed.botKey !== 'string' && parsed.botKey !== undefined)
+      || !isTokenChatType(parsed.chatType)
       || (parsed.botKey ?? DEFAULT_BOT_KEY) !== action.botKey
       || parsed.tenantKey !== action.tenantKey
       || parsed.chatId !== action.chatId
@@ -1534,10 +1543,18 @@ function verifyToken(
     ) {
       return null;
     }
-    return { threadId: parsed.threadId, revision: parsed.revision };
+    return {
+      threadId: parsed.threadId,
+      revision: parsed.revision,
+      ...(parsed.chatType ? { chatType: parsed.chatType } : {}),
+    };
   } catch {
     return null;
   }
+}
+
+function isTokenChatType(value: unknown): value is ChatThreadBinding['chatType'] | undefined {
+  return value === undefined || value === 'p2p' || value === 'group' || value === 'unknown';
 }
 
 function secureEquals(left: string, right: string): boolean {

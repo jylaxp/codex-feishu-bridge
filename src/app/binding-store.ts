@@ -14,7 +14,7 @@ import { dirname, join } from 'node:path';
 
 import { DEFAULT_BOT_KEY } from './bot-config-store';
 
-const BINDINGS_SCHEMA_VERSION = 3;
+const BINDINGS_SCHEMA_VERSION = 4;
 const MAX_BINDINGS_FILE_BYTES = 1024 * 1024;
 const MAX_BINDING_COUNT = 10_000;
 const MAX_IDENTIFIER_LENGTH = 512;
@@ -34,6 +34,7 @@ export interface ChatThreadBinding extends BindingSettings {
   readonly botKey?: string;
   readonly tenantKey: string;
   readonly chatId: string;
+  readonly chatType?: 'p2p' | 'group' | 'unknown';
   readonly threadId: string;
   readonly threadTitle?: string;
   readonly workspaceId: string;
@@ -304,6 +305,7 @@ function parseBinding(value: unknown, schemaVersion: unknown): ChatThreadBinding
     'botKey',
     'tenantKey',
     'chatId',
+    'chatType',
     'threadId',
     'threadTitle',
     'workspaceId',
@@ -341,6 +343,7 @@ function parseBinding(value: unknown, schemaVersion: unknown): ChatThreadBinding
       : requiredBotKey(value.botKey),
     tenantKey: requiredText(value.tenantKey, 'tenantKey'),
     chatId: requiredText(value.chatId, 'chatId'),
+    ...(chatTypeValue(value.chatType) ? { chatType: chatTypeValue(value.chatType) } : {}),
     threadId: requiredText(value.threadId, 'threadId'),
     ...(optionalText(value.threadTitle, 'threadTitle')
       ? { threadTitle: optionalText(value.threadTitle, 'threadTitle') }
@@ -389,6 +392,7 @@ function normalizeBindingInput(
     botKey: requiredBotKey(input.botKey),
     tenantKey: requiredText(input.tenantKey, 'tenantKey'),
     chatId: requiredText(input.chatId, 'chatId'),
+    ...(chatTypeValue(input.chatType) ? { chatType: chatTypeValue(input.chatType) } : {}),
     threadId: requiredText(input.threadId, 'threadId'),
     ...(optionalText(input.threadTitle, 'threadTitle')
       ? { threadTitle: optionalText(input.threadTitle, 'threadTitle') }
@@ -429,7 +433,17 @@ function requiredBotKey(value: unknown): string {
 }
 
 function isSupportedSchemaVersion(value: unknown): boolean {
-  return value === 1 || value === 2 || value === BINDINGS_SCHEMA_VERSION;
+  return value === 1 || value === 2 || value === 3 || value === BINDINGS_SCHEMA_VERSION;
+}
+
+function chatTypeValue(value: unknown): ChatThreadBinding['chatType'] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === 'p2p' || value === 'group' || value === 'unknown') {
+    return value;
+  }
+  throw new BindingStoreError('binding chatType is invalid');
 }
 
 function requiredText(value: unknown, label: string): string {

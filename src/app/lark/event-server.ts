@@ -56,15 +56,48 @@ export interface RawCardActionEvent {
   };
 }
 
+export interface RawBotMembershipEvent {
+  readonly event_id?: string;
+  readonly tenant_key?: string;
+  readonly app_id?: string;
+  readonly chat_id?: string;
+  readonly operator_id?: {
+    readonly open_id?: string;
+    readonly user_id?: string;
+    readonly union_id?: string;
+  };
+  readonly external?: boolean;
+  readonly operator_tenant_key?: string;
+  readonly name?: string;
+  readonly i18n_names?: {
+    readonly zh_cn?: string;
+    readonly en_us?: string;
+    readonly ja_jp?: string;
+  };
+}
+
+export interface InboundBotMembershipEvent {
+  readonly botKey: string;
+  readonly tenantKey: string;
+  readonly eventId: string;
+  readonly chatId: string;
+  readonly operatorOpenId?: string;
+  readonly operatorTenantKey?: string;
+  readonly external?: boolean;
+  readonly botName?: string;
+}
+
 export interface LarkEventHandlers {
   readonly onMessage: (message: InboundMessage) => Promise<void>;
   readonly onCardAction: (action: InboundCardAction) => Promise<unknown>;
+  readonly onBotAdded?: (event: InboundBotMembershipEvent) => Promise<void>;
+  readonly onBotDeleted?: (event: InboundBotMembershipEvent) => Promise<void>;
   readonly onUnavailableMessage?: (
     context: InboundReplyContext,
     reason: LarkUnavailableReason,
   ) => Promise<void>;
   readonly onRejectedEvent?: (reason: string) => void;
-  readonly onHandlerError?: (kind: 'message' | 'card_action', error: Error) => void;
+  readonly onHandlerError?: (kind: 'message' | 'card_action' | 'bot_membership', error: Error) => void;
   readonly onScopeBound?: (config: BridgeConfig) => void;
   readonly onSdkLog?: LarkSdkLogSink;
 }
@@ -270,6 +303,12 @@ export class LarkEventServer {
           return toast('操作提交失败，请稍后重试', 'error');
         }
       },
+      'im.chat.member.bot.added_v1': async (event: RawBotMembershipEvent) => {
+        await this.handleBotMembershipEvent(event, this.handlers.onBotAdded);
+      },
+      'im.chat.member.bot.deleted_v1': async (event: RawBotMembershipEvent) => {
+        await this.handleBotMembershipEvent(event, this.handlers.onBotDeleted);
+      },
     });
 
     this.dispatcher = dispatcher;
@@ -339,6 +378,51 @@ export class LarkEventServer {
     this.handlers.onScopeBound?.(nextConfig);
     return this.activeConfig;
   }
+
+  private async handleBotMembershipEvent(
+    event: RawBotMembershipEvent,
+    handler: ((event: InboundBotMembershipEvent) => Promise<void>) | undefined,
+  ): Promise<void> {
+    const normalized = this.normalizeBotMembershipEvent(event);
+    if (!normalized) {
+      this.handlers.onRejectedEvent?.('BOT_MEMBERSHIP_INVALID');
+      return;
+    }
+    try {
+      await handler?.(normalized);
+    } catch (error) {
+      const handlerError = toError(error);
+      this.handlers.onHandlerError?.('bot_membership', handlerError);
+      throw handlerError;
+    }
+  }
+
+  private normalizeBotMembershipEvent(event: RawBotMembershipEvent): InboundBotMembershipEvent | null {
+    const tenantKey = nonBlank(event.tenant_key) ?? this.activeConfig.larkTenantKey;
+    const chatId = nonBlank(event.chat_id);
+    const eventId = nonBlank(event.event_id) ?? `${this.botKey}:${chatId ?? 'unknown'}:${Date.now()}`;
+    if (
+      event.app_id !== this.activeConfig.larkAppId
+      || !tenantKey
+      || !chatId
+      || (this.activeConfig.larkTenantKey && tenantKey !== this.activeConfig.larkTenantKey)
+    ) {
+      return null;
+    }
+    const operatorOpenId = nonBlank(event.operator_id?.open_id);
+    const operatorTenantKey = nonBlank(event.operator_tenant_key);
+    const botName = botMembershipName(event);
+    return Object.freeze({
+      botKey: this.botKey,
+      tenantKey,
+      eventId,
+      chatId,
+      ...(operatorOpenId ? { operatorOpenId } : {}),
+      ...(operatorTenantKey ? { operatorTenantKey } : {}),
+      ...(event.external !== undefined ? { external: event.external } : {}),
+      ...(botName ? { botName } : {}),
+    });
+  }
 }
 
 function unavailableToast(reason: LarkUnavailableReason): string {
@@ -346,6 +430,13 @@ function unavailableToast(reason: LarkUnavailableReason): string {
     return '机器人已被 Bridge 管理员禁用，当前不会处理任务。';
   }
   return '机器人当前不可用。';
+}
+
+function botMembershipName(event: RawBotMembershipEvent): string | null {
+  return nonBlank(event.name)
+    ?? nonBlank(event.i18n_names?.zh_cn)
+    ?? nonBlank(event.i18n_names?.en_us)
+    ?? nonBlank(event.i18n_names?.ja_jp);
 }
 
 function scopeNeedsBootstrap(config: BridgeConfig): boolean {

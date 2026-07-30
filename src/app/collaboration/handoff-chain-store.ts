@@ -8,7 +8,6 @@ export type HandoffChainBlockReason =
   | 'expired'
   | 'duplicate'
   | 'max_hops'
-  | 'loop'
   | 'cooldown';
 
 export type HandoffChainDecision =
@@ -42,7 +41,6 @@ export class HandoffChainStore {
   private accepted = 0;
   private blocked = 0;
   private duplicate = 0;
-  private loopBlocked = 0;
 
   public constructor(options: HandoffChainStoreOptions = {}) {
     this.now = options.now ?? Date.now;
@@ -95,7 +93,7 @@ export class HandoffChainStore {
       accepted: this.accepted,
       blocked: this.blocked,
       duplicate: this.duplicate,
-      loopBlocked: this.loopBlocked,
+      loopBlocked: 0,
     });
   }
 
@@ -105,9 +103,6 @@ export class HandoffChainStore {
     }
     if (envelope.hop > this.maxHops) {
       return { accepted: false, reason: 'max_hops' };
-    }
-    if (envelope.visitedBotKeys.includes(targetBotKey)) {
-      return { accepted: false, reason: 'loop' };
     }
     if (this.seenHandoffs.has(handoffKey(envelope, targetBotKey))) {
       return { accepted: false, reason: 'duplicate' };
@@ -119,9 +114,6 @@ export class HandoffChainStore {
     this.blocked += 1;
     if (reason === 'duplicate') {
       this.duplicate += 1;
-    }
-    if (reason === 'loop') {
-      this.loopBlocked += 1;
     }
   }
 

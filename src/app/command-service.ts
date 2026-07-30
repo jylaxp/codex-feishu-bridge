@@ -107,6 +107,7 @@ export class BridgeCommandService {
     private readonly shell: ShellCommandRunner = { run: runAllowedShellCommand },
     private readonly rateLimits: RateLimitReader | undefined = undefined,
     private readonly modelCatalog: ModelCatalog = { list: readCachedModels },
+    private readonly onBindingCreated: ((binding: ChatThreadBinding) => void) | undefined = undefined,
   ) {}
 
   public async handle(message: InboundTextMessage): Promise<boolean> {
@@ -477,11 +478,14 @@ export class BridgeCommandService {
       const threadId = threadIdFrom(response);
       if (!threadId) throw new Error('App Server 未返回新会话标识');
       await this.catalog.request('thread/name/set', { threadId, name: sessionName });
-      this.store.bind({ botKey: message.botKey, tenantKey: message.tenantKey, chatId: message.chatId, threadId,
+      const binding = this.store.bind({ botKey: message.botKey, tenantKey: message.tenantKey, chatId: message.chatId,
+        ...(message.chatType ? { chatType: message.chatType } : {}),
+        threadId,
         workspaceId,
         ...(previous?.model ? { model: previous.model } : {}),
         ...(previous?.personality ? { personality: previous.personality } : {}),
         ...(previous?.plan ? { plan: previous.plan } : {}) });
+      this.onBindingCreated?.(binding);
       await this.tryOpenThread(threadId);
       await this.replyCard(
         message,

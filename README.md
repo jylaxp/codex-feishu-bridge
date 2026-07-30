@@ -315,6 +315,8 @@ codex-feishu-bridge config reset --confirm --destructive
 runner 当前以 macOS Desktop-attached 为已验证路径，跨平台群协作应优先使用 App Server stable 路由，
 Windows Desktop-attached 在 native probe 完成前保持不可用。
 
+外部 owner 或外部 Bridge 实例管理的机器人不需要导入本机 `lark-bots.json`。Bridge 会在群消息、机器人进群事件、群绑定成功和新版本群绑定启动回填后尝试调用飞书群内机器人列表接口，按 `sourceBotKey + tenantKey + chatId` 记录外部机器人的 open ID 和名称到 `~/.codex-feishu-bridge/external-bots.json`，供后续真实 `@外部机器人` 使用。该能力需要 `im:chat.members:read` 权限；旧版本历史绑定没有 `chatType` 时，在群里重新 `@当前机器人` 或重新 `/bind` 一次即可补齐发现目录。发现目录只提供可 @ 身份，不保证外部 bot 已绑定、已运行或会响应。
+
 ## 卡片和审批
 
 任务卡保留原有 `🌌 Codex Remote Control` 流式布局、Prompt/metadata/推理过程/工具折叠面板/最终结果/统计页脚和固定 element ID。运行中显示 `▍` 光标；终态先关闭 streaming mode，再替换完整成功、失败或取消卡。页脚随 Desktop stream 和共享 TTL 的 account/rate-limit 查询更新模型、输入/输出 token、上下文、API 次数、7d reset 与 credits。

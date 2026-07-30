@@ -1,10 +1,15 @@
 import type { ChatThreadBinding } from '../binding-store';
 import type { LarkBotConfig } from '../bot-config-store';
+import type {
+  ExternalBotDirectoryEntry,
+  ExternalBotDirectoryResolution,
+} from '../external-bot-directory';
 import type { HandoffMessageEmitter } from '../lark/handoff-message-emitter';
 import {
   createChildHandoffEnvelope,
   createRootHandoffEnvelope,
   parseHandoffDirective,
+  type HandoffDirective,
   type HandoffEnvelope,
 } from './handoff-directive';
 import { HandoffChainStore, type HandoffChainBlockReason } from './handoff-chain-store';
@@ -36,6 +41,12 @@ export interface HandoffCoordinatorOptions {
   readonly bots: () => readonly LarkBotConfig[];
   readonly bindingFor: (tenantKey: string, chatId: string, botKey: string) => ChatThreadBinding | undefined;
   readonly emitterForSourceBot: (botKey: string) => HandoffMessageEmitter | undefined;
+  readonly externalBotDirectoryForGroup?: (
+    sourceBotKey: string,
+    tenantKey: string,
+    chatId: string,
+    selector: string,
+  ) => ExternalBotDirectoryResolution;
   readonly runnerReadinessForBinding?: (binding: ChatThreadBinding) => RunnerReadiness;
   readonly chainStore?: HandoffChainStore;
 }
@@ -59,7 +70,7 @@ export class HandoffCoordinator {
     const sourceBot = this.options.bots().find((bot) => bot.botKey === context.sourceBotKey);
     const target = resolveTargetBot(parsed.directive.target, this.options.bots());
     if (!target) {
-      return failure(parsed.visibleText, `未找到目标机器人：${parsed.directive.target}`);
+      return this.handleExternalTargetHandoff(context, parsed.visibleText, parsed.directive);
     }
     if (!sourceBot?.enabled) {
       return failure(parsed.visibleText, '当前源机器人不可用，已阻止自动交接');
@@ -111,6 +122,56 @@ export class HandoffCoordinator {
     };
   }
 
+  private async handleExternalTargetHandoff(
+    context: TerminalHandoffContext,
+    visibleText: string,
+    directive: HandoffDirective,
+  ): Promise<TerminalHandoffProjection> {
+    const sourceBot = this.options.bots().find((bot) => bot.botKey === context.sourceBotKey);
+    if (!sourceBot?.enabled) {
+      return failure(visibleText, '当前源机器人不可用，已阻止自动交接');
+    }
+    const externalResolution = this.options.externalBotDirectoryForGroup?.(
+      context.sourceBotKey,
+      context.tenantKey,
+      context.chatId,
+      directive.target,
+    ) ?? { status: 'not_found' as const };
+    if (externalResolution.status === 'not_found') {
+      return failure(visibleText, `未找到目标机器人：${directive.target}`);
+    }
+    if (externalResolution.status === 'ambiguous') {
+      return failure(visibleText, ambiguousExternalBotText(directive.target, externalResolution.matches));
+    }
+    const externalTarget = externalResolution.entry;
+    const emitter = this.options.emitterForSourceBot(context.sourceBotKey);
+    if (!emitter) {
+      return failure(visibleText, '源机器人缺少飞书发送通道');
+    }
+    const targetKey = externalTargetKey(externalTarget);
+    const envelope = this.createEnvelope(context, targetKey);
+    const chainDecision = this.chainStore.reserveOutbound(envelope, targetKey);
+    if (!chainDecision.accepted) {
+      return failure(visibleText, chainFailureText(chainDecision.reason, externalTarget.displayName));
+    }
+    try {
+      await emitter.send({
+        chatId: context.chatId,
+        targetBotKey: targetKey,
+        targetBotOpenId: externalTarget.botOpenId,
+        targetBotName: externalTarget.displayName,
+        envelope,
+        directive,
+      });
+    } catch {
+      return failure(visibleText, `交接消息发送失败：${externalTarget.displayName}`);
+    }
+    return {
+      emitted: true,
+      finalAnswer: appendNote(visibleText, `已交接给 ${externalTarget.displayName}`),
+    };
+  }
+
   public acceptInboundHandoff(envelope: HandoffEnvelope, targetBotKey: string) {
     return this.chainStore.acceptInbound(envelope, targetBotKey);
   }
@@ -158,6 +219,21 @@ function resolveTargetBot(selector: string, bots: readonly LarkBotConfig[]): Lar
   return matches.length === 1 ? matches[0] : undefined;
 }
 
+function externalTargetKey(target: ExternalBotDirectoryEntry): string {
+  return `external:${target.botOpenId}`;
+}
+
+function ambiguousExternalBotText(
+  selector: string,
+  matches: readonly ExternalBotDirectoryEntry[],
+): string {
+  const suffixes = matches
+    .slice(0, 3)
+    .map((entry) => `${entry.displayName}(${entry.botOpenId.slice(-6)})`)
+    .join(', ');
+  return `目标机器人不唯一：${selector}；请改用 open_id。候选：${suffixes}`;
+}
+
 function failure(visibleText: string, reason: string): TerminalHandoffProjection {
   return {
     emitted: false,
@@ -179,9 +255,6 @@ function chainFailureText(reason: HandoffChainBlockReason, target: string): stri
   }
   if (reason === 'max_hops') {
     return `交接跳数已达上限，未调用 ${target}`;
-  }
-  if (reason === 'loop') {
-    return `检测到交接循环，未调用 ${target}`;
   }
   return `交接限流中，未调用 ${target}`;
 }

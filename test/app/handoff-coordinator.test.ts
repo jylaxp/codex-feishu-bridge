@@ -5,6 +5,7 @@ import type { ChatThreadBinding } from '../../src/app/binding-store';
 import type { LarkBotConfig } from '../../src/app/bot-config-store';
 import { HandoffCoordinator } from '../../src/app/collaboration/handoff-coordinator';
 import { HandoffChainStore } from '../../src/app/collaboration/handoff-chain-store';
+import type { ExternalBotDirectoryEntry } from '../../src/app/external-bot-directory';
 import type { HandoffMessageEmitter, HandoffMessage } from '../../src/app/lark/handoff-message-emitter';
 
 test('handoff coordinator validates and emits a target bot mention', async () => {
@@ -75,12 +76,46 @@ test('handoff coordinator blocks when target runner is unavailable', async () =>
   assert.match(result?.finalAnswer ?? '', /执行路由未就绪/);
 });
 
+test('handoff coordinator emits a discovered external target bot mention', async () => {
+  const sent: HandoffMessage[] = [];
+  const coordinator = coordinatorWith({
+    sent,
+    externalTargets: [externalOrderBot],
+  });
+
+  const result = await coordinator.handleTerminalHandoff({
+    sourceBotKey: 'bot_aaaaaaaaaaaa',
+    tenantKey: 'tenant',
+    chatId: 'chat',
+    rootMessageId: 'root',
+    messageId: 'message',
+    threadId: 'thread-search',
+    binding: sourceBinding,
+    finalAnswer: [
+      '搜索侧已确认价格有效。',
+      '',
+      '```cfb-handoff',
+      'target: External Order Bot',
+      'task: 排查外部订单创建失败',
+      'context: requestId=req-2',
+      '```',
+    ].join('\n'),
+  });
+
+  assert.equal(result?.emitted, true);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0]?.targetBotOpenId, 'ou_external_order');
+  assert.equal(sent[0]?.targetBotName, 'External Order Bot');
+  assert.match(result?.finalAnswer ?? '', /已交接给 External Order Bot/);
+});
+
 function coordinatorWith(options: {
   readonly sent: HandoffMessage[];
-  readonly targetBinding?: ChatThreadBinding;
-  readonly targetBot?: LarkBotConfig;
-  readonly runnerReady?: boolean;
-}): HandoffCoordinator {
+	  readonly targetBinding?: ChatThreadBinding;
+	  readonly targetBot?: LarkBotConfig;
+	  readonly externalTargets?: readonly ExternalBotDirectoryEntry[];
+	  readonly runnerReady?: boolean;
+	}): HandoffCoordinator {
   const emitter = {
     send: async (message: HandoffMessage) => {
       options.sent.push(message);
@@ -90,11 +125,24 @@ function coordinatorWith(options: {
   return new HandoffCoordinator({
     now: () => 1_000,
     bots: () => [searchBot, options.targetBot ?? orderBot],
-    bindingFor: (_tenantKey, _chatId, botKey) => (
-      botKey === 'bot_bbbbbbbbbbbb' ? options.targetBinding ?? targetBinding : undefined
-    ),
-    emitterForSourceBot: () => emitter,
-    runnerReadinessForBinding: () => (
+	    bindingFor: (_tenantKey, _chatId, botKey) => (
+	      botKey === 'bot_bbbbbbbbbbbb' ? options.targetBinding ?? targetBinding : undefined
+	    ),
+	    emitterForSourceBot: () => emitter,
+	    externalBotDirectoryForGroup: (_sourceBotKey, _tenantKey, _chatId, selector) => {
+	      const matches = (options.externalTargets ?? []).filter((entry) => (
+	        entry.displayName.toLowerCase() === selector.toLowerCase()
+	          || entry.botOpenId === selector
+	      ));
+	      if (matches.length === 0) {
+	        return { status: 'not_found' };
+	      }
+	      if (matches.length === 1 && matches[0]) {
+	        return { status: 'found', entry: matches[0] };
+	      }
+	      return { status: 'ambiguous', matches };
+	    },
+	    runnerReadinessForBinding: () => (
       options.runnerReady === false
         ? { ready: false, reason: 'desktop_ipc_not_ready' }
         : { ready: true }
@@ -137,6 +185,16 @@ const targetBinding: ChatThreadBinding = {
 
 const searchBot = bot('bot_aaaaaaaaaaaa', 'ou_search', 'Search Bot');
 const orderBot = bot('bot_bbbbbbbbbbbb', 'ou_order', 'Order Bot');
+
+const externalOrderBot: ExternalBotDirectoryEntry = {
+  sourceBotKey: 'bot_aaaaaaaaaaaa',
+  tenantKey: 'tenant',
+  chatId: 'chat',
+  botOpenId: 'ou_external_order',
+  displayName: 'External Order Bot',
+  discoveredAtMs: 1,
+  updatedAtMs: 1,
+};
 
 function bot(botKey: string, botOpenId: string, displayName: string): LarkBotConfig {
   return {

@@ -57,11 +57,34 @@ test('binding store scopes the same tenant chat by bot key', () => {
       readonly schemaVersion: number;
       readonly bindings: readonly { readonly botKey?: string }[];
     };
-    assert.equal(document.schemaVersion, 3);
+    assert.equal(document.schemaVersion, 4);
     assert.deepEqual(document.bindings.map((binding) => binding.botKey).sort(), [
       'bot_aaaaaaaaaaaa',
       'bot_bbbbbbbbbbbb',
     ]);
+  } finally {
+    rmSync(configHome, { recursive: true, force: true });
+  }
+});
+
+test('binding store persists chat type metadata', () => {
+  const configHome = mkdtempSync(join(tmpdir(), 'bridge-binding-chat-type-'));
+  try {
+    const store = new BindingStore(configHome, { now: () => 1_000 });
+    const binding = store.bind({
+      botKey: 'bot_aaaaaaaaaaaa',
+      tenantKey: 'tenant',
+      chatId: 'chat',
+      chatType: 'group',
+      threadId: 'thread',
+      workspaceId: '/workspace',
+    });
+
+    assert.equal(binding.chatType, 'group');
+
+    const loaded = new BindingStore(configHome);
+    loaded.load();
+    assert.equal(loaded.get('tenant', 'chat', 'bot_aaaaaaaaaaaa')?.chatType, 'group');
   } finally {
     rmSync(configHome, { recursive: true, force: true });
   }
@@ -173,7 +196,7 @@ test('binding store persists bot collaboration policy per binding', () => {
         readonly allowedHandoffTargetBotKeys?: readonly string[];
       }[];
     };
-    assert.equal(document.schemaVersion, 3);
+    assert.equal(document.schemaVersion, 4);
     assert.equal(document.bindings[0]?.allowBotSenderMentions, true);
     assert.deepEqual(document.bindings[0]?.allowedBotSenderKeys, ['bot_bbbbbbbbbbbb']);
     assert.deepEqual(document.bindings[0]?.allowedBotSenderOpenIds, ['ou_source']);

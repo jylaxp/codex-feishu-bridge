@@ -8,6 +8,7 @@ import {
   LarkEventServer,
   toast,
   type RawCardActionEvent,
+  type RawBotMembershipEvent,
 } from '../../src/app/lark/event-server';
 import type { InboundReplyContext, RawMessageEvent } from '../../src/app/lark/intake';
 
@@ -114,6 +115,42 @@ test('disabled bot card actions return a reason toast without routing the action
   assert.deepEqual(response, toast('机器人已被 Bridge 管理员禁用，当前不会处理任务。', 'warning'));
 });
 
+test('event server routes bot membership events', async () => {
+  const websocket = new FakeWebSocket();
+  const addedEvents: string[] = [];
+  const deletedEvents: string[] = [];
+  const server = new LarkEventServer(websocket, config, {
+    onMessage: async () => undefined,
+    onCardAction: async () => undefined,
+    onBotAdded: async (event) => {
+      addedEvents.push(`${event.botKey}:${event.chatId}:${event.botName ?? ''}`);
+    },
+    onBotDeleted: async (event) => {
+      deletedEvents.push(`${event.botKey}:${event.chatId}`);
+    },
+  });
+
+  await server.start();
+  await websocket.dispatchBotAdded({
+    app_id: 'app',
+    event_id: 'event-added',
+    tenant_key: 'tenant',
+    chat_id: 'chat',
+    operator_id: { open_id: 'owner' },
+    name: 'Release Bot',
+  });
+  await websocket.dispatchBotDeleted({
+    app_id: 'app',
+    event_id: 'event-deleted',
+    tenant_key: 'tenant',
+    chat_id: 'chat',
+    operator_id: { open_id: 'owner' },
+  });
+
+  assert.deepEqual(addedEvents, ['bot_release_test:chat:Release Bot']);
+  assert.deepEqual(deletedEvents, ['bot_release_test:chat']);
+});
+
 type DispatcherHandler = (event: unknown) => Promise<unknown> | unknown;
 
 class FakeWebSocket {
@@ -133,6 +170,14 @@ class FakeWebSocket {
 
   public dispatchCardAction(event: RawCardActionEvent): Promise<unknown> {
     return this.dispatch('card.action.trigger', event);
+  }
+
+  public dispatchBotAdded(event: RawBotMembershipEvent): Promise<unknown> {
+    return this.dispatch('im.chat.member.bot.added_v1', event);
+  }
+
+  public dispatchBotDeleted(event: RawBotMembershipEvent): Promise<unknown> {
+    return this.dispatch('im.chat.member.bot.deleted_v1', event);
   }
 
   private async dispatch(eventName: string, event: unknown): Promise<unknown> {
