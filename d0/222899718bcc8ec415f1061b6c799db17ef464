@@ -1,0 +1,28 @@
+test/app/runtime-health.test.ts
+  s_7aa13d4c94b804::t_d379b7e0bb7ae9 10,26,65-72,81-88,100-134,163
+docs/user-manual.zh-CN.md
+  s_7aa13d4c94b804::t_9962de310d5011 552-554
+src/app/runtime-health.ts
+  s_7aa13d4c94b804::t_d702941a35bc5d 33-41,58,94-119
+src/app/main.ts
+  s_7aa13d4c94b804::t_87a599f8cd2405 90,214,221-223,231
+  s_7aa13d4c94b804::t_db3f03ad5fe3de 104,349-403
+  s_7aa13d4c94b804::t_a0778154f9ca0c 670,732
+  s_7aa13d4c94b804::t_8c09bab5ca5a6f 404
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.18",
+  "base_commit_sha": "d0222899718bcc8ec415f1061b6c799db17ef464",
+  "prompts": {},
+  "sessions": {
+    "s_7aa13d4c94b804": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fa36d-4ecc-7211-aef0-9010548d16a1",
+        "model": "gpt-5.5"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    }
+  }
+}
