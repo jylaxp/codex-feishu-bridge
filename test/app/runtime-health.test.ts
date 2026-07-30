@@ -7,6 +7,7 @@ import test from 'node:test';
 import {
   readRuntimeHealth,
   resolveRuntimeHealthStatus,
+  resolveRuntimeHealthStatusReasons,
   RuntimeHealthPublisher,
   RuntimeHealthStore,
   type RuntimeHealthSnapshot,
@@ -22,6 +23,7 @@ test('runtime health is atomic, content-free, and readable by status', () => {
       supervisorPid: 122,
       updatedAt: '2026-07-19T00:00:00.000Z',
       status: 'ready',
+      statusReasons: [],
       appServer: {
         state: 'ready',
         protocolContractId: 'app-server-0.145.0-alpha.18',
@@ -60,6 +62,14 @@ test('runtime status is degraded when Desktop is connected but its thread owner 
     desktopRouteState: 'unavailable',
     larkState: 'ready',
   }), 'degraded');
+  assert.deepEqual(resolveRuntimeHealthStatusReasons({
+    runtimeStarted: true,
+    runtimeStopped: false,
+    appServerState: 'ready',
+    desktopState: 'READY',
+    desktopRouteState: 'unavailable',
+    larkState: 'ready',
+  }), ['desktop_route_unavailable']);
   assert.equal(resolveRuntimeHealthStatus({
     runtimeStarted: true,
     runtimeStopped: false,
@@ -68,6 +78,14 @@ test('runtime status is degraded when Desktop is connected but its thread owner 
     desktopRouteState: 'ready',
     larkState: 'ready',
   }), 'ready');
+  assert.deepEqual(resolveRuntimeHealthStatusReasons({
+    runtimeStarted: true,
+    runtimeStopped: false,
+    appServerState: 'ready',
+    desktopState: 'READY',
+    desktopRouteState: 'ready',
+    larkState: 'ready',
+  }), []);
 });
 
 test('runtime status remains degraded until Desktop route ownership is known', () => {
@@ -79,6 +97,41 @@ test('runtime status remains degraded until Desktop route ownership is known', (
     desktopRouteState: 'unknown',
     larkState: 'ready',
   }), 'degraded');
+  assert.deepEqual(resolveRuntimeHealthStatusReasons({
+    runtimeStarted: true,
+    runtimeStopped: false,
+    appServerState: 'ready',
+    desktopState: 'READY',
+    desktopRouteState: 'unknown',
+    larkState: 'ready',
+  }), ['desktop_route_unverified']);
+});
+
+test('runtime health status reasons identify each degraded dependency', () => {
+  assert.deepEqual(resolveRuntimeHealthStatusReasons({
+    runtimeStarted: false,
+    runtimeStopped: false,
+    appServerState: 'starting',
+    desktopState: 'STOPPED',
+    desktopRouteState: 'unknown',
+    larkState: 'idle',
+  }), ['runtime_not_started']);
+  assert.deepEqual(resolveRuntimeHealthStatusReasons({
+    runtimeStarted: true,
+    runtimeStopped: true,
+    appServerState: 'stopped',
+    desktopState: 'STOPPED',
+    desktopRouteState: 'unknown',
+    larkState: 'closed',
+  }), ['runtime_stopped']);
+  assert.deepEqual(resolveRuntimeHealthStatusReasons({
+    runtimeStarted: true,
+    runtimeStopped: false,
+    appServerState: 'starting',
+    desktopState: 'RECONNECTING',
+    desktopRouteState: 'unknown',
+    larkState: 'reconnecting',
+  }), ['app_server_not_ready', 'desktop_ipc_not_ready', 'lark_not_ready']);
 });
 
 test('runtime health publisher coalesces bursty task updates', async () => {
@@ -107,6 +160,7 @@ test('background status rejects health from a dead supervised worker', async () 
       supervisorPid: process.pid,
       updatedAt: '2026-07-19T00:00:00.000Z',
       status: 'ready',
+      statusReasons: [],
       appServer: {
         state: 'ready',
         protocolContractId: 'app-server-0.145.0-alpha.18',

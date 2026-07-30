@@ -87,6 +87,7 @@ import {
   RuntimeHealthPublisher,
   RuntimeHealthStore,
   resolveRuntimeHealthStatus,
+  resolveRuntimeHealthStatusReasons,
   type DesktopRouteState,
   type RuntimeHealthSnapshot,
 } from './runtime-health';
@@ -100,6 +101,7 @@ export interface BridgeRuntime {
 
 const BINDING_DESKTOP_SNAPSHOT_TIMEOUT_MS = 5_000;
 const DESKTOP_ROUTE_RECOVERY_TIMEOUT_MS = 5_000;
+const DESKTOP_ROUTE_PROBE_TIMEOUT_MS = 2_000;
 
 interface BotRuntime {
   readonly botKey: string;
@@ -209,14 +211,16 @@ export async function startBridge(
     connectedAtMs: null,
   });
   const writeHealth = (): void => {
-    const status = resolveRuntimeHealthStatus({
+    const readiness = {
       runtimeStarted,
       runtimeStopped,
       appServerState,
       desktopState,
       desktopRouteState,
       larkState: larkConnection.state,
-    });
+    } as const;
+    const status = resolveRuntimeHealthStatus(readiness);
+    const statusReasons = resolveRuntimeHealthStatusReasons(readiness);
     try {
       healthStore.write(Object.freeze({
         schemaVersion: 1,
@@ -224,6 +228,7 @@ export async function startBridge(
         supervisorPid: process.ppid,
         updatedAt: new Date().toISOString(),
         status,
+        statusReasons,
         appServer: Object.freeze({
           state: appServerState,
           protocolContractId: runtimeContract.protocolProfile.id,
@@ -340,6 +345,62 @@ export async function startBridge(
     } catch (error) {
       logger.error('desktop_thread_following_sync_failed', error);
     }
+  };
+  const probeDesktopThreadRoutes = async (trigger: string): Promise<void> => {
+    const threadIds = new Set(bindings.list().map((binding) => binding.threadId));
+    if (desktopState !== 'READY') {
+      logger.info('desktop_route_probe_skipped', {
+        trigger,
+        reason: 'desktop_ipc_not_ready',
+        threadCount: threadIds.size,
+      });
+      publishHealth();
+      return;
+    }
+    if (threadIds.size === 0) {
+      logger.info('desktop_route_probe_skipped', {
+        trigger,
+        reason: 'no_bound_threads',
+        threadCount: 0,
+      });
+      publishHealth();
+      return;
+    }
+    await syncDesktopThreadFollowing();
+    let readyCount = 0;
+    let unavailableCount = 0;
+    lastDesktopDeliveryErrorCode = null;
+    unavailableDesktopThreads.clear();
+    for (const threadId of threadIds) {
+      try {
+        await desktop.requestThreadFollowingSnapshot(threadId);
+        const ready = await desktop.waitForThreadFollowingSnapshot(threadId, DESKTOP_ROUTE_PROBE_TIMEOUT_MS);
+        if (ready) {
+          readyCount += 1;
+          continue;
+        }
+        unavailableCount += 1;
+        unavailableDesktopThreads.add(threadId);
+      } catch (error) {
+        unavailableCount += 1;
+        unavailableDesktopThreads.add(threadId);
+        if (error instanceof DesktopIpcRequestError) {
+          lastDesktopDeliveryErrorCode = error.remoteError ?? error.code;
+        } else {
+          lastDesktopDeliveryErrorCode = 'DESKTOP_IPC_LOCAL_ERROR';
+        }
+        logger.error('desktop_route_probe_thread_failed', error, { trigger, threadId });
+      }
+    }
+    desktopRouteState = unavailableCount > 0 ? 'unavailable' : readyCount > 0 ? 'ready' : 'unknown';
+    logger.info('desktop_route_probe_completed', {
+      trigger,
+      threadCount: threadIds.size,
+      readyCount,
+      unavailableCount,
+      routeState: desktopRouteState,
+    });
+    publishHealth();
   };
   const normalizer = new DesktopThreadStreamNormalizer();
   for (const bot of configuredBots) {
@@ -606,6 +667,7 @@ export async function startBridge(
   };
   const handleBindingCreated = (binding: ChatThreadBinding): void => {
     persistAllowedBindingChat(binding);
+    void probeDesktopThreadRoutes('binding_created');
     if (binding.chatType !== 'group') {
       return;
     }
@@ -667,6 +729,7 @@ export async function startBridge(
       normalizer.beginEpoch(handshake.epoch);
       logger.info('desktop_ipc_ready', { epoch: handshake.epoch });
       publishHealth();
+      void probeDesktopThreadRoutes('desktop_ready');
     },
     onDisconnected: async (epoch) => {
       inboundGeneration += 1;

@@ -549,7 +549,9 @@ cfb status --json
 
 - `lark.state=ready` 表示飞书事件通道可用。
 - `appServer.state=ready` 表示 App Server 控制面可用。
-- `desktop.routeState=unknown` 可能只影响 Desktop-attached route，不一定阻塞群聊 stable route。
+- `statusReasons` 会列出具体原因，例如 `desktop_route_unverified` 表示刚启动或重连后还没有验证绑定会话路由。
+- `desktop.routeState=unknown` 表示 Desktop IPC 已连接，但绑定的 ChatGPT 会话路由还没验证成功；Bridge 会在启动和绑定创建后主动做一次非侵入式 route probe。
+- `desktop.routeState=unavailable` 表示至少一个绑定会话当前没有可投递的 Desktop owner，需要打开/恢复对应 ChatGPT 会话或等待 route recovery。
 
 ### 12.6 卡片里有 `@目标机器人` 但目标机器人没被触发
 

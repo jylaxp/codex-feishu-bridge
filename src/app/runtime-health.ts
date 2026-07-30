@@ -30,6 +30,15 @@ export interface RuntimeCollaborationHealth {
 /** Whether a followed task thread currently has a routable ChatGPT Desktop owner. */
 export type DesktopRouteState = 'unknown' | 'ready' | 'unavailable';
 
+export type RuntimeHealthStatusReason =
+  | 'runtime_not_started'
+  | 'runtime_stopped'
+  | 'app_server_not_ready'
+  | 'desktop_ipc_not_ready'
+  | 'desktop_route_unverified'
+  | 'desktop_route_unavailable'
+  | 'lark_not_ready';
+
 /** Content-free runtime signals used to derive the published readiness state. */
 export interface RuntimeHealthReadiness {
   readonly runtimeStarted: boolean;
@@ -46,6 +55,7 @@ export interface RuntimeHealthSnapshot {
   readonly supervisorPid: number;
   readonly updatedAt: string;
   readonly status: 'starting' | 'ready' | 'degraded' | 'stopped';
+  readonly statusReasons: readonly RuntimeHealthStatusReason[];
   readonly appServer: {
     readonly state: 'starting' | 'ready' | 'stopped';
     readonly protocolContractId: AppServerProtocolProfileId;
@@ -81,6 +91,32 @@ export function resolveRuntimeHealthStatus(
     && readiness.larkState === 'ready'
     ? 'ready'
     : 'degraded';
+}
+
+export function resolveRuntimeHealthStatusReasons(
+  readiness: RuntimeHealthReadiness,
+): readonly RuntimeHealthStatusReason[] {
+  if (readiness.runtimeStopped) {
+    return Object.freeze(['runtime_stopped']);
+  }
+  if (!readiness.runtimeStarted) {
+    return Object.freeze(['runtime_not_started']);
+  }
+  const reasons: RuntimeHealthStatusReason[] = [];
+  if (readiness.appServerState !== 'ready') {
+    reasons.push('app_server_not_ready');
+  }
+  if (readiness.desktopState !== 'READY') {
+    reasons.push('desktop_ipc_not_ready');
+  } else if (readiness.desktopRouteState === 'unknown') {
+    reasons.push('desktop_route_unverified');
+  } else if (readiness.desktopRouteState === 'unavailable') {
+    reasons.push('desktop_route_unavailable');
+  }
+  if (readiness.larkState !== 'ready') {
+    reasons.push('lark_not_ready');
+  }
+  return Object.freeze(reasons);
 }
 
 /** Persists a content-free, atomically replaced runtime health snapshot. */
