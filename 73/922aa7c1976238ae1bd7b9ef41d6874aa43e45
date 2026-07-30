@@ -1,0 +1,96 @@
+test/app/external-bot-directory.test.ts
+  s_7aa13d4c94b804::t_fe87d705155418 1-80
+src/app/binding-store.ts
+  s_7aa13d4c94b804::t_15c9fadd234028 17,37,308,346,395,436-446
+src/app/collaboration/collaboration-context.ts
+  s_7aa13d4c94b804::t_85f16c6155d544 3,12,30-34,40,44,47,73-79
+  s_7aa13d4c94b804::t_9486dc23607b0e 80
+test/app/handoff-chain-store.test.ts
+  s_7aa13d4c94b804::t_b245cb287aaa3c 24,30,37-46
+  s_7aa13d4c94b804::t_eae5566bcb700c 47-48
+src/app/lark/event-server.ts
+  s_7aa13d4c94b804::t_e2d9954c8a42c9 59-89,93-94,100,440
+  s_7aa13d4c94b804::t_3cf848a78582ed 306-311
+  s_7aa13d4c94b804::t_c3650d23452bf3 381-425,435-439
+  s_7aa13d4c94b804::t_53d6bdac3089b2 441
+src/app/lark/group-bot-discovery.ts
+  s_7aa13d4c94b804::t_913c5df95bd777 75-80
+  s_7aa13d4c94b804::t_8c853ef077ae98 1-74,81-204
+src/app/main.ts
+  s_7aa13d4c94b804::t_eae50c03d98128 156,162
+  s_7aa13d4c94b804::t_867e1cdd52a174 415-442,466-468
+  s_7aa13d4c94b804::t_d9248ae360f951 46,59
+  s_7aa13d4c94b804::t_b23619d5363ef9 443-461,608-618,631,1130-1132
+  s_7aa13d4c94b804::t_5c7f5f288f8901 543-547,977-979,988-1006
+  s_7aa13d4c94b804::t_1a23d42913c34a 1410-1427
+  s_7aa13d4c94b804::t_538929475bf3f2 643-644
+test/app/lark-event-server.test.ts
+  s_7aa13d4c94b804::t_1c207d1a0700e9 11,118-153,175-181
+  s_7aa13d4c94b804::t_49af970062a6b1 182
+docs/plans/2026-07-28-002-feat-bot-to-bot-collaboration-plan.zh-CN.md
+  s_7aa13d4c94b804::t_ef492c7ba13388 156,257-258,261-262,272,286-287,568-569
+  s_7aa13d4c94b804::t_10d787870054a8 270-271
+  s_7aa13d4c94b804::t_e7233813d84b2c 26,41,61,162,333,375,377,393,399-400,408,412,526,535,556
+src/app/conversation-binding-service-v3.ts
+  s_7aa13d4c94b804::t_2de7c914df59b6 69,166,232,1504,1516-1520,1538,1546-1550,1556-1557
+  s_7aa13d4c94b804::t_9ae1f760e86a38 1558-1559
+test/app/binding-store.test.ts
+  s_7aa13d4c94b804::t_fb6949cdf9eb6e 60,70-87
+  s_7aa13d4c94b804::t_0a039c145b1916 199
+  s_7aa13d4c94b804::t_5d9637ea405d37 88-90
+  s_7aa13d4c94b804::t_edf8166999b44a 91-92
+src/app/collaboration/handoff-chain-store.ts
+  s_7aa13d4c94b804::t_d48484c86eff33 96
+test/app/collaboration-context.test.ts
+  s_7aa13d4c94b804::t_d124d452679f4e 31-52
+README.md
+  s_7aa13d4c94b804::t_94c63df4c6a3ff 318
+  s_7aa13d4c94b804::t_61897beb1a80b3 319
+src/app/command-service.ts
+  s_7aa13d4c94b804::t_c4e50e8340ccf5 110,481,488
+  s_7aa13d4c94b804::t_b6154fcf420285 482-483
+test/app/group-bot-discovery.test.ts
+  s_7aa13d4c94b804::t_073f80b81e575d 1-106
+src/app/collaboration/handoff-coordinator.ts
+  s_7aa13d4c94b804::t_ea502a0cf7843b 3-6,44-49,73,125-127,129-174,222-235
+  s_7aa13d4c94b804::t_ada2d004c485d2 12,128
+  s_7aa13d4c94b804::t_a773a4064625c0 236
+docs/user-manual.zh-CN.md
+  s_7aa13d4c94b804::t_da3b1f952b745e 372,381-386
+  s_7aa13d4c94b804::t_35014856b93d15 540
+  s_7aa13d4c94b804::t_e5978586d8de7b 370,373-380,387-390,411,413,430,434-435,441-445
+  s_7aa13d4c94b804::t_d66329f9e8b338 371
+src/app/external-bot-directory.ts
+  s_7aa13d4c94b804::t_3395cdd5f7d923 1-154,159-421
+  s_7aa13d4c94b804::t_09a91dbd378cdc 155-158
+docs/plans/2026-07-28-002-feat-bot-to-bot-collaboration-plan.md
+  s_7aa13d4c94b804::t_3809e3fae2663d 26,41,61,162,333,375,377,393,399-400,408,412,526,535,556
+  s_7aa13d4c94b804::t_ee307109855a68 270-271
+  s_7aa13d4c94b804::t_90621443f4fd02 156,257-258,261-262,272,286-287,568-569
+test/app/handoff-coordinator.test.ts
+  s_7aa13d4c94b804::t_9846ab28d2bb46 8,79-111,114-118,128-139,144-145,189-197
+  s_7aa13d4c94b804::t_0278f95f6e3fc7 140-143
+  s_7aa13d4c94b804::t_6ec5656d3d5126 198
+test/app/conversation-binding-service-v3.test.ts
+  s_7aa13d4c94b804::t_eff5c29a271947 353-419,421-426
+  s_7aa13d4c94b804::t_4932cbfe24cce0 420
+  s_7aa13d4c94b804::t_eb5d663bec37a0 670,674
+  s_7aa13d4c94b804::t_e2c9d015b21790 651-669,675
+  s_7aa13d4c94b804::t_7fc35e16af0824 671-673
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.18",
+  "base_commit_sha": "73922aa7c1976238ae1bd7b9ef41d6874aa43e45",
+  "prompts": {},
+  "sessions": {
+    "s_7aa13d4c94b804": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fa36d-4ecc-7211-aef0-9010548d16a1",
+        "model": "gpt-5.5"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    }
+  }
+}
