@@ -1,0 +1,38 @@
+src/app/lark/handoff-message-emitter.ts
+  s_7aa13d4c94b804::t_e7001e35ebb396 64-72,74,146,172,185-186
+docs/plans/2026-07-28-002-feat-bot-to-bot-collaboration-plan.zh-CN.md
+  s_7aa13d4c94b804::t_ce41436d45f40d 120,122,132,135,138,224,263,269,271,537
+  s_7aa13d4c94b804::t_2e52d194404b6f 395,401
+test/app/lark-handoff-message-emitter.test.ts
+  s_7aa13d4c94b804::t_5fed6340b1c6a5 10,37-43,46,53-54,56,74,79-89
+  s_7aa13d4c94b804::t_acbceb65113f52 25
+src/app/collaboration/handoff-coordinator.ts
+  s_7aa13d4c94b804::t_5d609a586545d5 186-188
+  s_7aa13d4c94b804::t_ca9db4bcfb61a3 185,190
+docs/plans/2026-07-28-002-feat-bot-to-bot-collaboration-plan.md
+  s_7aa13d4c94b804::t_99e911a35f3888 120,122,132,135,138,224,263,269,271,537
+  s_7aa13d4c94b804::t_2e52d194404b6f 395,401
+src/app/main.ts
+  s_7aa13d4c94b804::t_e124fb20b2a6a2 752
+  s_7aa13d4c94b804::t_5adde48b71bd86 245
+test/app/handoff-chain-store.test.ts
+  s_7aa13d4c94b804::t_2af12949d27038 7,12-13,18,24,27,31
+docs/user-manual.zh-CN.md
+  s_7aa13d4c94b804::t_0dc5caba9a8955 392
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.18",
+  "base_commit_sha": "7dc5e6a1ddf8712dd32cce2132e02513fbf0da91",
+  "prompts": {},
+  "sessions": {
+    "s_7aa13d4c94b804": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fa36d-4ecc-7211-aef0-9010548d16a1",
+        "model": "gpt-5.5"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    }
+  }
+}
