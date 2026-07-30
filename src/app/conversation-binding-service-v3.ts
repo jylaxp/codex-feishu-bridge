@@ -390,6 +390,28 @@ export class ConversationBindingServiceV3 {
         source,
         chatId: binding.chatId,
         threadId: binding.threadId,
+        idempotencyPrefix,
+      });
+      await this.sendHistoryFailureCard(binding, idempotencyPrefix, error);
+    }
+  }
+
+  private async sendHistoryFailureCard(
+    binding: ChatThreadBinding,
+    idempotencyPrefix: string,
+    error: unknown,
+  ): Promise<void> {
+    try {
+      const cardId = await this.cards.createCard(historyFailureCard(binding, error));
+      await this.cards.sendCard(
+        binding.chatId,
+        cardId,
+        `${idempotencyPrefix}:history-failed`,
+      );
+    } catch (error) {
+      this.logger?.error('history_failure_notice_failed', error, {
+        chatId: binding.chatId,
+        threadId: binding.threadId,
       });
     }
   }
@@ -443,6 +465,33 @@ function latestTerminalTurn(thread: Thread): Turn | null {
     }
   }
   return null;
+}
+
+function errorTypeName(error: unknown): string {
+  if (error instanceof Error && error.name) {
+    return error.name;
+  }
+  return typeof error;
+}
+
+function errorCodeName(error: unknown): string | null {
+  if (!error || typeof error !== 'object' || !('code' in error)) {
+    return null;
+  }
+  const code = (error as { readonly code?: unknown }).code;
+  return typeof code === 'string' && code.trim() ? code : null;
+}
+
+function historyFailureReason(error: unknown): string {
+  const parts = [errorTypeName(error)];
+  const code = errorCodeName(error);
+  if (code) {
+    parts.push(code);
+  }
+  if (error instanceof Error && error.message.trim()) {
+    parts.push(error.message.replace(/\s+/g, ' ').slice(0, 200));
+  }
+  return sanitizeCardPlainText(parts.join(' · '), { maxLength: 300 }) || '未知错误';
 }
 
 function createHistoryTaskCard(
@@ -1077,6 +1126,18 @@ function unboundCard(removed: boolean): CardKitJson {
   return baseCard('ChatGPT 会话绑定', 'orange', [{
     tag: 'markdown',
     content: removed ? '已解除当前飞书会话的 ChatGPT 绑定。' : '当前飞书会话没有可解除的绑定。',
+  }]);
+}
+
+function historyFailureCard(binding: ChatThreadBinding, error: unknown): CardKitJson {
+  return baseCard('ChatGPT 会话绑定 · 历史推送失败', 'red', [{
+    tag: 'markdown',
+    content: [
+      '绑定已完成，但当前无法读取并推送该会话历史。',
+      `会话：${shortId(binding.threadId)}`,
+      `失败原因：${historyFailureReason(error)}`,
+      '这不会影响后续新任务。若需要查看历史或实时投影，请稍后重试 `/binding` 或先发送 `/open` 加载该会话。',
+    ].join('\n'),
   }]);
 }
 
