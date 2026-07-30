@@ -1,0 +1,26 @@
+src/app/main.ts
+  s_7aa13d4c94b804::t_2802a6d6d8d19f 622,627-655,659-662
+src/app/conversation-binding-service-v3.ts
+  s_7aa13d4c94b804::t_2fdfc79768652d 477-498
+  s_7aa13d4c94b804::t_43c8770d41d193 554-580,1333-1341,1343
+  s_7aa13d4c94b804::t_7df33ca97fdb7c 1342
+  s_7aa13d4c94b804::t_63702ec2363297 1344
+test/app/conversation-binding-service-v3.test.ts
+  s_7aa13d4c94b804::t_b258c39fca255d 139-208
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.18",
+  "base_commit_sha": "1369a203fc6a4d6a673ff4134941e481b63ab12d",
+  "prompts": {},
+  "sessions": {
+    "s_7aa13d4c94b804": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fa36d-4ecc-7211-aef0-9010548d16a1",
+        "model": "gpt-5.5"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    }
+  }
+}
