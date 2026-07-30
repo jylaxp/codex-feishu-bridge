@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import type { HandoffEnvelope } from '../collaboration/handoff-directive';
 import { DEFAULT_BOT_KEY } from '../bot-config-store';
 import { BridgeConfig } from '../domain';
 
@@ -52,7 +51,6 @@ export interface InboundMessage {
   readonly imageKey?: string;
   readonly imageReferences?: readonly InboundImageReference[];
   readonly localImagePaths?: readonly string[];
-  readonly handoffEnvelope?: HandoffEnvelope;
   readonly payloadDigest: string;
   readonly createdAtMs: number;
 }

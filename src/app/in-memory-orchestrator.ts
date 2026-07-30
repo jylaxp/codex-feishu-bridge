@@ -1179,7 +1179,6 @@ export class InMemoryOrchestrator {
         threadId: task.binding.threadId,
         finalAnswer: task.finalAnswer,
         binding: task.binding,
-        ...(task.message.handoffEnvelope ? { inboundEnvelope: task.message.handoffEnvelope } : {}),
       });
       if (projection) {
         task.finalAnswer = projection.finalAnswer;

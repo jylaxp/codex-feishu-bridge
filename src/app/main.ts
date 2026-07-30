@@ -46,7 +46,6 @@ import { BridgeConfig } from './domain';
 import { ExternalBotDirectoryStore } from './external-bot-directory';
 import { buildCollaborationContext } from './collaboration/collaboration-context';
 import { HandoffCoordinator } from './collaboration/handoff-coordinator';
-import { parseHandoffEnvelope } from './collaboration/handoff-directive';
 import {
   evaluateGroupBotSenderMention,
   shouldSuppressExternalGroupUserMention,
@@ -243,7 +242,7 @@ export async function startBridge(
         tasks: orchestrator?.runtimeTaskHealth()
           ?? Object.freeze({ active: 0, queued: 0, pendingCardDeliveries: 0 }),
         collaboration: handoffCoordinator?.snapshot()
-          ?? Object.freeze({ emitted: 0, accepted: 0, blocked: 0, duplicate: 0, loopBlocked: 0 }),
+          ?? Object.freeze({ emitted: 0, blocked: 0, duplicate: 0 }),
       }));
     } catch (error) {
       logger.error('runtime_health_write_failed', error);
@@ -750,35 +749,7 @@ export async function startBridge(
         return false;
       }
     }
-    let taskMessage = message;
-    if (botSender) {
-      const parsedHandoff = parseHandoffEnvelope(message.text);
-      if (!parsedHandoff) {
-        logger.info('group_bot_sender_mention_suppressed', {
-          botKey,
-          reason: 'handoff_envelope_missing',
-          chatId: message.chatId,
-          messageId: message.messageId,
-        });
-        return false;
-      }
-      const chainDecision = handoffCoordinator?.acceptInboundHandoff(parsedHandoff.envelope, botKey)
-        ?? { accepted: false as const, reason: 'handoff_not_ready' };
-      if (!chainDecision.accepted) {
-        logger.info('group_bot_sender_mention_suppressed', {
-          botKey,
-          reason: `handoff_${chainDecision.reason}`,
-          chatId: message.chatId,
-          messageId: message.messageId,
-        });
-        return false;
-      }
-      taskMessage = {
-        ...message,
-        text: parsedHandoff.taskText,
-        handoffEnvelope: parsedHandoff.envelope,
-      };
-    }
+    const taskMessage = message;
     await syncDesktopThreadFollowing();
     if (generation !== inboundGeneration) {
       return false;

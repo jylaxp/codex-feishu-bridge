@@ -4,31 +4,31 @@ import test from 'node:test';
 import { HandoffChainStore } from '../../src/app/collaboration/handoff-chain-store';
 import type { HandoffEnvelope } from '../../src/app/collaboration/handoff-directive';
 
-test('handoff chain store accepts first inbound handoff and rejects duplicates', () => {
+test('handoff chain store reserves first outbound handoff and rejects duplicates', () => {
   let now = 1_000;
   const store = new HandoffChainStore({ now: () => now, cooldownMs: 1 });
   const envelope = handoffEnvelope({ expiresAtMs: 10_000 });
 
-  assert.deepEqual(store.acceptInbound(envelope, 'bot_bbbbbbbbbbbb'), { accepted: true });
-  assert.deepEqual(store.acceptInbound(envelope, 'bot_bbbbbbbbbbbb'), {
+  assert.deepEqual(store.reserveOutbound(envelope, 'bot_bbbbbbbbbbbb'), { accepted: true });
+  assert.deepEqual(store.reserveOutbound(envelope, 'bot_bbbbbbbbbbbb'), {
     accepted: false,
     reason: 'duplicate',
   });
   now = 11_000;
-  assert.deepEqual(store.acceptInbound(envelope, 'bot_bbbbbbbbbbbb'), {
+  assert.deepEqual(store.reserveOutbound(envelope, 'bot_bbbbbbbbbbbb'), {
     accepted: false,
     reason: 'expired',
   });
 });
 
-test('handoff chain store allows visited targets and still blocks hop overflow', () => {
+test('handoff chain store allows visited targets and still blocks outbound hop overflow', () => {
   const store = new HandoffChainStore({ now: () => 1_000, maxHops: 2 });
 
-  assert.deepEqual(store.acceptInbound(
+  assert.deepEqual(store.reserveOutbound(
     handoffEnvelope({ visitedBotKeys: ['bot_aaaaaaaaaaaa', 'bot_bbbbbbbbbbbb'] }),
     'bot_bbbbbbbbbbbb',
   ), { accepted: true });
-  assert.deepEqual(store.acceptInbound(
+  assert.deepEqual(store.reserveOutbound(
     handoffEnvelope({ hop: 3 }),
     'bot_bbbbbbbbbbbb',
   ), { accepted: false, reason: 'max_hops' });

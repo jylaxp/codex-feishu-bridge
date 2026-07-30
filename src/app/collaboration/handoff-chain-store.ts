@@ -23,10 +23,8 @@ export interface HandoffChainStoreOptions {
 
 export interface HandoffChainSnapshot {
   readonly emitted: number;
-  readonly accepted: number;
   readonly blocked: number;
   readonly duplicate: number;
-  readonly loopBlocked: number;
 }
 
 /** In-process guard for autonomous bot handoffs. It stores no prompt or answer content. */
@@ -38,7 +36,6 @@ export class HandoffChainStore {
   private readonly seenHandoffs = new Map<string, number>();
   private readonly pairCooldowns = new Map<string, number>();
   private emitted = 0;
-  private accepted = 0;
   private blocked = 0;
   private duplicate = 0;
 
@@ -75,25 +72,11 @@ export class HandoffChainStore {
     return { accepted: true };
   }
 
-  public acceptInbound(envelope: HandoffEnvelope, targetBotKey: string): HandoffChainDecision {
-    this.prune();
-    const decision = this.validateEnvelope(envelope, targetBotKey);
-    if (!decision.accepted) {
-      this.recordBlock(decision.reason);
-      return decision;
-    }
-    this.seenHandoffs.set(handoffKey(envelope, targetBotKey), envelope.expiresAtMs);
-    this.accepted += 1;
-    return { accepted: true };
-  }
-
   public snapshot(): HandoffChainSnapshot {
     return Object.freeze({
       emitted: this.emitted,
-      accepted: this.accepted,
       blocked: this.blocked,
       duplicate: this.duplicate,
-      loopBlocked: 0,
     });
   }
 

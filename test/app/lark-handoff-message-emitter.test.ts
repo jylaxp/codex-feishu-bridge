@@ -7,7 +7,7 @@ import {
   type LarkHandoffMessageApi,
 } from '../../src/app/lark/handoff-message-emitter';
 
-test('handoff emitter sends a post message with a real at element and envelope', async () => {
+test('handoff emitter sends a direct text mention with only the task', async () => {
   const creates: unknown[] = [];
   const emitter = new HandoffMessageEmitter(fakeApi(creates));
 
@@ -22,7 +22,7 @@ test('handoff emitter sends a post message with a real at element and envelope',
       task: '排查订单创建失败',
       reason: '需要订单域判断',
       contextSummary: 'requestId=req-1',
-      evidence: 'traceId=trace-1',
+      evidence: 'externalBotOpenId=ou_external',
       expectedOutput: '给出订单域结论',
     },
   });
@@ -34,30 +34,26 @@ test('handoff emitter sends a post message with a real at element and envelope',
   };
   assert.equal(request.params.receive_id_type, 'chat_id');
   assert.equal(request.data.receive_id, 'chat');
-  assert.equal(request.data.msg_type, 'post');
-  const content = JSON.parse(request.data.content) as {
-    readonly zh_cn: { readonly content: readonly unknown[][] };
-  };
-  assert.deepEqual(content.zh_cn.content[0]?.[0], {
-    tag: 'at',
-    user_id: 'ou_target',
-    user_name: 'Order Bot',
-  });
-  assert.match(JSON.stringify(content), /cfb-handoff v1/);
-  assert.match(JSON.stringify(content), /排查订单创建失败/);
+  assert.equal(request.data.msg_type, 'text');
+  const content = JSON.parse(request.data.content) as { readonly text: string };
+  assert.equal(content.text, '<at user_id="ou_target">Order Bot</at> 排查订单创建失败');
+  assert.doesNotMatch(content.text, /需要订单域判断/);
+  assert.doesNotMatch(content.text, /requestId=req-1/);
+  assert.doesNotMatch(content.text, /externalBotOpenId/);
+  assert.doesNotMatch(content.text, /cfb-handoff/);
 });
 
-test('handoff emitter falls back to text when post is rejected', async () => {
+test('handoff emitter falls back to post when text is rejected', async () => {
   const creates: unknown[] = [];
   const emitter = new HandoffMessageEmitter({
     im: {
       message: {
         create: async (payload) => {
           creates.push(payload);
-          if (payload.data.msg_type === 'post') {
-            return { code: 999, msg: 'post rejected' };
+          if (payload.data.msg_type === 'text') {
+            return { code: 999, msg: 'text rejected' };
           }
-          return { code: 0, data: { message_id: 'message-text-handoff' } };
+          return { code: 0, data: { message_id: 'message-post-handoff' } };
         },
       },
     },
@@ -75,14 +71,22 @@ test('handoff emitter falls back to text when post is rejected', async () => {
     },
   });
 
-  assert.equal(messageId, 'message-text-handoff');
+  assert.equal(messageId, 'message-post-handoff');
   assert.equal(creates.length, 2);
   const fallback = creates[1] as {
     readonly data: { readonly msg_type: string; readonly content: string };
   };
-  assert.equal(fallback.data.msg_type, 'text');
-  assert.match(fallback.data.content, /<at user_id=\\"ou_target\\">Order Bot<\/at>/);
-  assert.match(fallback.data.content, /cfb-handoff v1/);
+  assert.equal(fallback.data.msg_type, 'post');
+  const content = JSON.parse(fallback.data.content) as {
+    readonly zh_cn: { readonly content: readonly unknown[][] };
+  };
+  assert.deepEqual(content.zh_cn.content[0]?.[0], {
+    tag: 'at',
+    user_id: 'ou_target',
+    user_name: 'Order Bot',
+  });
+  assert.match(JSON.stringify(content), /排查订单创建失败/);
+  assert.doesNotMatch(JSON.stringify(content), /cfb-handoff/);
 });
 
 test('handoff emitter can send a plain group member mention without a handoff envelope', async () => {

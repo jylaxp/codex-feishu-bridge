@@ -117,9 +117,9 @@ sequenceDiagram
   Bridge->>Codex: Search Bot task
   Codex-->>Bridge: final answer + cfb-handoff directive
   Bridge->>Feishu: Search Bot updates/sends result card
-  Bridge->>Feishu: Search Bot posts text/post "@Order Bot" handoff message
+  Bridge->>Feishu: Search Bot posts text "@Order Bot <任务>"
   Feishu->>Bridge: im.message.receive_v1 sender_type=bot for Order Bot
-  Bridge->>Bridge: validate Order Bot enabled, group bound, responds to mentions, chain guard
+  Bridge->>Bridge: validate Order Bot enabled, group bound, responds to mentions
   Bridge->>Codex: Order Bot task on its bound thread
   Codex-->>Bridge: Order Bot result
   Bridge->>Feishu: Order Bot result card
@@ -129,18 +129,13 @@ sequenceDiagram
 
 跨渠道消息渲染抽象单独定义在 `docs/plans/2026-07-28-003-feat-channel-neutral-message-renderer-plan.zh-CN.md`。本文只依赖该层渲染有边界的机器人/用户 mention 消息，并保留任务卡片输出。
 
-handoff envelope 形态：
+可见 handoff 消息形态：
 
 ```text
-@Order Bot
-[cfb-handoff v1 chain=... handoff=... from=search-bot hop=1 ttl=...]
-目标: 排查订单创建失败是否由库存/锁座/下单参数导致
-上下文摘要: Search Bot 已确认搜索接口返回了可下单价格...
-证据: requestId=..., searchTraceId=...
-期望输出: 给出订单域判断、下一步动作和需要搜索域补充的信息
+@Order Bot 排查订单创建失败是否由库存、锁座或下单参数导致。
 ```
 
-envelope 刻意保持人类可读。bridge 可以解析结构化 header，但群成员也能理解为什么调用目标机器人。
+可见群消息刻意保持普通聊天形态。Bridge 不再发送或解析可见 handoff envelope；内部 chain ID 只留在源侧进程内，用于发送去重和限流。
 
 ---
 
@@ -226,7 +221,7 @@ envelope 刻意保持人类可读。bridge 可以解析结构化 header，但群
   - 目标机器人已启用，
   - 目标群 binding 存在，
   - 目标机器人响应群 @，
-  - sender 是机器人时 chain guard 接受 envelope。
+  - 机器人发送者消息在目标机器人 mention 被标准化移除后，就是普通任务文本。
 - 不校验 tenant_key 归属、成员白名单、source bot 白名单或 source-target grant。
 - 即使目标机器人接受普通任务 @，也不执行机器人发送者发来的命令。
 - 只有目标机器人本地已知且失败原因安全可暴露时，才返回明确的禁用/不可用/未绑定原因。
@@ -265,15 +260,15 @@ envelope 刻意保持人类可读。bridge 可以解析结构化 header，但群
 **实现思路：**
 
 - 新增一个小型 sender，用源机器人的 Lark 凭据向当前群 send 或 reply 一条 text/post 消息。
-- bot-to-bot handoff 包含真实目标机器人 mention 和有边界的人类可读 handoff envelope。
+- bot-to-bot handoff 只包含真实目标机器人 mention 和有边界的任务文本。
 - bot-to-human notification 包含真实用户 mention 和短通知正文，但不得创建 bridge task。
 - 对外部 owner 管理的机器人，在源机器人收到群消息、完成群绑定、Bridge 启动后发现新版本群绑定，或收到机器人成员事件时，通过 `GET /open-apis/im/v1/chats/:chat_id/members/bots` 刷新飞书群机器人列表，并把发现到的外部机器人 open ID 写入 `external-bots.json`。
 - 新绑定写入 `chatType` 元数据，启动回填只扫描 `chatType=group` 的绑定。历史绑定没有该字段时，通过下一次群内 @ 或重新 `/bind` 补齐发现目录，避免把私聊绑定误当群聊批量调用群成员接口。
 - 将机器人成员事件视为加速器，而不是唯一发现路径。飞书 bot-added 事件会推送给新进群机器人，且机器人邀请机器人可能不触发该事件，因此仍需要普通群消息刷新兜底。
 - 不把任务结果卡片、卡片 `lark_md` 或卡片标题 mention 当作自动触发目标机器人的路径。卡片可以展示 handoff 摘要和人工控件，但目标机器人必须由单独 text/post 消息调用。
-- 优先用 `post` 表达结构化 handoff 内容，因为它能携带目标 mention、摘要、证据和期望输出；保留 `text` 作为最小可用 fallback。
+- 优先用 `text` 表达最像普通群聊的触发消息。只有当渠道拒绝 text 创建时，才用 `post` 作为 fallback。
 - 使用基于 `chainId + handoffId + sourceBotKey + targetBotKey` 的飞书 `uuid` 做发送去重。
-- 限制 envelope 大小，并移除原始推理、凭证、原始日志、本地路径和超大上下文。
+- 限制任务文本大小，并移除原始推理、凭证、原始日志、本地路径和超大上下文。
 - 生产 rollout 前通过飞书 API explorer 验证目标机器人和用户 mention 格式。在验证前将 emitter 放在 feature flag 后。
 
 **遵循模式：** 现有 `CardKitClient` 和 reply/send card 幂等处理。
@@ -397,13 +392,13 @@ envelope 刻意保持人类可读。bridge 可以解析结构化 header，但群
   - per source-target pair cooldown。
 - MVP 验证默认最大跳数为 1。只有一跳行为稳定后才提高到 2。
 - 遇到过期 chain、超过最大跳数、重复 handoff ID 或 cooldown 命中时停止。不因为目标出现在 advisory visited set 中就停止。
-- 发布无内容计数器：emitted、accepted、blocked、duplicate。为了兼容 health schema，visited-loop 校验禁用后已废弃的 loop-blocked 字段保持为 0。
+- 发布不含内容的 outbound 计数器：emitted、blocked、duplicate。
 - 重启会丢失内存 guard；重启后依赖飞书 message ID 和 send UUID 降低重复风险。
 
 **遵循模式：** 现有 in-memory task scheduler 和 runtime health publisher。
 
 **测试场景：**
-- chain 中第一个 handoff 被接受并记录。
+- chain 中第一个 outbound handoff 被预留并记录。
 - 重复 handoff ID 被拒绝。
 - MVP 中，即使目标已在 advisory visited set 中也允许 handoff。
 - max hop 和 TTL 被执行。
@@ -539,7 +534,7 @@ envelope 刻意保持人类可读。bridge 可以解析结构化 header，但群
 | mention 消息没有渲染成真实 bot/user mention | API explorer/live group 验证 mention 语法前，将 emitter 放在 feature flag 后 |
 | 误把卡片 mention 当作 bot trigger | 文档和测试明确双消息模型：卡片用于展示，text/post 用于自动 `@bot` 触发 |
 | 失败导致群噪声 | 未知/已移除 bot 保持静默；本地已知失败用短的不可执行原因卡片 |
-| secret/context 泄漏 | handoff envelope 限长、sanitizer、redaction，用 evidence ID 替代原始日志 |
+| secret/context 泄漏 | handoff 任务文本限长、sanitizer 和 redaction；可见 mention 消息不暴露内部 ID 或原始日志 |
 | 同一 ChatGPT thread 并发写入 | 现有 scheduler 继续按 thread ID 对所有 bot 串行 |
 | 方案看似跨平台但执行仅 macOS | 文档说明 protocol/runner 分离；doctor 报告 route/platform readiness；跨平台群优先 App Server stable |
 | Windows named-pipe endpoint spoofing | Windows Desktop IPC 在 native owner/session attestation 实现前保持 fail-closed |

@@ -3,7 +3,6 @@ import { createHash, randomUUID } from 'node:crypto';
 const MAX_FIELD_LENGTH = 2_000;
 const MAX_VISIBLE_TEXT_LENGTH = 32_000;
 const DIRECTIVE_BLOCK_PATTERN = /```cfb-handoff\s*([\s\S]*?)```/i;
-const HEADER_PATTERN = /^\[cfb-handoff v1\s+([^\]]+)\]\s*$/m;
 const SECRET_PATTERNS = [
   /\b(?:sk|token|secret|password|passwd|api[_-]?key)\s*[:=]\s*\S+/gi,
   /\b[A-Za-z0-9_-]{24,}\.[A-Za-z0-9_-]{24,}\.[A-Za-z0-9_-]{24,}\b/g,
@@ -31,11 +30,6 @@ export interface HandoffEnvelope {
   readonly hop: number;
   readonly expiresAtMs: number;
   readonly visitedBotKeys: readonly string[];
-}
-
-export interface ParsedHandoffEnvelope {
-  readonly envelope: HandoffEnvelope;
-  readonly taskText: string;
 }
 
 export function parseHandoffDirective(finalAnswer: string): ParsedHandoffDirective | null {
@@ -71,53 +65,6 @@ export function parseHandoffDirective(finalAnswer: string): ParsedHandoffDirecti
     }),
     visibleText,
   });
-}
-
-export function parseHandoffEnvelope(text: string): ParsedHandoffEnvelope | null {
-  const match = HEADER_PATTERN.exec(text);
-  if (!match?.[1]) {
-    return null;
-  }
-  const params = parseHeaderParams(match[1]);
-  const chainId = validOpaqueId(params.get('chain'));
-  const handoffId = validOpaqueId(params.get('handoff'));
-  const sourceBotKey = validBotKey(params.get('from'));
-  const hop = integerValue(params.get('hop'));
-  const expiresAtMs = integerValue(params.get('ttl'));
-  if (!chainId || !handoffId || !sourceBotKey || hop === null || expiresAtMs === null) {
-    return null;
-  }
-  const visitedBotKeys = (params.get('visited') ?? sourceBotKey)
-    .split(',')
-    .map((value) => validBotKey(value))
-    .filter((value): value is string => value !== null);
-  const taskText = text.replace(match[0], '').trim();
-  if (!taskText) {
-    return null;
-  }
-  return Object.freeze({
-    envelope: Object.freeze({
-      chainId,
-      handoffId,
-      sourceBotKey,
-      hop,
-      expiresAtMs,
-      visitedBotKeys: Object.freeze([...new Set(visitedBotKeys)]),
-    }),
-    taskText,
-  });
-}
-
-export function buildHandoffEnvelopeText(envelope: HandoffEnvelope): string {
-  const fields = [
-    `chain=${envelope.chainId}`,
-    `handoff=${envelope.handoffId}`,
-    `from=${envelope.sourceBotKey}`,
-    `hop=${envelope.hop}`,
-    `ttl=${envelope.expiresAtMs}`,
-    `visited=${envelope.visitedBotKeys.join(',')}`,
-  ].join(' ');
-  return `[cfb-handoff v1 ${fields}]`;
 }
 
 export function createRootHandoffEnvelope(
@@ -202,34 +149,6 @@ function firstField(fields: ReadonlyMap<string, string>, names: readonly string[
     }
   }
   return undefined;
-}
-
-function parseHeaderParams(source: string): ReadonlyMap<string, string> {
-  const params = new Map<string, string>();
-  for (const token of source.split(/\s+/)) {
-    const index = token.indexOf('=');
-    if (index <= 0) {
-      continue;
-    }
-    params.set(token.slice(0, index), token.slice(index + 1));
-  }
-  return params;
-}
-
-function validOpaqueId(value: string | undefined): string | null {
-  return value && /^[A-Za-z0-9_-]{3,64}$/.test(value) ? value : null;
-}
-
-function validBotKey(value: string | undefined): string | null {
-  return value && /^(?:default|bot_[a-z2-7][a-z2-7]{11,59})$/.test(value) ? value : null;
-}
-
-function integerValue(value: string | undefined): number | null {
-  if (!value || !/^\d{1,16}$/.test(value)) {
-    return null;
-  }
-  const parsed = Number(value);
-  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
 }
 
 function boundedText(value: string, maxLength: number): string {

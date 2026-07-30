@@ -117,9 +117,9 @@ sequenceDiagram
   Bridge->>Codex: Search Bot task
   Codex-->>Bridge: final answer + cfb-handoff directive
   Bridge->>Feishu: Search Bot updates/sends result card
-  Bridge->>Feishu: Search Bot posts text/post "@Order Bot" handoff message
+  Bridge->>Feishu: Search Bot posts text "@Order Bot <task>"
   Feishu->>Bridge: im.message.receive_v1 sender_type=bot for Order Bot
-  Bridge->>Bridge: validate Order Bot enabled, group bound, responds to mentions, chain guard
+  Bridge->>Bridge: validate Order Bot enabled, group bound, responds to mentions
   Bridge->>Codex: Order Bot task on its bound thread
   Codex-->>Bridge: Order Bot result
   Bridge->>Feishu: Order Bot result card
@@ -129,18 +129,13 @@ Use a double-message model for collaboration. Cards remain the display and inter
 
 The cross-channel message rendering abstraction is defined separately in `docs/plans/2026-07-28-003-feat-channel-neutral-message-renderer-plan.md`. This document only depends on that layer for rendering bounded bot/user mention messages and preserving task card output.
 
-Handoff envelope shape:
+Visible handoff message shape:
 
 ```text
-@Order Bot
-[cfb-handoff v1 chain=... handoff=... from=search-bot hop=1 ttl=...]
-目标: 排查订单创建失败是否由库存/锁座/下单参数导致
-上下文摘要: Search Bot 已确认搜索接口返回了可下单价格...
-证据: requestId=..., searchTraceId=...
-期望输出: 给出订单域判断、下一步动作和需要搜索域补充的信息
+@Order Bot 排查订单创建失败是否由库存、锁座或下单参数导致。
 ```
 
-The envelope is intentionally human-readable. Bridge may parse the structured header, but group members can still understand why the target bot was called.
+The visible group message intentionally looks like normal human chat. Bridge no longer emits or parses a visible handoff envelope; internal chain IDs remain process-local for source-side send de-duplication and rate limiting.
 
 ---
 
@@ -226,7 +221,7 @@ The envelope is intentionally human-readable. Bridge may parse the structured he
   - target bot is enabled,
   - target group binding exists,
   - target bot responds to group mentions,
-  - chain guard accepts the envelope when the sender is a bot.
+  - bot sender messages are ordinary task text after the target bot mention is normalized away.
 - Do not check tenant-key membership, member allowlists, source bot allowlists, or source-target grants.
 - Do not execute commands from bot senders even when the target bot accepts ordinary task mentions.
 - Return an explicit disabled/unavailable/unbound reason only when the target bot is locally known and the failure is safe to reveal.
@@ -265,15 +260,15 @@ The envelope is intentionally human-readable. Bridge may parse the structured he
 **Approach:**
 
 - Add a small sender that uses the source bot's Lark credentials to send or reply with a text/post message into the current group.
-- For bot-to-bot handoff, include a real target-bot mention and a bounded human-readable handoff envelope.
+- For bot-to-bot handoff, include a real target-bot mention and the bounded task text only.
 - For bot-to-human notification, include a real user mention and a short notification body. This must not create a bridge task.
 - For externally owned bots, refresh Feishu's group-bot list through `GET /open-apis/im/v1/chats/:chat_id/members/bots` when the source bot receives a group message, completes a group binding, starts with new-version group bindings, or receives bot membership events. Store discovered external bot open IDs in `external-bots.json`.
 - New bindings store `chatType` metadata, and startup backfill scans only `chatType=group` bindings. Older bindings without that field are refreshed by the next group mention or by re-running `/bind`, avoiding accidental bulk group-member calls for private bindings.
 - Treat bot membership events as accelerators, not the only discovery path. Feishu's bot-added event is delivered to the newly added bot and robot-invites-robot may not trigger it, so ordinary group-message refresh remains required.
 - Do not use task result cards, card `lark_md`, or card title mentions as the automatic trigger for the target bot. Cards may include a visible handoff summary and manual controls, but the target bot must be invoked by the separate text/post message.
-- Prefer `post` for structured handoff content because it can carry a target mention, summary, evidence, and expected output in a readable shape. Keep `text` as the fallback for the smallest viable trigger.
+- Prefer `text` for the smallest human-chat-style trigger. Keep `post` only as a fallback if text creation is rejected by the channel.
 - Use Feishu `uuid` for send de-duplication based on `chainId + handoffId + sourceBotKey + targetBotKey`.
-- Cap envelope size and strip raw reasoning, credentials, raw logs, local paths, and oversized context.
+- Cap task text and strip raw reasoning, credentials, raw logs, local paths, and oversized context.
 - Verify target bot and user mention formatting through Feishu API explorer before production rollout. Until verified, keep the emitter behind a feature flag.
 
 **Patterns to follow:** Existing `CardKitClient` and reply/send card idempotency handling.
@@ -397,13 +392,13 @@ The envelope is intentionally human-readable. Bridge may parse the structured he
   - per source-target pair cooldown.
 - Default max hop count to 1 for MVP validation. Raise to 2 only after one-hop behavior is stable.
 - Stop on expired chain, max-hop breach, duplicate handoff ID, or cooldown breach. Do not stop solely because the target appears in the advisory visited set.
-- Publish content-free counters: emitted, accepted, blocked, and duplicate. Keep the deprecated loop-blocked field at zero for health-schema compatibility while visited-loop validation is disabled.
+- Publish content-free outbound counters: emitted, blocked, and duplicate.
 - Treat restart as loss of in-memory guard; rely on Feishu message IDs and send UUIDs for duplicate reduction after restart.
 
 **Patterns to follow:** Existing in-memory task scheduler and runtime health publisher.
 
 **Test scenarios:**
-- First handoff in a chain is accepted and recorded.
+- First outbound handoff in a chain is reserved and recorded.
 - Duplicate handoff ID is rejected.
 - A target already present in the advisory visited set is still allowed in the MVP.
 - Max hop and TTL are enforced.
@@ -539,7 +534,7 @@ The envelope is intentionally human-readable. Bridge may parse the structured he
 | Mention message does not render as a real bot/user mention | Keep emitter behind feature flag until API explorer/live group verifies mention syntax |
 | Card mention is mistaken for a bot trigger | Document and test the double-message model: card for display, text/post for automatic `@bot` trigger |
 | Group noise from failures | Unknown/removed bots stay silent; known local failures use short non-actionable reason cards |
-| Secret/context leakage | Handoff envelope cap, sanitizer, redaction, evidence IDs instead of raw logs |
+| Secret/context leakage | Handoff task cap, sanitizer, and redaction; do not expose internal IDs or raw logs in the visible mention message |
 | Same ChatGPT thread concurrent writes | Existing scheduler remains keyed by thread ID across all bots |
 | Plan appears cross-platform while execution is macOS-only | Document protocol/runner separation; doctor reports route/platform readiness; prefer App Server stable for cross-platform groups |
 | Windows named-pipe endpoint spoofing | Keep Windows Desktop IPC fail-closed until native owner/session attestation is implemented |

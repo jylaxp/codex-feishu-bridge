@@ -2,10 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  buildHandoffEnvelopeText,
-  createChildHandoffEnvelope,
   parseHandoffDirective,
-  parseHandoffEnvelope,
   sanitizeHandoffField,
 } from '../../src/app/collaboration/handoff-directive';
 
@@ -27,22 +24,6 @@ test('handoff directive parser extracts a fenced directive and strips it from vi
   assert.equal(parsed?.directive.task, '排查订单创建失败');
   assert.equal(parsed?.directive.contextSummary, 'requestId=req-1');
   assert.equal(parsed?.visibleText, '搜索侧已确认价格有效。');
-});
-
-test('handoff envelope round-trips through the visible group message header', () => {
-  const envelope = createChildHandoffEnvelope({
-    chainId: 'ch_aaaaaaaaaaaaaaaaaaaaaaaa',
-    sourceBotKey: 'bot_aaaaaaaaaaaa',
-    hop: 2,
-    expiresAtMs: 2_000,
-    visitedBotKeys: ['bot_aaaaaaaaaaaa', 'bot_bbbbbbbbbbbb'],
-    seed: 'seed',
-  });
-  const text = `${buildHandoffEnvelopeText(envelope)}\n目标: 继续排查`;
-  const parsed = parseHandoffEnvelope(text);
-
-  assert.deepEqual(parsed?.envelope, envelope);
-  assert.equal(parsed?.taskText, '目标: 继续排查');
 });
 
 test('handoff sanitizer redacts obvious secrets and local paths', () => {

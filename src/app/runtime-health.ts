@@ -23,10 +23,8 @@ export interface RuntimeTaskHealth {
 
 export interface RuntimeCollaborationHealth {
   readonly emitted: number;
-  readonly accepted: number;
   readonly blocked: number;
   readonly duplicate: number;
-  readonly loopBlocked: number;
 }
 
 /** Whether a followed task thread currently has a routable ChatGPT Desktop owner. */

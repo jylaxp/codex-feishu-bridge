@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 
 import {
-  buildHandoffEnvelopeText,
   sanitizeHandoffField,
   type HandoffDirective,
   type HandoffEnvelope,
@@ -53,15 +52,6 @@ export class HandoffMessageEmitter {
 
   public async send(message: HandoffMessage): Promise<string> {
     const uuid = handoffUuid(message);
-    const postResult = await this.tryCreateMessage(
-      message.chatId,
-      'post',
-      uuid,
-      JSON.stringify(postContent(message)),
-    );
-    if (postResult.status === 'sent') {
-      return postResult.messageId;
-    }
     const textResult = await this.tryCreateMessage(
       message.chatId,
       'text',
@@ -71,8 +61,17 @@ export class HandoffMessageEmitter {
     if (textResult.status === 'sent') {
       return textResult.messageId;
     }
+    const postResult = await this.tryCreateMessage(
+      message.chatId,
+      'post',
+      uuid,
+      JSON.stringify(postContent(message)),
+    );
+    if (postResult.status === 'sent') {
+      return postResult.messageId;
+    }
     throw new HandoffMessageEmitterError(
-      `Lark handoff message rejected: ${postResult.rejection}; text fallback rejected: ${textResult.rejection}`,
+      `Lark handoff message rejected: ${textResult.rejection}; post fallback rejected: ${postResult.rejection}`,
     );
   }
 
@@ -137,7 +136,6 @@ export class HandoffMessageEmitterError extends Error {
 function postContent(message: HandoffMessage): object {
   return {
     zh_cn: {
-      title: 'Codex Bridge Handoff',
       content: [
         [
           {
@@ -145,14 +143,8 @@ function postContent(message: HandoffMessage): object {
             user_id: message.targetBotOpenId,
             user_name: message.targetBotName,
           },
-          { tag: 'text', text: ' 请继续处理以下任务。' },
+          { tag: 'text', text: ` ${handoffTaskText(message)}` },
         ],
-        [{ tag: 'text', text: buildHandoffEnvelopeText(message.envelope) }],
-        [{ tag: 'text', text: `目标: ${sanitizeHandoffField(message.directive.task) ?? '继续处理'}` }],
-        ...optionalLine('原因', message.directive.reason),
-        ...optionalLine('上下文摘要', message.directive.contextSummary),
-        ...optionalLine('证据', message.directive.evidence),
-        ...optionalLine('期望输出', message.directive.expectedOutput),
       ],
     },
   };
@@ -176,22 +168,8 @@ function userMentionPostContent(message: UserMentionMessage): object {
   };
 }
 
-function optionalLine(label: string, value: string | undefined): readonly object[][] {
-  const text = sanitizeHandoffField(value);
-  return text ? [[{ tag: 'text', text: `${label}: ${text}` }]] : [];
-}
-
 function textContent(message: HandoffMessage): { readonly text: string } {
-  const lines = [
-    `${atText(message.targetBotOpenId, message.targetBotName)} 请继续处理以下任务。`,
-    buildHandoffEnvelopeText(message.envelope),
-    `目标: ${sanitizeHandoffField(message.directive.task) ?? '继续处理'}`,
-    ...optionalTextLine('原因', message.directive.reason),
-    ...optionalTextLine('上下文摘要', message.directive.contextSummary),
-    ...optionalTextLine('证据', message.directive.evidence),
-    ...optionalTextLine('期望输出', message.directive.expectedOutput),
-  ];
-  return { text: lines.join('\n') };
+  return { text: `${atText(message.targetBotOpenId, message.targetBotName)} ${handoffTaskText(message)}` };
 }
 
 function userMentionTextContent(message: UserMentionMessage): { readonly text: string } {
@@ -204,9 +182,8 @@ function mentionText(value: string): string {
   return sanitizeHandoffField(value) ?? '请关注这条消息。';
 }
 
-function optionalTextLine(label: string, value: string | undefined): readonly string[] {
-  const text = sanitizeHandoffField(value);
-  return text ? [`${label}: ${text}`] : [];
+function handoffTaskText(message: HandoffMessage): string {
+  return sanitizeHandoffField(message.directive.task) ?? '继续处理一下。';
 }
 
 function atText(openId: string, name: string): string {

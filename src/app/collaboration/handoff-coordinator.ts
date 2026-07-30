@@ -6,7 +6,6 @@ import type {
 } from '../external-bot-directory';
 import type { HandoffMessageEmitter } from '../lark/handoff-message-emitter';
 import {
-  createChildHandoffEnvelope,
   createRootHandoffEnvelope,
   parseHandoffDirective,
   type HandoffDirective,
@@ -23,7 +22,6 @@ export interface TerminalHandoffContext {
   readonly threadId: string;
   readonly finalAnswer: string;
   readonly binding: ChatThreadBinding;
-  readonly inboundEnvelope?: HandoffEnvelope;
 }
 
 export interface TerminalHandoffProjection {
@@ -172,10 +170,6 @@ export class HandoffCoordinator {
     };
   }
 
-  public acceptInboundHandoff(envelope: HandoffEnvelope, targetBotKey: string) {
-    return this.chainStore.acceptInbound(envelope, targetBotKey);
-  }
-
   public snapshot() {
     return this.chainStore.snapshot();
   }
@@ -188,23 +182,12 @@ export class HandoffCoordinator {
       context.messageId,
       context.finalAnswer,
     ].join('\0');
-    const parent = context.inboundEnvelope;
-    if (!parent) {
-      return createRootHandoffEnvelope(
-        context.sourceBotKey,
-        this.now(),
-        this.chainStore.ttlMs(),
-        seed,
-      );
-    }
-    return createChildHandoffEnvelope({
-      chainId: parent.chainId,
-      sourceBotKey: context.sourceBotKey,
-      hop: parent.hop + 1,
-      expiresAtMs: parent.expiresAtMs,
-      visitedBotKeys: [...parent.visitedBotKeys, context.sourceBotKey],
+    return createRootHandoffEnvelope(
+      context.sourceBotKey,
+      this.now(),
+      this.chainStore.ttlMs(),
       seed,
-    });
+    );
   }
 }
 

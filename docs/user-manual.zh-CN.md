@@ -389,7 +389,7 @@ ALLOW_GROUP_BOT_MENTIONS=true
 
 ### 9.3 触发 bot-to-bot handoff
 
-源机器人最终答案中需要包含 `cfb-handoff` directive。Bridge 会额外发一条真实飞书 `post` 消息 `@目标机器人`，目标机器人收到后作为普通任务处理。
+源机器人最终答案中需要包含 `cfb-handoff` directive。Bridge 会额外发一条真实飞书 `text` 消息，内容就是 `@目标机器人 要处理的事情`。目标机器人收到后按普通任务处理。
 
 示例：
 
