@@ -619,15 +619,47 @@ export async function startBridge(
       return false;
     }
     await syncDesktopThreadFollowing();
-    const snapshotAvailable = await desktop.waitForThreadFollowingSnapshot(
+    let snapshotAvailable = await desktop.waitForThreadFollowingSnapshot(
       binding.threadId,
       BINDING_DESKTOP_SNAPSHOT_TIMEOUT_MS,
     );
     if (!snapshotAvailable || !normalizer.hasThreadSnapshot(binding.threadId)) {
-      throw new Error('Desktop thread snapshot is unavailable for binding projection');
+      logger.info('binding_active_turn_projection_route_recovery_started', {
+        chatId: binding.chatId,
+        threadId: binding.threadId,
+      });
+      try {
+        await navigation.openThread(binding.threadId);
+        await syncDesktopThreadFollowing();
+        snapshotAvailable = await desktop.waitForThreadFollowingSnapshot(
+          binding.threadId,
+          BINDING_DESKTOP_SNAPSHOT_TIMEOUT_MS,
+        );
+      } catch (error) {
+        logger.error('binding_active_turn_projection_route_recovery_failed', error, {
+          chatId: binding.chatId,
+          threadId: binding.threadId,
+          timeoutMs: BINDING_DESKTOP_SNAPSHOT_TIMEOUT_MS,
+        });
+        return false;
+      }
+    }
+    if (!snapshotAvailable || !normalizer.hasThreadSnapshot(binding.threadId)) {
+      logger.warn('binding_active_turn_projection_unavailable', {
+        chatId: binding.chatId,
+        threadId: binding.threadId,
+        snapshotAvailable,
+        hasThreadSnapshot: normalizer.hasThreadSnapshot(binding.threadId),
+        timeoutMs: BINDING_DESKTOP_SNAPSHOT_TIMEOUT_MS,
+      });
+      return false;
     }
     const notifications = normalizer.activeTurnSnapshot(binding.threadId);
     if (notifications.length === 0) {
+      logger.info('binding_active_turn_projection_skipped_no_active_turn', {
+        chatId: binding.chatId,
+        threadId: binding.threadId,
+      });
       return false;
     }
     for (const notification of notifications) {

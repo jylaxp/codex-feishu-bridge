@@ -136,6 +136,76 @@ test('binding skips history when Desktop projection reports active turn', async 
   assert.equal(catalogRequests, 0);
 });
 
+test('binding sends a failure card when latest history cannot be read', async () => {
+  const sentCards: Array<{ readonly chatId: string; readonly cardId: string; readonly idempotencyKey?: string }> = [];
+  const createdCards: CardKitJson[] = [];
+  const logs: Array<{
+    readonly level: string;
+    readonly event: string;
+    readonly error?: unknown;
+    readonly fields?: Readonly<Record<string, string | number | boolean | null>>;
+  }> = [];
+  const catalog: BindingCatalogV3 = {
+    request: async () => {
+      throw Object.assign(
+        new Error('App Server control-plane request failed'),
+        { code: 'REQUEST_FAILED', name: 'AppServerControlPlaneError' },
+      );
+    },
+  };
+  const cards: BindingCardsV3 = {
+    createCard: async (card: CardKitJson) => {
+      createdCards.push(card);
+      return `card-${createdCards.length}`;
+    },
+    replyCard: async () => 'message',
+    sendCard: async (chatId, cardId, idempotencyKey) => {
+      sentCards.push({ chatId, cardId, idempotencyKey });
+      return 'message';
+    },
+    replaceCard: async (_cardId, _card, sequence) => sequence + 1,
+  };
+  const store = {
+    get: () => binding,
+  } as unknown as BindingStore;
+  const service = new ConversationBindingServiceV3(
+    config,
+    store,
+    catalog,
+    cards,
+    undefined,
+    undefined,
+    {
+      info: (event, fields) => logs.push({ level: 'info', event, fields }),
+      warn: (event, fields) => logs.push({ level: 'warn', event, fields }),
+      error: (event, error, fields) => logs.push({ level: 'error', event, error, fields }),
+    },
+    undefined,
+    undefined,
+    async () => false,
+  );
+
+  await (service as unknown as {
+    completeBindingSideEffects(
+      selectedBinding: ChatThreadBinding,
+      messageId: string,
+    ): Promise<void>;
+  }).completeBindingSideEffects(binding, 'picker-message');
+
+  assert.deepEqual(logs.filter((log) => log.level === 'error').map((log) => log.event), ['history_push_failed']);
+  const failureLog = logs.find((log) => log.event === 'history_push_failed');
+  assert.equal(failureLog?.fields?.source, 'card_action');
+  assert.equal(failureLog?.fields?.threadId, binding.threadId);
+  assert.equal(failureLog?.fields?.idempotencyPrefix, 'history:picker-message:thread-active');
+  assert.equal((failureLog?.error as { readonly code?: unknown } | undefined)?.code, 'REQUEST_FAILED');
+  assert.equal(sentCards.length, 1);
+  assert.equal(sentCards[0]?.chatId, binding.chatId);
+  assert.equal(sentCards[0]?.idempotencyKey, 'history:picker-message:thread-active:history-failed');
+  assert.match(JSON.stringify(createdCards[0]), /绑定已完成/);
+  assert.match(JSON.stringify(createdCards[0]), /历史推送失败/);
+  assert.match(JSON.stringify(createdCards[0]), /REQUEST_FAILED/);
+});
+
 for (const command of ['/l', '/ll']) {
   test(`${command} scans thread/list pages before filtering by local workspace`, async () => {
     await assertCommandScansThreadListPages(command);
