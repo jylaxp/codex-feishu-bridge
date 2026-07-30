@@ -1,0 +1,31 @@
+src/app/main.ts
+  s_c54cf697e76a51::t_ad3cf2bd194a57 361,366-377,379-380,382-386,388-389,393-394,398-401
+  s_c54cf697e76a51::t_1b6b0f99e512c4 378,381,387,390-392
+test/app/conversation-binding-service-v3.test.ts
+  s_c54cf697e76a51::t_5df76c0f4da212 139-144,176-178,193-197
+  s_c54cf697e76a51::t_394d2e91fd2f1f 137-138,145-146,151-175,179-191,198-199,201,204-205
+  s_c54cf697e76a51::t_62c4005257401c 136,147-150,192,200,202-203
+src/app/conversation-binding-service-v3.ts
+  s_c54cf697e76a51::t_995bd23d594934 393,395,399,402,405,409,412,1132-1133,1136,1138
+  s_c54cf697e76a51::t_a85ddd67aa3c69 394,396-398,400-401,403-404,406-408,410-411
+  s_c54cf697e76a51::t_cc2c32c56e47d8 470-484
+  s_c54cf697e76a51::t_d0914dfb91ffb5 485-496
+  s_c54cf697e76a51::t_aa082200d80dd5 1134-1135,1137,1139-1143
+  s_c54cf697e76a51::t_faa1cb000b4bd8 413-414
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.18",
+  "base_commit_sha": "6e99433557fd42f0ad2568ce7392a4d77b9a66ef",
+  "prompts": {},
+  "sessions": {
+    "s_c54cf697e76a51": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5e80-7c30-7a71-a434-09aeae22cce8",
+        "model": "gpt-5.5"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    }
+  }
+}
