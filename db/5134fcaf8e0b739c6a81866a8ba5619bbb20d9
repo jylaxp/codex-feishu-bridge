@@ -1,0 +1,61 @@
+README.md
+  s_7aa13d4c94b804::t_5956f1cf97a9a5 82,96,98,100,103,106
+  s_7aa13d4c94b804::t_e73bbc74108a2f 299
+docs/plans/2026-07-27-001-feat-multi-lark-bot-bridge-plan.zh-CN.md
+  s_7aa13d4c94b804::t_e73bbc74108a2f 328,602
+  s_7aa13d4c94b804::t_204bfb316da174 611
+docs/plans/2026-07-27-001-feat-multi-lark-bot-bridge-plan.md
+  s_7aa13d4c94b804::t_e73bbc74108a2f 328,602
+  s_7aa13d4c94b804::t_204bfb316da174 325,611
+src/app/main.ts
+  s_7aa13d4c94b804::t_c01346b13e81ab 10,164,170,1336-1338,1368
+src/app/config.ts
+  s_7aa13d4c94b804::t_238d7e4b095a84 70-74,192-193
+docs/user-manual.zh-CN.md
+  s_7aa13d4c94b804::t_3218f65f8a6286 78,81-82,85,88,91
+  s_7aa13d4c94b804::t_204bfb316da174 330,334
+src/app/cli.ts
+  s_7aa13d4c94b804::t_8b988b7cce9207 553,555
+test/app/config-reset.test.ts
+  s_7aa13d4c94b804::t_9f5775ea178ff9 27,54-55
+test/app/setup.test.ts
+  s_7aa13d4c94b804::t_04910665689ec0 7,19-31
+  s_7aa13d4c94b804::t_39c844c5e3dcfe 32
+src/app/bot-command.ts
+  s_7aa13d4c94b804::t_4e690df2ba60fc 8,179-181
+src/app/config-file.ts
+  s_7aa13d4c94b804::t_c1b2d5cb1f59be 17,68-83,112-113,121,237,251,264-266,301-318,322,324-334
+src/app/config-reset.ts
+  s_7aa13d4c94b804::t_7969830b0dbbf4 15,230-232,236-238
+test/app/config-file.test.ts
+  s_7aa13d4c94b804::t_fc44cfa4b58d60 28,32,35,37-43,45-46,70-72,74-77,151-152,208-209
+  s_7aa13d4c94b804::t_94d150f5133a9b 83-132
+  s_7aa13d4c94b804::t_5a2b6f4625c1b8 13,24,44,56
+  s_7aa13d4c94b804::t_9240a29e281f40 78-82
+src/app/bot-config-store.ts
+  s_7aa13d4c94b804::t_965cfcf653ca02 615,624-662
+  s_7aa13d4c94b804::t_c42c5edb4c4fa7 378-412,570-614,616-623
+  s_7aa13d4c94b804::t_69e15a709383cc 115-117
+  s_7aa13d4c94b804::t_f1f4768d76b76d 663
+src/app/doctor.ts
+  s_7aa13d4c94b804::t_9f1daba851babc 74
+src/app/setup.ts
+  s_7aa13d4c94b804::t_5ad85291f2c477 9-13,62-64,68,89-97,105-120,125,128,139
+  s_7aa13d4c94b804::t_cecc65b66d25fd 8
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.18",
+  "base_commit_sha": "db5134fcaf8e0b739c6a81866a8ba5619bbb20d9",
+  "prompts": {},
+  "sessions": {
+    "s_7aa13d4c94b804": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fa36d-4ecc-7211-aef0-9010548d16a1",
+        "model": "gpt-5.5"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    }
+  }
+}
