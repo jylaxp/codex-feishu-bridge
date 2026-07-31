@@ -4,13 +4,14 @@
 
 Bridge 不读取或修改 ChatGPT/Codex 数据库、不注入 Electron，也不保存 prompt、回复、推理、审批、队列或卡片状态。跨重启的业务文件只有根目录 `config.toml`、根目录 `bindings.json` 和渠道目录 `channels/<channel>/` 下的渠道配置：`config.toml` 记录进程配置，`bindings.json` 记录渠道端点到 ChatGPT thread 的绑定及聊天类型，`channels/feishu/bots.json` 记录飞书机器人配置，`channels/feishu/external-bots.json` 记录飞书群内可 @ 的外部机器人目录。
 
-日常安装、绑定、群聊、多机器人协作和排障步骤见 [使用手册](docs/user-manual.zh-CN.md)。
+日常安装、绑定、群聊、多机器人协作和排障步骤见 [使用手册](docs/user-manual.zh-CN.md)。本文示例优先使用短命令
+`cfb`；完整命令 `codex-feishu-bridge` 完全等价。
 
 ## 运行链路
 
 ```text
 飞书文本、图片消息/卡片操作
-  -> tenant/chat/user allowlist
+  -> 机器人启用状态、显式 @ 和群策略检查
   -> bindings.json 按 channel/app/tenant/chat 取得精确 threadId
   -> ChatGPT Desktop follower IPC: start / steer / interrupt / approval
   -> Desktop thread-stream snapshot/patch (version 11)
@@ -75,22 +76,35 @@ npm install -g ./codex-feishu-bridge-2.1.0.tgz
 
 `.tgz` 包含 Bridge 编译产物；npm 会按标准包安装流程解析运行依赖，因此目标机器首次安装时需要能访问配置的 npm registry，或已经具备对应依赖缓存。
 
-## 初始化与飞书扫码绑定
+## 初始化、迁移与机器人配置
 
 默认配置为 `~/.codex-feishu-bridge/config.toml`。`BRIDGE_CONFIG_HOME` 可改为当前机器的绝对路径；显式进程环境优先于 `config.toml`。旧版本 `.env` 只作为一次性自动迁移来源：如果 `config.toml` 不存在但 `.env` 存在，Bridge 会先生成 `config.toml`，随后删除旧 `.env`；一旦 `config.toml` 存在，`.env` 就不再参与运行。
+
+当前正式配置结构如下。根目录只保存 Bridge 进程配置和跨渠道绑定；飞书机器人凭证、外部机器人目录等渠道私有数据放在
+`channels/feishu/` 下。后续增加企业微信等渠道时，会使用同级目录，例如 `channels/wecom/`。
+
+```text
+~/.codex-feishu-bridge/
+  config.toml
+  bindings.json
+  channels/
+    feishu/
+      bots.json
+      external-bots.json
+```
 
 新用户可以直接运行前台或后台启动命令。若 Bridge 检测到还没有任何飞书机器人配置，会自动进入扫码注册流程：
 
 ```bash
-codex-feishu-bridge run
+cfb run
 # 或直接后台启动
-codex-feishu-bridge start
+cfb start
 ```
 
 也可以显式执行：
 
 ```bash
-codex-feishu-bridge setup
+cfb setup
 ```
 
 终端会显示飞书授权链接和二维码。用飞书扫码确认后，Bridge 自动创建自建应用、取得飞书 `appId` 和 `appSecret`，并写入 `~/.codex-feishu-bridge/channels/feishu/bots.json`。`config.toml` 只保存 Bridge 进程级配置，不保存飞书机器人凭证。
@@ -100,25 +114,27 @@ codex-feishu-bridge setup
 如果使用已有飞书机器人，可以导入已有应用凭证：
 
 ```bash
-codex-feishu-bridge bot import --app-id cli_xxx --app-secret SECRET
+cfb bot import --app-id cli_xxx --app-secret SECRET
 ```
 
-导入后凭证同样写入 `channels/feishu/bots.json`。可以用 `codex-feishu-bridge init` 生成 `config.toml` 的进程级配置骨架，但不要把飞书凭证写入 `config.toml`。
+导入后凭证同样写入 `channels/feishu/bots.json`。可以用 `cfb init` 生成 `config.toml` 的进程级配置骨架，但不要把飞书凭证写入 `config.toml`。
 
 升级旧安装时，通常无需手工迁移：启动、`doctor`、`status` 或 `config migrate` 发现 `config.toml` 不存在且 `.env` 存在时，会先从旧 `.env` 自动生成 `config.toml`。如果要立即物化旧单机器人为 `channels/feishu/bots.json` 并升级已有绑定，可以执行：
 
 ```bash
-codex-feishu-bridge config migrate
+cfb config migrate
 ```
 
 迁移会生成或更新 `~/.codex-feishu-bridge/channels/feishu/bots.json`，并把已有聊天绑定升级为 `channel + appId + tenantKey + chatId` 格式。旧 `.env` 不再作为 fallback；如果目录里还残留该文件，Bridge 会在加载或生成 `config.toml` 后清理它。发布版正式迁移只支持旧单聊版本的 `.env`；开发期根目录 `lark-bots.json`、`external-bots.json` 不作为用户升级输入。
 
-需要重新绑定机器人时：
+需要新增、刷新、停用或移除机器人时：
 
 ```bash
-codex-feishu-bridge rebind
-# 或
-codex-feishu-bridge setup --rebind
+cfb bot add
+cfb bot rebind --app-id cli_xxx
+cfb bot disable --app-id cli_xxx
+cfb bot enable --app-id cli_xxx
+cfb bot remove --app-id cli_xxx --confirm
 ```
 
 ```toml
@@ -171,7 +187,7 @@ enableAutoFileUpload = false
 ### 前台运行（调试）
 
 ```bash
-codex-feishu-bridge run
+cfb run
 ```
 
 源码开发时等价命令为：
@@ -184,7 +200,7 @@ node dist/app/cli.js run
 ### 后台常驻运行
 
 ```bash
-codex-feishu-bridge start
+cfb start
 ```
 
 后台启动始终写入 PID：
@@ -202,31 +218,31 @@ codex-feishu-bridge start
 
 ```bash
 # 查看后台进程状态和日志位置
-codex-feishu-bridge status
-codex-feishu-bridge status --json
+cfb status
+cfb status --json
 
 # 重启后台服务
-codex-feishu-bridge restart
+cfb restart
 
 # 停止后台服务
-codex-feishu-bridge stop
+cfb stop
 
 # 从 GitHub 全局更新并重启
-codex-feishu-bridge update
+cfb update
 
 # 强制重新安装当前版本并重启
-codex-feishu-bridge update --force
+cfb update --force
 
 # 检查本机配置、App Server protocol profile 和运行依赖
-codex-feishu-bridge doctor
+cfb doctor
 
 # 查看本机 ChatGPT App、Codex CLI、binary 和 schema 版本
-codex-feishu-bridge version
-codex-feishu-bridge version --json
+cfb version
+cfb version --json
 
 # 只读检查协议兼容性；第一行固定为“兼容”或“不兼容”
-codex-feishu-bridge compatibility
-codex-feishu-bridge compatibility --json
+cfb compatibility
+cfb compatibility --json
 ```
 
 首次执行 `run`、`start`、`doctor`、`version` 或 `compatibility` 时，如果配置不存在，Bridge 会把内置支持
@@ -238,7 +254,7 @@ codex-feishu-bridge compatibility --json
 `compatibility` 返回“兼容”并标记 `upgrade_available`，Bridge 仍拒绝启动，直到操作员审查后明确执行：
 
 ```bash
-codex-feishu-bridge compatibility --approve
+cfb compatibility --approve
 ```
 
 `--approve` 只允许加入 schema 已匹配的精确版本，不接受未知 schema，也不会修改源码或 `package.json`。
@@ -257,24 +273,26 @@ tail -f ~/.codex-feishu-bridge/logs/bridge_stdout.log
 tail -f ~/.codex-feishu-bridge/logs/bridge_stderr.log
 ```
 
-旧版本数据结构升级使用显式重置，不迁移旧会话、任务或审批状态：
+`config reset` 不是日常升级入口，只用于配置目录损坏、旧目录无法自动升级或需要明确清空绑定时的恢复操作。
+它只迁移 `config.toml` 或旧 `.env` 中的进程/机器人配置，不迁移会话、任务、审批或运行状态。
 
 ```bash
 # 只查看将保留/删除什么，不写文件
-codex-feishu-bridge config reset
+cfb config reset
 
-# 仅在旧目录时执行：把旧配置迁移为 config.toml，清空 bindings
-codex-feishu-bridge config reset --confirm
+# 仅在旧目录或损坏目录时执行：迁移配置，清空 bindings
+cfb config reset --confirm
 
 # 当前已经是新结构时，只有明确 destructive 才会清空已有 bindings
-codex-feishu-bridge config reset --confirm --destructive
+cfb config reset --confirm --destructive
 ```
 
-重置会生成当前结构的 `config.toml`，删除旧运行文件，并要求用户重新 `/bind`。
+重置会生成当前结构的 `config.toml` 和空 `bindings.json`，删除旧运行文件，并要求用户重新 `/bind`。
 
-## 飞书完整指令
+## 飞书聊天指令
 
-以下指令按原应用 README 和原 router 恢复；参数形式和别名均保留：
+以下指令是私聊控制面和单聊绑定会话的完整指令。群聊 MVP 只识别 owner/admin 发出的
+`/bind`、`/l`、`/list`、`/ll`、`/external` 和 `/collab`；其他群聊 slash 命令不会进入管理控制面，也不会作为普通任务执行。群聊普通任务必须显式 `@当前机器人` 后发送自然语言文本。
 
 | 指令 | 行为 |
 | --- | --- |
@@ -282,7 +300,7 @@ codex-feishu-bridge config reset --confirm --destructive
 | `/bind`、`/l`、`/list` | 按本地项目分组显示会话下拉列表；若聊天已有绑定，同时推送最近一条已完成历史记录 |
 | `/ll` | 以 Table 表格显示会话名称和所属项目，并在卡片底部选择绑定；保留旧版尾随参数形式 |
 | `/binding` | 显示当前精确绑定和“在 ChatGPT 中打开”按钮 |
-| `/external [on\|off]` | 查询或调整当前群的外部群成员 @ 策略；默认 on，只允许 owner 在群内操作 |
+| `/external [on\|off]` | 查询或调整当前群的外部群成员 @ 策略；默认 on，只允许 owner/admin 在群内操作 |
 | `/collab` | 查询当前群的机器人协作状态；MVP 只读，不维护 source-target 授权策略 |
 | `/open` | 打开当前绑定的 ChatGPT Desktop 会话，不改变投递目标 |
 | `/unbind` | 只解除当前飞书聊天的绑定，不归档 ChatGPT 会话 |
@@ -309,11 +327,11 @@ codex-feishu-bridge config reset --confirm --destructive
 | `/cancel`、`/stop` | 停止当前运行任务；任务卡“停止任务”按钮行为相同 |
 | `/<白名单命令> [参数]` | 保留原 router 的未知 slash fallback，例如 `/pwd`；首命令仍必须在 `codex.allowedShellCommands` 中 |
 
-`/bind`、会话选择、模型选择、技能选择和打开按钮都限制 tenant/chat、授权用户、binding revision 和 10 分钟 TTL；过期卡片不能改变当前绑定。
+`/bind`、会话选择、模型选择、技能选择和打开按钮都限制聊天、授权用户、binding revision 和 10 分钟 TTL；过期卡片不能改变当前绑定。
 
 飞书消息必须先显式绑定既有会话。普通任务通过 Desktop follower IPC 进入这个精确 thread：新 root 走 start，同 root 运行期间的补充消息走 steer，不同 root 排队。`@技能名称` 文本会原样保留并进入 Desktop runtime；当前 Desktop follower 协议没有独立的结构化 skill 字段，Bridge 不会猜测或重写技能内容。
 
-会话可见性由机器人记录里的 `allowedChats` 决定。首次安装时这些飞书内部 ID 都可以为空：第一个私聊机器人的用户会自动成为 owner，并绑定当前单聊。绑定后卡片会作为发起消息的 reply，始终留在原会话/原话题，而不是临时会话。群聊需要先由 owner 在群里 `@机器人 /bind` 绑定会话；绑定后普通群成员显式 `@` 当前机器人即可发起普通任务。外部群成员默认允许发起普通任务，Bridge 不校验其 sender tenant 或 `allowedChats`；需要关闭时由 owner 在对应群里发送 `@机器人 /external off`，恢复时发送 `@机器人 /external on`。
+会话可见性由机器人记录里的 `allowedChats` 决定。首次安装时这些飞书内部 ID 都可以为空：第一个私聊机器人的用户会自动成为 owner，并绑定当前单聊。绑定后卡片会作为发起消息的 reply，始终留在原会话/原话题，而不是临时会话。群聊需要先由 owner/admin 在群里 `@机器人 /bind` 绑定会话；绑定后普通群成员显式 `@` 当前机器人即可发起普通任务。外部群成员默认允许发起普通任务，Bridge 不校验其 sender tenant 或用户白名单；需要关闭时由 owner/admin 在对应群里发送 `@机器人 /external off`，恢复时发送 `@机器人 /external on`。
 
 多个机器人在同一群协作时，不要求这些机器人由同一个 owner 管理，也不要求由同一个群成员邀请进群；飞书群内的普通成员可以按群权限邀请一个或多个机器人。Bridge 不把“谁拉进群”作为授权条件，每个机器人仍由它自己的 owner/admin 管理，并且每个机器人都必须先在该群绑定会话，确认机器人 @ 响应开关为 on。MVP 默认开放：
 人可以 @ 机器人，机器人可以 @ 机器人，机器人也可以 @ 人；Bridge 不校验 tenant_key、成员白名单、bot sender
