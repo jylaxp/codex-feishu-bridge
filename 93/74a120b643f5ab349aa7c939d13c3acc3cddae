@@ -1,0 +1,68 @@
+test/app/config-file.test.ts
+  s_7aa13d4c94b804::t_b73a6b490fa322 9-10,27-28,32-35,51-52,73-74,80,114-116,135,150,157-158,165,169,177,181,189,197-198,200-201
+docs/user-manual.zh-CN.md
+  s_7aa13d4c94b804::t_3e87f7d7d46c82 21,81,91,95
+scripts/package-contract.mjs
+  s_7aa13d4c94b804::t_e4416231e7d052 2
+config.example.toml
+  s_7aa13d4c94b804::t_29020875b4e251 1-43
+package.json
+  s_7aa13d4c94b804::t_e82e62d05a9e85 18
+  s_7aa13d4c94b804::t_5b97edceb75077 42-43
+test/scripts/package-contract.test.mjs
+  s_7aa13d4c94b804::t_3b6b6838b1a8fc 19,53,69
+src/app/config-reset.ts
+  s_7aa13d4c94b804::t_45982ee1f24af7 23,76,83,200,209,236-237
+  s_7aa13d4c94b804::t_76bf66ded6c7c6 238-240
+  s_7aa13d4c94b804::t_6eaac32182e7b3 241
+src/app/domain.ts
+  s_7aa13d4c94b804::t_b31157fdbce61a 96
+test/app/config-reset.test.ts
+  s_7aa13d4c94b804::t_cc8535c438414e 54,84,101,129,167
+README.md
+  s_7aa13d4c94b804::t_dbeeeb2a1f359a 5,80,96,106,108,114,124-156,167,266,273
+docs/plans/2026-07-27-001-feat-multi-lark-bot-bridge-plan.md
+  s_7aa13d4c94b804::t_995a54b2fe810a 20
+  s_7aa13d4c94b804::t_a4b463196f9ff1 24,26,28-31,260,320,326,329,596,603
+src/app/config-file.ts
+  s_7aa13d4c94b804::t_4a645623eb934f 271,280-283,294,297-298,300-309,312,316,319-320,323-325,328-329,332,337,341-342,345,351,353-359,362,364
+  s_7aa13d4c94b804::t_3c2bee602abe59 16
+  s_7aa13d4c94b804::t_312bbb3e7ea38d 259,262,264,272-278
+  s_7aa13d4c94b804::t_ac790a8e012966 22
+  s_7aa13d4c94b804::t_add00d24f96f82 268
+  s_7aa13d4c94b804::t_57e13d195cf984 21
+  s_7aa13d4c94b804::t_c619af8ca121d7 34,88-89,104,115-126,129,144,148-152,172,174,176,201
+  s_7aa13d4c94b804::t_0aa0bec31e9c52 279
+  s_7aa13d4c94b804::t_e74cbee2c4f3ce 258,260-261,263,265-266
+  s_7aa13d4c94b804::t_fce29c9a3bc432 405-406,408-423,438
+  s_7aa13d4c94b804::t_916b1f8134e17f 544,547-551
+  s_7aa13d4c94b804::t_1921ac38ac7a74 269-270
+src/app/setup.ts
+  s_7aa13d4c94b804::t_420065259d4520 43
+src/app/command-service.ts
+  s_7aa13d4c94b804::t_3e0f0e1cd690e8 647
+test/app/setup.test.ts
+  s_7aa13d4c94b804::t_1264e3f1fbb800 39-41
+docs/plans/2026-07-27-001-feat-multi-lark-bot-bridge-plan.zh-CN.md
+  s_7aa13d4c94b804::t_78866d29a8dfda 24,26,28-31,260,320,326,329,596,603
+src/app/cli.ts
+  s_7aa13d4c94b804::t_5411c6951931d8 550-553
+package-lock.json
+  s_7aa13d4c94b804::t_07577c406b0247 12-13,616-627
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.18",
+  "base_commit_sha": "9374a120b643f5ab349aa7c939d13c3acc3cddae",
+  "prompts": {},
+  "sessions": {
+    "s_7aa13d4c94b804": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fa36d-4ecc-7211-aef0-9010548d16a1",
+        "model": "gpt-5.5"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    }
+  }
+}
