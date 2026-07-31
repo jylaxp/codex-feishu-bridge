@@ -44,6 +44,7 @@ Bridge 需要正式渲染层，因为未来渠道可能有不同约束：
 - R9. Transport 发送 rendered plan，不理解业务 intent。
 - R10. 第一版可以复用飞书 CardKit 行为，但飞书限制必须隔离在飞书 capabilities 后面。
 - R11. Renderer 可以渲染 bot 和 user mention，但不负责授权或响应策略。机器人是否响应仍由入站就绪状态和 bot response switch 控制。
+- R12. 当一个 ChatGPT thread 被多个渠道端点绑定时，fan-out 基于 `threadId -> bindings[]` 驱动：renderer 为每个 binding 生成一份渠道专属 render plan，transport 的投递状态按 binding 单独跟踪。
 
 ---
 
@@ -52,7 +53,8 @@ Bridge 需要正式渲染层，因为未来渠道可能有不同约束：
 ```mermaid
 flowchart LR
   B["Business services\ncommands, tasks, approvals, handoff"] --> I["OutboundIntent\nplatform-neutral semantics"]
-  I --> R["ChannelRenderer\nchannel + surface strategy"]
+  I --> F["FanOutTargetResolver\nthreadId -> bindings[]"]
+  F --> R["ChannelRenderer\nchannel + surface strategy"]
   C["ChannelCapabilities\nlimits, mentions, cards, actions"] --> R
   R --> P["RenderPlan\nmessages, fallbacks, attachments"]
   P --> T["ChannelTransport\nsend, reply, update"]
@@ -62,6 +64,7 @@ flowchart LR
 职责：
 
 - `OutboundIntent` 描述语义消息：任务更新、最终结果、审批请求、命令响应、普通通知、文件或 handoff trigger。Mention 是挂在 intent 上的语义目标，不是渠道 payload 片段。
+- `FanOutTargetResolver` 把一个 thread projection 映射为当前渠道 bindings 集合。是否把一次事件投递给一个端点还是多个端点，只能由这一层决定。
 - `ChannelCapabilities` 描述一个渠道实际能发送什么。
 - `RenderContext` 描述目标界面：direct control、group task 或 group collaboration。
 - `ChannelRenderer` 将 intent 和 context 转换成一个或多个 rendered messages。
@@ -74,7 +77,7 @@ flowchart LR
 
 ```ts
 type MentionTarget =
-  | { readonly kind: 'bot'; readonly openId: string; readonly botKey?: string; readonly displayName?: string }
+  | { readonly kind: 'bot'; readonly openId: string; readonly appId?: string; readonly displayName?: string }
   | { readonly kind: 'user'; readonly openId: string; readonly displayName?: string };
 
 type OutboundIntent =
@@ -111,7 +114,7 @@ interface RenderContext {
   readonly channel: ChannelCapabilities['channel'];
   readonly chatType: 'p2p' | 'group';
   readonly surface: 'direct-control' | 'group-task' | 'group-collaboration';
-  readonly botKey: string;
+  readonly appId: string;
   readonly rootMessageId?: string;
   readonly locale?: 'zh_cn' | 'en_us';
 }

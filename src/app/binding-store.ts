@@ -13,8 +13,9 @@ import {
 import { dirname, join } from 'node:path';
 
 import { DEFAULT_BOT_KEY } from './bot-config-store';
+import { FEISHU_CHANNEL_ID, type ChannelId } from './channel-paths';
 
-const BINDINGS_SCHEMA_VERSION = 5;
+export const BINDINGS_SCHEMA_VERSION = 6;
 const MAX_BINDINGS_FILE_BYTES = 1024 * 1024;
 const MAX_BINDING_COUNT = 10_000;
 const MAX_IDENTIFIER_LENGTH = 512;
@@ -30,6 +31,7 @@ export interface BindingSettings {
 }
 
 export interface ChatThreadBinding extends BindingSettings {
+  readonly channel?: ChannelId;
   readonly larkAppId?: string;
   /** Deprecated runtime alias. New persisted bindings write larkAppId only. */
   readonly botKey?: string;
@@ -40,17 +42,13 @@ export interface ChatThreadBinding extends BindingSettings {
   readonly threadTitle?: string;
   readonly workspaceId: string;
   readonly allowExternalGroupUserMentions?: boolean;
-  readonly allowBotSenderMentions?: boolean;
-  readonly allowedBotSenderKeys?: readonly string[];
-  readonly allowedBotSenderOpenIds?: readonly string[];
-  readonly allowedHandoffTargetBotKeys?: readonly string[];
   readonly revision: number;
   readonly updatedAtMs: number;
 }
 
 export type ChatThreadBindingInput =
-  Omit<ChatThreadBinding, 'larkAppId' | 'botKey' | 'revision' | 'updatedAtMs'>
-  & { readonly larkAppId?: string; readonly botKey?: string };
+  Omit<ChatThreadBinding, 'channel' | 'larkAppId' | 'botKey' | 'revision' | 'updatedAtMs'>
+  & { readonly channel?: ChannelId; readonly larkAppId?: string; readonly botKey?: string };
 
 interface BindingDocument {
   readonly schemaVersion: number;
@@ -70,7 +68,6 @@ export interface BindingStoreOptions {
 }
 
 export interface BindingLoadOptions {
-  readonly legacyBotKeyMap?: ReadonlyMap<string, string>;
   readonly legacyDefaultBotIdentifier?: string;
 }
 
@@ -118,9 +115,14 @@ export class BindingStore {
     }
     const parsed = parseDocument(document, options);
     for (const binding of parsed.bindings) {
-      const key = bindingKey(binding.larkAppId ?? binding.botKey ?? DEFAULT_BOT_KEY, binding.tenantKey, binding.chatId);
+      const key = bindingKey(
+        binding.channel,
+        binding.larkAppId ?? DEFAULT_BOT_KEY,
+        binding.tenantKey,
+        binding.chatId,
+      );
       if (this.bindings.has(key)) {
-        throw new BindingStoreError('bindings.json contains a duplicate app/tenant/chat binding');
+        throw new BindingStoreError('bindings.json contains a duplicate channel/app/tenant/chat binding');
       }
       this.bindings.set(key, binding);
     }
@@ -130,19 +132,21 @@ export class BindingStore {
     tenantKey: string,
     chatId: string,
     botKey: string = DEFAULT_BOT_KEY,
+    channel: ChannelId = FEISHU_CHANNEL_ID,
   ): ChatThreadBinding | undefined {
-    return this.bindings.get(bindingKey(botKey, tenantKey, chatId));
+    return this.bindings.get(bindingKey(channel, botKey, tenantKey, chatId));
   }
 
   public list(): readonly ChatThreadBinding[] {
     return Object.freeze([...this.bindings.values()]);
   }
 
-  /**
-   * Resolves a Desktop thread back to one Feishu chat only when the mapping is
-   * unambiguous. A Desktop-originated message has no chat scope of its own,
-   * so fan-out would risk projecting it into an unintended conversation.
-   */
+  /** Lists every channel endpoint subscribed to one ChatGPT thread. */
+  public listByThreadId(threadId: string): readonly ChatThreadBinding[] {
+    return Object.freeze([...this.bindings.values()].filter((binding) => binding.threadId === threadId));
+  }
+
+  /** Deprecated: use listByThreadId for multi-channel fan-out. */
   public getUniqueByThreadId(threadId: string): ChatThreadBinding | undefined {
     let match: ChatThreadBinding | undefined;
     for (const binding of this.bindings.values()) {
@@ -160,7 +164,12 @@ export class BindingStore {
   /** Persists one replacement binding using same-directory atomic replacement. */
   public bind(input: ChatThreadBindingInput): ChatThreadBinding {
     const normalized = normalizeBindingInput(input);
-    const key = bindingKey(normalized.larkAppId ?? normalized.botKey ?? DEFAULT_BOT_KEY, normalized.tenantKey, normalized.chatId);
+    const key = bindingKey(
+      normalized.channel,
+      normalized.larkAppId ?? DEFAULT_BOT_KEY,
+      normalized.tenantKey,
+      normalized.chatId,
+    );
     const previous = this.bindings.get(key);
     const binding = Object.freeze({
       ...normalized,
@@ -186,8 +195,9 @@ export class BindingStore {
     tenantKey: string,
     chatId: string,
     botKey: string = DEFAULT_BOT_KEY,
+    channel: ChannelId = FEISHU_CHANNEL_ID,
   ): boolean {
-    const key = bindingKey(botKey, tenantKey, chatId);
+    const key = bindingKey(channel, botKey, tenantKey, chatId);
     const previous = this.bindings.get(key);
     if (!previous) {
       return false;
@@ -207,8 +217,9 @@ export class BindingStore {
     chatId: string,
     allowExternalGroupUserMentions: boolean,
     botKey: string = DEFAULT_BOT_KEY,
+    channel: ChannelId = FEISHU_CHANNEL_ID,
   ): ChatThreadBinding | undefined {
-    const key = bindingKey(botKey, tenantKey, chatId);
+    const key = bindingKey(channel, botKey, tenantKey, chatId);
     const previous = this.bindings.get(key);
     if (!previous) {
       return undefined;
@@ -217,6 +228,38 @@ export class BindingStore {
     const next = Object.freeze({
       ...previousWithoutPolicy,
       ...(allowExternalGroupUserMentions ? {} : { allowExternalGroupUserMentions: false }),
+      revision: previous.revision + 1,
+      updatedAtMs: safeNow(this.now),
+    });
+    this.bindings.set(key, next);
+    try {
+      this.persist();
+      return next;
+    } catch (error) {
+      this.bindings.set(key, previous);
+      throw error;
+    }
+  }
+
+  public recordObservedChatType(
+    tenantKey: string,
+    chatId: string,
+    chatType: ChatThreadBinding['chatType'] | undefined,
+    botKey: string = DEFAULT_BOT_KEY,
+    channel: ChannelId = FEISHU_CHANNEL_ID,
+  ): ChatThreadBinding | undefined {
+    const observed = observedChatTypeValue(chatType);
+    const key = bindingKey(channel, botKey, tenantKey, chatId);
+    const previous = this.bindings.get(key);
+    if (!previous || !observed || previous.chatType === observed) {
+      return previous;
+    }
+    if (previous.chatType && previous.chatType !== 'unknown') {
+      return previous;
+    }
+    const next = Object.freeze({
+      ...previous,
+      chatType: observed,
       revision: previous.revision + 1,
       updatedAtMs: safeNow(this.now),
     });
@@ -313,8 +356,8 @@ function parseDocument(value: unknown, options: BindingLoadOptions): BindingDocu
 
 function parseBinding(value: unknown, schemaVersion: unknown, options: BindingLoadOptions): ChatThreadBinding {
   if (!isRecord(value) || hasUnknownKeys(value, [
+    'channel',
     'larkAppId',
-    'botKey',
     'tenantKey',
     'chatId',
     'chatType',
@@ -322,10 +365,6 @@ function parseBinding(value: unknown, schemaVersion: unknown, options: BindingLo
     'threadTitle',
     'workspaceId',
     'allowExternalGroupUserMentions',
-    'allowBotSenderMentions',
-    'allowedBotSenderKeys',
-    'allowedBotSenderOpenIds',
-    'allowedHandoffTargetBotKeys',
     'model',
     'personality',
     'style',
@@ -343,13 +382,8 @@ function parseBinding(value: unknown, schemaVersion: unknown, options: BindingLo
   ) {
     throw new BindingStoreError('binding allowExternalGroupUserMentions must be a boolean when present');
   }
-  if (
-    value.allowBotSenderMentions !== undefined
-    && typeof value.allowBotSenderMentions !== 'boolean'
-  ) {
-    throw new BindingStoreError('binding allowBotSenderMentions must be a boolean when present');
-  }
   const normalized = normalizeBindingInput({
+    channel: channelValue(value.channel),
     larkAppId: resolveBindingBotIdentifier(value, schemaVersion, options),
     tenantKey: requiredText(value.tenantKey, 'tenantKey'),
     chatId: requiredText(value.chatId, 'chatId'),
@@ -360,13 +394,6 @@ function parseBinding(value: unknown, schemaVersion: unknown, options: BindingLo
       : {}),
     workspaceId: requiredText(value.workspaceId, 'workspaceId'),
     ...(value.allowExternalGroupUserMentions === false ? { allowExternalGroupUserMentions: false } : {}),
-    ...(value.allowBotSenderMentions === true ? { allowBotSenderMentions: true } : {}),
-    allowedBotSenderKeys: botKeyArray(value.allowedBotSenderKeys, 'allowedBotSenderKeys'),
-    allowedBotSenderOpenIds: stringArray(value.allowedBotSenderOpenIds, 'allowedBotSenderOpenIds'),
-    allowedHandoffTargetBotKeys: botKeyArray(
-      value.allowedHandoffTargetBotKeys,
-      'allowedHandoffTargetBotKeys',
-    ),
     ...(optionalText(value.model, 'model') ? { model: optionalText(value.model, 'model') } : {}),
     ...(optionalText(value.personality, 'personality')
       ? { personality: optionalText(value.personality, 'personality') }
@@ -400,6 +427,7 @@ function normalizeBindingInput(
 ): Omit<ChatThreadBinding, 'revision' | 'updatedAtMs'> {
   const larkAppId = requiredBotIdentifier(input.larkAppId ?? input.botKey, 'larkAppId');
   return Object.freeze({
+    channel: channelValue(input.channel),
     larkAppId,
     botKey: larkAppId,
     tenantKey: requiredText(input.tenantKey, 'tenantKey'),
@@ -411,16 +439,6 @@ function normalizeBindingInput(
       : {}),
     workspaceId: requiredText(input.workspaceId, 'workspaceId'),
     ...(input.allowExternalGroupUserMentions === false ? { allowExternalGroupUserMentions: false } : {}),
-    ...(input.allowBotSenderMentions === true ? { allowBotSenderMentions: true } : {}),
-    ...nonEmptyStringArray('allowedBotSenderKeys', botKeyArray(input.allowedBotSenderKeys, 'allowedBotSenderKeys')),
-    ...nonEmptyStringArray(
-      'allowedBotSenderOpenIds',
-      stringArray(input.allowedBotSenderOpenIds, 'allowedBotSenderOpenIds'),
-    ),
-    ...nonEmptyStringArray(
-      'allowedHandoffTargetBotKeys',
-      botKeyArray(input.allowedHandoffTargetBotKeys, 'allowedHandoffTargetBotKeys'),
-    ),
     ...(optionalText(input.model, 'model') ? { model: optionalText(input.model, 'model') } : {}),
     ...(optionalText(input.personality, 'personality')
       ? { personality: optionalText(input.personality, 'personality') }
@@ -441,15 +459,10 @@ function resolveBindingBotIdentifier(
   schemaVersion: unknown,
   options: BindingLoadOptions,
 ): string {
-  const directAppId = optionalText(value.larkAppId, 'larkAppId');
-  if (directAppId) {
-    return requiredBotIdentifier(directAppId, 'larkAppId');
+  if (schemaVersion === 1) {
+    return requiredBotIdentifier(options.legacyDefaultBotIdentifier ?? DEFAULT_BOT_KEY, 'bot identifier');
   }
-  const legacyIdentifier = schemaVersion === 1
-    ? (options.legacyDefaultBotIdentifier ?? DEFAULT_BOT_KEY)
-    : optionalText(value.botKey, 'botKey') ?? DEFAULT_BOT_KEY;
-  const mapped = options.legacyBotKeyMap?.get(legacyIdentifier);
-  return requiredBotIdentifier(mapped ?? legacyIdentifier, 'bot identifier');
+  return requiredBotIdentifier(value.larkAppId, 'larkAppId');
 }
 
 function requiredBotIdentifier(value: unknown, label: string): string {
@@ -462,11 +475,19 @@ function requiredBotIdentifier(value: unknown, label: string): string {
 
 function isBotIdentifier(value: string): boolean {
   return /^cli_[0-9a-fA-F]{16}$/.test(value)
-    || /^(?:default|bot_[a-z2-7][a-z2-7]{11,59})$/.test(value);
+    || value === DEFAULT_BOT_KEY;
 }
 
 function isSupportedSchemaVersion(value: unknown): boolean {
-  return value === 1 || value === 2 || value === 3 || value === 4 || value === BINDINGS_SCHEMA_VERSION;
+  return value === 1
+    || value === BINDINGS_SCHEMA_VERSION;
+}
+
+function channelValue(value: unknown): ChannelId {
+  if (value === undefined || value === FEISHU_CHANNEL_ID) {
+    return FEISHU_CHANNEL_ID;
+  }
+  throw new BindingStoreError('binding channel is invalid');
 }
 
 function chatTypeValue(value: unknown): ChatThreadBinding['chatType'] | undefined {
@@ -477,6 +498,10 @@ function chatTypeValue(value: unknown): ChatThreadBinding['chatType'] | undefine
     return value;
   }
   throw new BindingStoreError('binding chatType is invalid');
+}
+
+function observedChatTypeValue(value: ChatThreadBinding['chatType'] | undefined): 'p2p' | 'group' | undefined {
+  return value === 'p2p' || value === 'group' ? value : undefined;
 }
 
 function requiredText(value: unknown, label: string): string {
@@ -504,52 +529,9 @@ function optionalText(value: unknown, label: string): string | undefined {
   return text;
 }
 
-function stringArray(value: unknown, label: string): readonly string[] {
-  if (value === undefined) {
-    return Object.freeze([]);
-  }
-  if (!Array.isArray(value)) {
-    throw new BindingStoreError(`${label} must be an array when present`);
-  }
-  return Object.freeze(uniqueStrings(value, label));
-}
-
-function botKeyArray(value: unknown, label: string): readonly string[] {
-  if (value === undefined) {
-    return Object.freeze([]);
-  }
-  if (!Array.isArray(value)) {
-    throw new BindingStoreError(`${label} must be an array when present`);
-  }
-  return Object.freeze([...new Set(value.map((item) => requiredBotIdentifier(item, label)))]);
-}
-
-function uniqueStrings(values: readonly unknown[], label: string): readonly string[] {
-  const normalized: string[] = [];
-  for (const value of values) {
-    if (typeof value !== 'string') {
-      throw new BindingStoreError(`${label} must contain only strings`);
-    }
-    const text = optionalText(value, label);
-    if (text) {
-      normalized.push(text);
-    }
-  }
-  return Object.freeze([...new Set(normalized)]);
-}
-
-function nonEmptyStringArray(
-  key: 'allowedBotSenderKeys' | 'allowedBotSenderOpenIds' | 'allowedHandoffTargetBotKeys',
-  values: readonly string[],
-): Partial<Pick<
-  ChatThreadBinding,
-  'allowedBotSenderKeys' | 'allowedBotSenderOpenIds' | 'allowedHandoffTargetBotKeys'
->> {
-  return values.length > 0 ? { [key]: values } : {};
-}
-
-function bindingKey(botKey: string, tenantKey: string, chatId: string): string {
+function bindingKey(channel: ChannelId | undefined, botKey: string, tenantKey: string, chatId: string): string {
   return JSON.stringify([
+    channelValue(channel),
     requiredBotIdentifier(botKey, 'bot identifier'),
     requiredText(tenantKey, 'tenantKey'),
     requiredText(chatId, 'chatId'),
@@ -603,6 +585,6 @@ function serializeBinding(binding: ChatThreadBinding): ChatThreadBinding {
   } = binding;
   return Object.freeze({
     ...serialized,
-    larkAppId: larkAppId ?? binding.botKey ?? DEFAULT_BOT_KEY,
+    larkAppId: larkAppId ?? DEFAULT_BOT_KEY,
   });
 }

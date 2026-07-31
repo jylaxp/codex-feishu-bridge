@@ -44,6 +44,7 @@ Channel limits must not leak into task orchestration, command handling, approval
 - R9. Transports send rendered plans and do not understand business intent.
 - R10. The first implementation may reuse Feishu CardKit behavior, but Feishu limits must be isolated behind Feishu capabilities.
 - R11. The renderer can render bot and user mentions, but it does not own authorization or response policy. Bot response behavior remains controlled by inbound readiness and bot response switches.
+- R12. When one ChatGPT thread is bound by multiple channel endpoints, fan-out is driven by `threadId -> bindings[]`: the renderer creates one channel-specific render plan per binding, and transport delivery state is tracked per binding.
 
 ---
 
@@ -52,7 +53,8 @@ Channel limits must not leak into task orchestration, command handling, approval
 ```mermaid
 flowchart LR
   B["Business services\ncommands, tasks, approvals, handoff"] --> I["OutboundIntent\nplatform-neutral semantics"]
-  I --> R["ChannelRenderer\nchannel + surface strategy"]
+  I --> F["FanOutTargetResolver\nthreadId -> bindings[]"]
+  F --> R["ChannelRenderer\nchannel + surface strategy"]
   C["ChannelCapabilities\nlimits, mentions, cards, actions"] --> R
   R --> P["RenderPlan\nmessages, fallbacks, attachments"]
   P --> T["ChannelTransport\nsend, reply, update"]
@@ -62,6 +64,7 @@ flowchart LR
 Responsibilities:
 
 - `OutboundIntent` describes the semantic message: task update, final result, approval request, command response, plain notice, file, or handoff trigger. Mentions are semantic targets attached to those intents, not channel payload snippets.
+- `FanOutTargetResolver` maps a thread projection to the current set of channel bindings. It is the only place that decides whether one event should be delivered to one endpoint or several endpoints.
 - `ChannelCapabilities` describes what one channel can actually send.
 - `RenderContext` describes the destination surface: direct control, group task, or group collaboration.
 - `ChannelRenderer` converts intent and context into one or more rendered messages.
@@ -74,7 +77,7 @@ Responsibilities:
 
 ```ts
 type MentionTarget =
-  | { readonly kind: 'bot'; readonly openId: string; readonly botKey?: string; readonly displayName?: string }
+  | { readonly kind: 'bot'; readonly openId: string; readonly appId?: string; readonly displayName?: string }
   | { readonly kind: 'user'; readonly openId: string; readonly displayName?: string };
 
 type OutboundIntent =
@@ -111,7 +114,7 @@ interface RenderContext {
   readonly channel: ChannelCapabilities['channel'];
   readonly chatType: 'p2p' | 'group';
   readonly surface: 'direct-control' | 'group-task' | 'group-collaboration';
-  readonly botKey: string;
+  readonly appId: string;
   readonly rootMessageId?: string;
   readonly locale?: 'zh_cn' | 'en_us';
 }

@@ -13,7 +13,7 @@ test('handoff coordinator validates and emits a target bot mention', async () =>
   const coordinator = coordinatorWith({ sent });
 
   const result = await coordinator.handleTerminalHandoff({
-    sourceBotKey: 'bot_aaaaaaaaaaaa',
+    sourceBotKey: 'cli_aaaaaaaaaaaaaaaa',
     tenantKey: 'tenant',
     chatId: 'chat',
     rootMessageId: 'root',
@@ -38,7 +38,7 @@ test('handoff coordinator blocks when target bot does not respond to group bot m
   });
 
   const result = await coordinator.handleTerminalHandoff({
-    sourceBotKey: 'bot_aaaaaaaaaaaa',
+    sourceBotKey: 'cli_aaaaaaaaaaaaaaaa',
     tenantKey: 'tenant',
     chatId: 'chat',
     rootMessageId: 'root',
@@ -61,7 +61,7 @@ test('handoff coordinator blocks when target runner is unavailable', async () =>
   });
 
   const result = await coordinator.handleTerminalHandoff({
-    sourceBotKey: 'bot_aaaaaaaaaaaa',
+    sourceBotKey: 'cli_aaaaaaaaaaaaaaaa',
     tenantKey: 'tenant',
     chatId: 'chat',
     rootMessageId: 'root',
@@ -84,7 +84,7 @@ test('handoff coordinator emits a discovered external target bot mention', async
   });
 
   const result = await coordinator.handleTerminalHandoff({
-    sourceBotKey: 'bot_aaaaaaaaaaaa',
+    sourceBotKey: 'cli_aaaaaaaaaaaaaaaa',
     tenantKey: 'tenant',
     chatId: 'chat',
     rootMessageId: 'root',
@@ -126,7 +126,7 @@ function coordinatorWith(options: {
     now: () => 1_000,
     bots: () => [searchBot, options.targetBot ?? orderBot],
 	    bindingFor: (_tenantKey, _chatId, botKey) => (
-	      botKey === 'bot_bbbbbbbbbbbb' ? options.targetBinding ?? targetBinding : undefined
+	      botKey === 'cli_bbbbbbbbbbbbbbbb' ? options.targetBinding ?? targetBinding : undefined
 	    ),
 	    emitterForSourceBot: () => emitter,
 	    externalBotDirectoryForGroup: (_sourceBotKey, _tenantKey, _chatId, selector) => {
@@ -164,7 +164,7 @@ function finalAnswerWithDirective(): string {
 }
 
 const sourceBinding: ChatThreadBinding = {
-  botKey: 'bot_aaaaaaaaaaaa',
+  botKey: 'cli_aaaaaaaaaaaaaaaa',
   tenantKey: 'tenant',
   chatId: 'chat',
   threadId: 'thread-search',
@@ -174,7 +174,7 @@ const sourceBinding: ChatThreadBinding = {
 };
 
 const targetBinding: ChatThreadBinding = {
-  botKey: 'bot_bbbbbbbbbbbb',
+  botKey: 'cli_bbbbbbbbbbbbbbbb',
   tenantKey: 'tenant',
   chatId: 'chat',
   threadId: 'thread-order',
@@ -183,11 +183,11 @@ const targetBinding: ChatThreadBinding = {
   updatedAtMs: 1,
 };
 
-const searchBot = bot('bot_aaaaaaaaaaaa', 'ou_search', 'Search Bot');
-const orderBot = bot('bot_bbbbbbbbbbbb', 'ou_order', 'Order Bot');
+const searchBot = bot('cli_aaaaaaaaaaaaaaaa', 'ou_search', 'Search Bot');
+const orderBot = bot('cli_bbbbbbbbbbbbbbbb', 'ou_order', 'Order Bot');
 
 const externalOrderBot: ExternalBotDirectoryEntry = {
-  sourceBotKey: 'bot_aaaaaaaaaaaa',
+  sourceBotKey: 'cli_aaaaaaaaaaaaaaaa',
   tenantKey: 'tenant',
   chatId: 'chat',
   botOpenId: 'ou_external_order',

@@ -70,7 +70,6 @@ export async function runDoctor(
   botStore.load(preflight.config);
   const store = new BindingStore(preflight.configHome);
   store.load({
-    legacyBotKeyMap: botStore.identifierAliases(),
     legacyDefaultBotIdentifier: preflight.config.larkAppId || undefined,
   });
   const contract = await (dependencies.verifyRuntimeContract ?? verifyCodexRuntimeContract)(

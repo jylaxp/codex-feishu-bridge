@@ -25,15 +25,14 @@ test('config loader migrates legacy .env to config.toml when current config is m
     assert.equal(env.ALLOWED_CHATS, 'chat-a,chat-b');
     assert.equal(env.LOG_TO_FILE, 'true');
     assert.equal(existsSync(join(configHome, 'config.toml')), true);
-    assert.equal(existsSync(join(configHome, 'config.json')), false);
-    assert.equal(existsSync(join(configHome, 'lark-bots.json')), true);
+    assert.equal(existsSync(join(configHome, 'channels', 'feishu', 'bots.json')), true);
     assert.equal(existsSync(join(configHome, '.env')), false);
 
     const configText = readFileSync(join(configHome, 'config.toml'), 'utf8');
     assert.doesNotMatch(configText, /\[lark]/);
     assert.match(configText, /toFile = true/);
-    assert.match(configText, /Robot credentials are stored in lark-bots\.json/);
-    const bots = JSON.parse(readFileSync(join(configHome, 'lark-bots.json'), 'utf8')) as {
+    assert.match(configText, /Channel credentials are stored under channels\/<channel>\//);
+    const bots = JSON.parse(readFileSync(join(configHome, 'channels', 'feishu', 'bots.json'), 'utf8')) as {
       readonly bots: readonly {
         readonly appId: string;
         readonly appSecret: string;
@@ -70,62 +69,7 @@ test('config loader ignores legacy .env after config.toml exists', () => {
     assert.equal(env.LARK_APP_SECRET, undefined);
     assert.equal(env.ALLOWED_CHATS, undefined);
     assert.equal(existsSync(join(configHome, '.env')), false);
-    assert.equal(existsSync(join(configHome, 'config.json')), false);
     assert.doesNotMatch(readFileSync(join(configHome, 'config.toml'), 'utf8'), /\[lark]/);
-  } finally {
-    rmSync(configHome, { recursive: true, force: true });
-  }
-});
-
-test('config loader migrates legacy config.json lark credentials into lark-bots.json', () => {
-  const configHome = mkdtempSync(join(tmpdir(), 'bridge-config-json-legacy-lark-'));
-  try {
-    writeFileSync(join(configHome, 'config.json'), JSON.stringify({
-      schemaVersion: 1,
-      lark: {
-        appId: 'cli_2222222222222222',
-        appSecret: 'legacy-secret',
-        tenantKey: 'tenant',
-        allowedChats: ['chat-json'],
-        authorizedUsers: ['owner'],
-        allowedApprovers: ['approver'],
-        allowGroupUserMentions: true,
-        allowExternalGroupUserMentions: true,
-        allowGroupBotMentions: true,
-      },
-      approval: { summaryMode: false },
-      appServer: { mode: 'owned_stdio', socketPath: null },
-      codex: {
-        bin: '/codex',
-        cwd: '/workspace',
-        allowedShellCommands: ['ls', 'pwd'],
-      },
-      card: { maxTextLength: 10000, updateIntervalMs: 1500 },
-      queue: { maxQueuedTasks: 100 },
-      usage: { rateLimitQueryIntervalMs: 300000 },
-      logging: { toFile: false, filePath: 'bridge.log' },
-      files: { enableAutoFileUpload: false },
-    }, null, 2), { mode: 0o600 });
-
-    const env = loadBridgeEnvironment({ BRIDGE_CONFIG_HOME: configHome });
-
-    assert.equal(env.LARK_APP_ID, 'cli_2222222222222222');
-    assert.equal(env.LARK_APP_SECRET, 'legacy-secret');
-    assert.equal(existsSync(join(configHome, 'config.toml')), true);
-    assert.equal(existsSync(join(configHome, 'config.json')), false);
-    assert.doesNotMatch(readFileSync(join(configHome, 'config.toml'), 'utf8'), /\[lark]/);
-    const botDocument = JSON.parse(readFileSync(join(configHome, 'lark-bots.json'), 'utf8')) as {
-      readonly bots: readonly {
-        readonly appId: string;
-        readonly appSecret: string;
-        readonly tenantKey: string;
-        readonly allowedChats: readonly string[];
-      }[];
-    };
-    assert.equal(botDocument.bots[0]?.appId, 'cli_2222222222222222');
-    assert.equal(botDocument.bots[0]?.appSecret, 'legacy-secret');
-    assert.equal(botDocument.bots[0]?.tenantKey, 'tenant');
-    assert.deepEqual(botDocument.bots[0]?.allowedChats, ['chat-json']);
   } finally {
     rmSync(configHome, { recursive: true, force: true });
   }

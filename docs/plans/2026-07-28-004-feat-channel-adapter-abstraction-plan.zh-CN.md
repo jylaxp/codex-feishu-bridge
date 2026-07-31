@@ -30,6 +30,7 @@ Bridge 当前是飞书优先实现。飞书 inbound normalization、WebSocket �
 - 新生产渠道不应在飞书抽象迁移和 fake-channel 回归稳定前接入。
 - runtime execution route policy 与 message channel selection 是两条轴。任务可以来自飞书、钉钉或 Telegram，但执行仍按 route policy 选择 stable 或 Desktop-attached。
 - Bot-to-bot handoff 默认 fail closed；只有当前渠道明确声明了可安全触发目标机器人的机制，才允许自动 handoff。
+- 渠道凭证放在 `channels/<channel>/` 下；根目录 `config.toml` 是进程级配置，根目录 `bindings.json` 是跨渠道端点到 ChatGPT thread 的索引。
 
 ---
 
@@ -114,6 +115,7 @@ Bridge 当前是飞书优先实现。飞书 inbound normalization、WebSocket �
 | 分离 adapter lifecycle、renderer 和 transport | startup/reconnect/auth 属于 adapter；payload 构造属于 renderer；send/update/upload 属于 transport。 |
 | 使用 capability profile，避免按 channel name 分支 | 这是 cc-connect 最值得吸收的设计原则，也能防止共享代码持续增长 `if channel === "feishu"`。 |
 | 任务创建时 snapshot channel context | 防止后续配置或 binding 变化影响 queued work、reply target、fallback 行为或 execution route。 |
+| binding 跨渠道，渠道配置按渠道隔离 | 允许飞书和企业微信端点绑定同一个 ChatGPT thread，同时隔离各渠道凭证、发现缓存和 API 专属状态。 |
 | 先加 fake limited channels，再加真实新渠道 | fake channel 能低成本证明降级语义，防止飞书常量泄漏。 |
 | route policy 与 channel policy 正交 | 消息渠道决定 Bridge 怎么和用户说话；执行路由决定 Bridge 怎么跑 Codex。混在一起会让跨渠道行为变脆。 |
 | unsupported handoff fail closed | 没有真实 bot-trigger 机制的渠道不能用不安全或不会触发的消息模拟自动 handoff。 |
@@ -133,7 +135,8 @@ Bridge 当前是飞书优先实现。飞书 inbound normalization、WebSocket �
 
 - normalized channel 类型和 projection 对象的最终命名：实现时按现有 TypeScript 风格确定。
 - 飞书文件是立即从 `src/app/lark/*` 移到 `src/app/channels/feishu/*`，还是先 wrap：按 diff 大小和测试风险决定。
-- channel config 的最终语法：实现时结合现有环境解析和 bot config shape 决定。
+- channel config 的最终语法：使用 `channels/<channel>/` 目录。飞书使用 `channels/feishu/bots.json` 和 `channels/feishu/external-bots.json`；未来渠道新增自己的目录，不把渠道凭证写入 `config.toml`。
+- 多渠道 fan-out 的精确机制：renderer/channel adapter 必须把一个 thread projection 转换为当前 `threadId -> bindings[]` 的每个 binding 对应的一份 outbound delivery plan。
 - WhatsApp 的确切支持边界：因 proactive message 和 template 约束强，需要单独 API/产品评审。
 
 ---

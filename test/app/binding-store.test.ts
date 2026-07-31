@@ -59,32 +59,37 @@ test('binding store scopes the same tenant chat by bot key', () => {
   try {
     const store = new BindingStore(configHome, { now: () => 1_000 });
     store.bind({
-      botKey: 'bot_aaaaaaaaaaaa',
+      botKey: 'cli_aaaaaaaaaaaaaaaa',
       tenantKey: 'tenant',
       chatId: 'chat',
       threadId: 'thread-a',
       workspaceId: '/workspace-a',
     });
     store.bind({
-      botKey: 'bot_bbbbbbbbbbbb',
+      botKey: 'cli_bbbbbbbbbbbbbbbb',
       tenantKey: 'tenant',
       chatId: 'chat',
       threadId: 'thread-b',
       workspaceId: '/workspace-b',
     });
 
-    assert.equal(store.get('tenant', 'chat', 'bot_aaaaaaaaaaaa')?.threadId, 'thread-a');
-    assert.equal(store.get('tenant', 'chat', 'bot_bbbbbbbbbbbb')?.threadId, 'thread-b');
+    assert.equal(store.get('tenant', 'chat', 'cli_aaaaaaaaaaaaaaaa')?.threadId, 'thread-a');
+    assert.equal(store.get('tenant', 'chat', 'cli_bbbbbbbbbbbbbbbb')?.threadId, 'thread-b');
     assert.equal(store.list().length, 2);
 
     const document = JSON.parse(readFileSync(join(configHome, 'bindings.json'), 'utf8')) as {
       readonly schemaVersion: number;
-      readonly bindings: readonly { readonly larkAppId?: string; readonly botKey?: string }[];
+      readonly bindings: readonly {
+        readonly channel?: string;
+        readonly larkAppId?: string;
+        readonly botKey?: string;
+      }[];
     };
-    assert.equal(document.schemaVersion, 5);
+    assert.equal(document.schemaVersion, 6);
+    assert.deepEqual(document.bindings.map((binding) => binding.channel), ['feishu', 'feishu']);
     assert.deepEqual(document.bindings.map((binding) => binding.larkAppId).sort(), [
-      'bot_aaaaaaaaaaaa',
-      'bot_bbbbbbbbbbbb',
+      'cli_aaaaaaaaaaaaaaaa',
+      'cli_bbbbbbbbbbbbbbbb',
     ]);
     assert.deepEqual(document.bindings.map((binding) => binding.botKey), [undefined, undefined]);
   } finally {
@@ -97,7 +102,7 @@ test('binding store persists chat type metadata', () => {
   try {
     const store = new BindingStore(configHome, { now: () => 1_000 });
     const binding = store.bind({
-      botKey: 'bot_aaaaaaaaaaaa',
+      botKey: 'cli_aaaaaaaaaaaaaaaa',
       tenantKey: 'tenant',
       chatId: 'chat',
       chatType: 'group',
@@ -109,7 +114,58 @@ test('binding store persists chat type metadata', () => {
 
     const loaded = new BindingStore(configHome);
     loaded.load();
-    assert.equal(loaded.get('tenant', 'chat', 'bot_aaaaaaaaaaaa')?.chatType, 'group');
+    assert.equal(loaded.get('tenant', 'chat', 'cli_aaaaaaaaaaaaaaaa')?.chatType, 'group');
+  } finally {
+    rmSync(configHome, { recursive: true, force: true });
+  }
+});
+
+test('binding store records observed chat type for legacy bindings without overwriting known types', () => {
+  const configHome = mkdtempSync(join(tmpdir(), 'bridge-binding-observed-chat-type-'));
+  try {
+    let now = 1_000;
+    const store = new BindingStore(configHome, { now: () => now });
+    store.bind({
+      botKey: 'cli_aaaaaaaaaaaaaaaa',
+      tenantKey: 'tenant',
+      chatId: 'legacy-chat',
+      threadId: 'thread-legacy',
+      workspaceId: '/workspace',
+    });
+    store.bind({
+      botKey: 'cli_aaaaaaaaaaaaaaaa',
+      tenantKey: 'tenant',
+      chatId: 'known-chat',
+      chatType: 'group',
+      threadId: 'thread-known',
+      workspaceId: '/workspace',
+    });
+    store.bind({
+      botKey: 'cli_aaaaaaaaaaaaaaaa',
+      tenantKey: 'tenant',
+      chatId: 'unknown-chat',
+      chatType: 'unknown',
+      threadId: 'thread-unknown',
+      workspaceId: '/workspace',
+    });
+
+    now = 2_000;
+    const legacy = store.recordObservedChatType('tenant', 'legacy-chat', 'group', 'cli_aaaaaaaaaaaaaaaa');
+    const known = store.recordObservedChatType('tenant', 'known-chat', 'p2p', 'cli_aaaaaaaaaaaaaaaa');
+    const unknown = store.recordObservedChatType('tenant', 'unknown-chat', 'p2p', 'cli_aaaaaaaaaaaaaaaa');
+
+    assert.equal(legacy?.chatType, 'group');
+    assert.equal(legacy?.revision, 2);
+    assert.equal(known?.chatType, 'group');
+    assert.equal(known?.revision, 1);
+    assert.equal(unknown?.chatType, 'p2p');
+    assert.equal(unknown?.revision, 2);
+
+    const loaded = new BindingStore(configHome);
+    loaded.load();
+    assert.equal(loaded.get('tenant', 'legacy-chat', 'cli_aaaaaaaaaaaaaaaa')?.chatType, 'group');
+    assert.equal(loaded.get('tenant', 'known-chat', 'cli_aaaaaaaaaaaaaaaa')?.chatType, 'group');
+    assert.equal(loaded.get('tenant', 'unknown-chat', 'cli_aaaaaaaaaaaaaaaa')?.chatType, 'p2p');
   } finally {
     rmSync(configHome, { recursive: true, force: true });
   }
@@ -121,7 +177,7 @@ test('binding store persists external group member access policy per binding', (
     let tick = 1_000;
     const store = new BindingStore(configHome, { now: () => tick });
     const initial = store.bind({
-      botKey: 'bot_aaaaaaaaaaaa',
+      botKey: 'cli_aaaaaaaaaaaaaaaa',
       tenantKey: 'tenant',
       chatId: 'chat',
       threadId: 'thread',
@@ -134,7 +190,7 @@ test('binding store persists external group member access policy per binding', (
       'tenant',
       'chat',
       false,
-      'bot_aaaaaaaaaaaa',
+      'cli_aaaaaaaaaaaaaaaa',
     );
     assert.equal(disabled?.allowExternalGroupUserMentions, false);
     assert.equal(disabled?.revision, 2);
@@ -149,7 +205,7 @@ test('binding store persists external group member access policy per binding', (
       'tenant',
       'chat',
       true,
-      'bot_aaaaaaaaaaaa',
+      'cli_aaaaaaaaaaaaaaaa',
     );
     assert.equal(enabled?.allowExternalGroupUserMentions, undefined);
     assert.equal(enabled?.revision, 3);
@@ -163,124 +219,19 @@ test('binding store persists external group member access policy per binding', (
   }
 });
 
-test('binding store loads old bindings with bot collaboration disabled', () => {
-  const configHome = mkdtempSync(join(tmpdir(), 'bridge-binding-collab-default-'));
-  try {
-    writeFileSync(join(configHome, 'bindings.json'), JSON.stringify({
-      schemaVersion: 2,
-      bindings: [{
-        botKey: 'bot_aaaaaaaaaaaa',
-        tenantKey: 'tenant',
-        chatId: 'chat',
-        threadId: 'thread',
-        workspaceId: '/workspace',
-        revision: 1,
-        updatedAtMs: 1,
-      }],
-    }));
-    const store = new BindingStore(configHome);
-    store.load();
-
-    const loaded = store.get('tenant', 'chat', 'bot_aaaaaaaaaaaa');
-    assert.equal(loaded?.allowBotSenderMentions, undefined);
-    assert.deepEqual(loaded?.allowedBotSenderKeys ?? [], []);
-    assert.deepEqual(loaded?.allowedBotSenderOpenIds ?? [], []);
-    assert.deepEqual(loaded?.allowedHandoffTargetBotKeys ?? [], []);
-  } finally {
-    rmSync(configHome, { recursive: true, force: true });
-  }
-});
-
-test('binding store materializes legacy bot keys as app ids', () => {
-  const configHome = mkdtempSync(join(tmpdir(), 'bridge-binding-legacy-appid-'));
-  try {
-    writeFileSync(join(configHome, 'bindings.json'), JSON.stringify({
-      schemaVersion: 4,
-      bindings: [{
-        botKey: 'bot_aaaaaaaaaaaa',
-        tenantKey: 'tenant',
-        chatId: 'chat',
-        threadId: 'thread',
-        workspaceId: '/workspace',
-        revision: 1,
-        updatedAtMs: 1,
-      }],
-    }));
-    const store = new BindingStore(configHome);
-    store.load({
-      legacyBotKeyMap: new Map([['bot_aaaaaaaaaaaa', 'cli_abcdefabcdef1234']]),
-    });
-    store.materialize();
-
-    const loaded = store.get('tenant', 'chat', 'cli_abcdefabcdef1234');
-    assert.equal(loaded?.larkAppId, 'cli_abcdefabcdef1234');
-    assert.equal(loaded?.botKey, 'cli_abcdefabcdef1234');
-
-    const document = JSON.parse(readFileSync(join(configHome, 'bindings.json'), 'utf8')) as {
-      readonly schemaVersion: number;
-      readonly bindings: readonly { readonly larkAppId?: string; readonly botKey?: string }[];
-    };
-    assert.equal(document.schemaVersion, 5);
-    assert.equal(document.bindings[0]?.larkAppId, 'cli_abcdefabcdef1234');
-    assert.equal(document.bindings[0]?.botKey, undefined);
-  } finally {
-    rmSync(configHome, { recursive: true, force: true });
-  }
-});
-
-test('binding store persists bot collaboration policy per binding', () => {
-  const configHome = mkdtempSync(join(tmpdir(), 'bridge-binding-collab-policy-'));
-  try {
-    const store = new BindingStore(configHome, { now: () => 1_000 });
-    const binding = store.bind({
-      botKey: 'bot_aaaaaaaaaaaa',
-      tenantKey: 'tenant',
-      chatId: 'chat',
-      threadId: 'thread',
-      workspaceId: '/workspace',
-      allowBotSenderMentions: true,
-      allowedBotSenderKeys: ['bot_bbbbbbbbbbbb', 'bot_bbbbbbbbbbbb'],
-      allowedBotSenderOpenIds: ['ou_source', 'ou_source'],
-      allowedHandoffTargetBotKeys: ['bot_cccccccccccc'],
-    });
-
-    assert.equal(binding.allowBotSenderMentions, true);
-    assert.deepEqual(binding.allowedBotSenderKeys, ['bot_bbbbbbbbbbbb']);
-    assert.deepEqual(binding.allowedBotSenderOpenIds, ['ou_source']);
-    assert.deepEqual(binding.allowedHandoffTargetBotKeys, ['bot_cccccccccccc']);
-
-    const document = JSON.parse(readFileSync(join(configHome, 'bindings.json'), 'utf8')) as {
-      readonly schemaVersion: number;
-      readonly bindings: readonly {
-        readonly allowBotSenderMentions?: boolean;
-        readonly allowedBotSenderKeys?: readonly string[];
-        readonly allowedBotSenderOpenIds?: readonly string[];
-        readonly allowedHandoffTargetBotKeys?: readonly string[];
-      }[];
-    };
-    assert.equal(document.schemaVersion, 5);
-    assert.equal(document.bindings[0]?.allowBotSenderMentions, true);
-    assert.deepEqual(document.bindings[0]?.allowedBotSenderKeys, ['bot_bbbbbbbbbbbb']);
-    assert.deepEqual(document.bindings[0]?.allowedBotSenderOpenIds, ['ou_source']);
-    assert.deepEqual(document.bindings[0]?.allowedHandoffTargetBotKeys, ['bot_cccccccccccc']);
-  } finally {
-    rmSync(configHome, { recursive: true, force: true });
-  }
-});
-
-test('binding store refuses to choose one Desktop projection when multiple bots share a thread', () => {
+test('binding store lists every channel endpoint bound to the same thread', () => {
   const configHome = mkdtempSync(join(tmpdir(), 'bridge-binding-shared-thread-'));
   try {
     const store = new BindingStore(configHome, { now: () => 1_000 });
     store.bind({
-      botKey: 'bot_aaaaaaaaaaaa',
+      botKey: 'cli_aaaaaaaaaaaaaaaa',
       tenantKey: 'tenant',
       chatId: 'chat-a',
       threadId: 'thread-shared',
       workspaceId: '/workspace-a',
     });
     store.bind({
-      botKey: 'bot_bbbbbbbbbbbb',
+      botKey: 'cli_bbbbbbbbbbbbbbbb',
       tenantKey: 'tenant',
       chatId: 'chat-b',
       threadId: 'thread-shared',
@@ -288,6 +239,10 @@ test('binding store refuses to choose one Desktop projection when multiple bots 
     });
 
     assert.equal(store.getUniqueByThreadId('thread-shared'), undefined);
+    assert.deepEqual(
+      store.listByThreadId('thread-shared').map((candidate) => candidate.chatId).sort(),
+      ['chat-a', 'chat-b'],
+    );
   } finally {
     rmSync(configHome, { recursive: true, force: true });
   }

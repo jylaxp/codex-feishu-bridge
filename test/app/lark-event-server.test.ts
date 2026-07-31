@@ -13,8 +13,8 @@ import {
 import type { InboundReplyContext, RawMessageEvent } from '../../src/app/lark/intake';
 
 const config = {
-  botKey: 'bot_release_test',
-  larkAppId: 'app',
+  botKey: 'cli_1111111111111111',
+  larkAppId: 'cli_1111111111111111',
   larkAppSecret: 'secret',
   larkTenantKey: 'tenant',
   larkBotOpenId: 'bot-open-id',
@@ -61,7 +61,7 @@ test('disabled bot event server replies with unavailable reason without acceptin
   assert.equal(acceptedMessages, 0);
   assert.equal(unavailable.length, 1);
   assert.equal(unavailable[0]?.reason, 'BOT_DISABLED');
-  assert.equal(unavailable[0]?.context.botKey, 'bot_release_test');
+  assert.equal(unavailable[0]?.context.botKey, 'cli_1111111111111111');
   assert.equal(unavailable[0]?.context.chatId, 'chat');
   assert.equal(unavailable[0]?.context.chatType, 'group');
 });
@@ -132,7 +132,7 @@ test('event server routes bot membership events', async () => {
 
   await server.start();
   await websocket.dispatchBotAdded({
-    app_id: 'app',
+    app_id: 'cli_1111111111111111',
     event_id: 'event-added',
     tenant_key: 'tenant',
     chat_id: 'chat',
@@ -140,15 +140,15 @@ test('event server routes bot membership events', async () => {
     name: 'Release Bot',
   });
   await websocket.dispatchBotDeleted({
-    app_id: 'app',
+    app_id: 'cli_1111111111111111',
     event_id: 'event-deleted',
     tenant_key: 'tenant',
     chat_id: 'chat',
     operator_id: { open_id: 'owner' },
   });
 
-  assert.deepEqual(addedEvents, ['bot_release_test:chat:Release Bot']);
-  assert.deepEqual(deletedEvents, ['bot_release_test:chat']);
+  assert.deepEqual(addedEvents, ['cli_1111111111111111:chat:Release Bot']);
+  assert.deepEqual(deletedEvents, ['cli_1111111111111111:chat']);
 });
 
 type DispatcherHandler = (event: unknown) => Promise<unknown> | unknown;
@@ -191,7 +191,7 @@ class FakeWebSocket {
 
 function groupMentionEvent(text: string, botOpenId: string = 'bot-open-id'): RawMessageEvent {
   return {
-    app_id: 'app',
+    app_id: 'cli_1111111111111111',
     event_id: `event-${botOpenId}`,
     tenant_key: 'tenant',
     sender: {

@@ -30,6 +30,7 @@ That direct wiring is workable for one channel, but it will not scale to WeCom, 
 - New production channels should not be added until Feishu is proven behind the new contracts with fake-channel regression coverage.
 - Runtime execution route policy is separate from message channel selection. A task can be received from Feishu, DingTalk, or Telegram and still choose stable or Desktop-attached execution by route policy.
 - Bot-to-bot handoff remains fail-closed unless the active channel explicitly declares a trigger mechanism that can safely address another bot.
+- Channel credentials are stored under `channels/<channel>/`; root `config.toml` is process-level configuration and root `bindings.json` is the cross-channel endpoint-to-thread index.
 
 ---
 
@@ -114,6 +115,7 @@ That direct wiring is workable for one channel, but it will not scale to WeCom, 
 | Separate adapter lifecycle from renderer and transport | Startup/reconnect/auth belongs to adapters; payload construction belongs to renderers; send/update/upload belongs to transports. |
 | Use capability profiles instead of channel-name branching | Matches cc-connect's strongest design principle and prevents future `if channel === "feishu"` growth in shared code. |
 | Snapshot channel context at task creation | Prevents later config or binding changes from mutating queued work, reply targets, fallback behavior, or execution route. |
+| Keep bindings cross-channel and channel configs channel-scoped | Allows Feishu and WeCom endpoints to bind the same ChatGPT thread while keeping each channel's credentials, discovery cache, and API-specific state isolated. |
 | Add fake limited channels before real new channels | Fake channels prove degradation semantics cheaply and prevent accidental Feishu constant leakage. |
 | Keep route policy orthogonal to channel policy | Message channel selects how Bridge talks to the user; execution route selects how Bridge runs Codex. Mixing them would make cross-channel behavior fragile. |
 | Make unsupported handoff fail closed | Channels without a real bot-trigger mechanism must not simulate autonomous handoff through unsafe or non-triggering messages. |
@@ -133,7 +135,8 @@ That direct wiring is workable for one channel, but it will not scale to WeCom, 
 
 - Exact naming of normalized channel types and projection objects: choose names that fit the existing TypeScript style during implementation.
 - Whether Feishu files should be moved from `src/app/lark/*` to `src/app/channels/feishu/*` immediately or wrapped first: decide based on diff size and test blast radius.
-- Exact channel config syntax: implement after reviewing current environment parsing and bot config shape.
+- Exact channel config syntax: use `channels/<channel>/` directories. Feishu uses `channels/feishu/bots.json` and `channels/feishu/external-bots.json`; future channels add their own directory without channel credentials in `config.toml`.
+- Exact multi-channel fan-out mechanics: renderer/channel adapter must turn one thread projection into one outbound delivery plan per current binding returned by `threadId -> bindings[]`.
 - Exact WhatsApp support boundary: requires a separate API and product review because proactive messages and templates have platform-specific constraints.
 
 ---

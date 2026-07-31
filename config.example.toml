@@ -1,5 +1,5 @@
 # Codex Feishu Bridge process configuration.
-# Robot credentials are stored in lark-bots.json, not in this file.
+# Channel credentials are stored under channels/<channel>/, not in this file.
 schemaVersion = 1
 
 [approval]

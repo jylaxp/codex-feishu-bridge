@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -37,7 +37,7 @@ test('bot config store persists optional role profile metadata', () => {
     const store = new BotConfigStore(configHome, { now: () => 1_000 });
     store.load(baseConfig);
     const bot = store.save({
-      botKey: 'bot_aaaaaaaaaaaa',
+      botKey: 'cli_aaaaaaaaaaaaaaaa',
       appId: 'cli_abcdefabcdef1234',
       appSecret: 'secret-a',
       enabled: true,
@@ -66,7 +66,7 @@ test('bot config store persists optional role profile metadata', () => {
     loaded.load(baseConfig);
     assert.deepEqual(loaded.get('cli_abcdefabcdef1234')?.roleProfile, bot.roleProfile);
 
-    const document = JSON.parse(readFileSync(join(configHome, 'lark-bots.json'), 'utf8')) as {
+    const document = JSON.parse(readFileSync(join(configHome, 'channels', 'feishu', 'bots.json'), 'utf8')) as {
       readonly schemaVersion: number;
       readonly bots: readonly Partial<LarkBotConfig>[];
     };
@@ -85,7 +85,7 @@ test('bot config store omits empty role profile metadata', () => {
     const store = new BotConfigStore(configHome, { now: () => 1_000 });
     store.load(baseConfig);
     const bot = store.save({
-      botKey: 'bot_aaaaaaaaaaaa',
+      botKey: 'cli_aaaaaaaaaaaaaaaa',
       appId: 'cli_abcdefabcdef1234',
       appSecret: 'secret-a',
       enabled: true,
@@ -106,13 +106,9 @@ test('bot config store omits empty role profile metadata', () => {
   }
 });
 
-test('bot config store defaults group bot mentions to enabled for MVP', () => {
-  const configHome = mkdtempSync(join(tmpdir(), 'bridge-bot-mention-default-'));
+test('bot config store ignores development root lark-bots.json during official migration', () => {
+  const configHome = mkdtempSync(join(tmpdir(), 'bridge-bot-ignore-root-'));
   try {
-    const defaultStore = new BotConfigStore(configHome, { now: () => 1_000 });
-    defaultStore.load({ ...baseConfig, allowGroupBotMentions: undefined });
-    assert.equal(defaultStore.get('default')?.allowGroupBotMentions, true);
-
     writeFileSync(join(configHome, 'lark-bots.json'), JSON.stringify({
       schemaVersion: 1,
       bots: [
@@ -130,7 +126,7 @@ test('bot config store defaults group bot mentions to enabled for MVP', () => {
           updatedAtMs: 1,
         },
         {
-          botKey: 'bot_aaaaaaaaaaaa',
+          botKey: 'cli_aaaaaaaaaaaaaaaa',
           appId: 'cli_abcdefabcdef1234',
           appSecret: 'secret-a',
           enabled: true,
@@ -147,9 +143,11 @@ test('bot config store defaults group bot mentions to enabled for MVP', () => {
     }));
 
     const loadedStore = new BotConfigStore(configHome);
-    loadedStore.load({ ...baseConfig, allowGroupBotMentions: undefined });
-    assert.equal(loadedStore.get('default')?.allowGroupBotMentions, true);
-    assert.equal(loadedStore.get('bot_aaaaaaaaaaaa')?.allowGroupBotMentions, false);
+    loadedStore.load({ ...baseConfig, larkAppId: '', larkAppSecret: '' });
+
+    assert.equal(loadedStore.list().length, 0);
+    assert.equal(existsSync(join(configHome, 'lark-bots.json')), true);
+    assert.equal(existsSync(join(configHome, 'channels', 'feishu', 'bots.json')), false);
   } finally {
     rmSync(configHome, { recursive: true, force: true });
   }

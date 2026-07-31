@@ -4,7 +4,7 @@ import * as Lark from '@larksuiteoapi/node-sdk';
 import { existsSync, lstatSync, mkdirSync, writeFileSync } from 'node:fs';
 import { normalize } from 'node:path';
 
-import { BindingStore } from './binding-store';
+import { BINDINGS_SCHEMA_VERSION, BindingStore } from './binding-store';
 import {
   ConfigurationError,
   parseEnvironment,
@@ -207,7 +207,7 @@ function knownConfigKeys(): readonly string[] {
 function ensureBindingsFile(configHome: string): void {
   const store = new BindingStore(configHome);
   if (!existsSync(store.filePath)) {
-    writeFileSync(store.filePath, '{\n  "schemaVersion": 5,\n  "bindings": []\n}\n', {
+    writeFileSync(store.filePath, `{\n  "schemaVersion": ${BINDINGS_SCHEMA_VERSION},\n  "bindings": []\n}\n`, {
       encoding: 'utf8',
       mode: 0o600,
     });

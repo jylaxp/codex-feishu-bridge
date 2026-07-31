@@ -11,7 +11,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
-import { BindingStore } from './binding-store';
+import { BINDINGS_SCHEMA_VERSION, BindingStore } from './binding-store';
 import { materializeLegacyBotFromEnvironment } from './bot-config-store';
 import {
   PROTOCOL_VERSION_CONFIG_LOCK_FILE_NAME,
@@ -20,7 +20,6 @@ import {
 import {
   bridgeConfigPaths,
   readConfigFileEnvironment,
-  readLegacyJsonConfigFileEnvironment,
   readLegacyEnvironmentFile,
   writeBridgeConfigFile,
 } from './config-file';
@@ -73,7 +72,7 @@ export function inspectConfigReset(configHome: string): ConfigResetReport {
     configHome,
     action: current ? 'already_current' : 'reset_required',
     entriesToRemove: Object.freeze(current ? [] : entries),
-    preservesConfig: entries.includes('config.toml') || entries.includes('config.json') || entries.includes('.env'),
+    preservesConfig: entries.includes('config.toml') || entries.includes('.env'),
     requiresConfirmation: !current,
   });
 }
@@ -135,7 +134,7 @@ export function resetConfigHome(
   try {
     mkdirSync(staging, { recursive: false, mode: 0o700 });
     migrateConfigIfPresent(configHome, staging);
-    writeFileSync(join(staging, 'bindings.json'), '{\n  "schemaVersion": 5,\n  "bindings": []\n}\n', {
+    writeFileSync(join(staging, 'bindings.json'), `{\n  "schemaVersion": ${BINDINGS_SCHEMA_VERSION},\n  "bindings": []\n}\n`, {
       encoding: 'utf8',
       mode: 0o600,
     });
@@ -199,8 +198,7 @@ function isCurrentStructure(configHome: string, entries: readonly string[]): boo
   const allowed = new Set([
     'config.toml',
     'bindings.json',
-    'lark-bots.json',
-    'external-bots.json',
+    'channels',
     'protocol-versions.json',
   ]);
   if (entries.some((entry) => !allowed.has(entry))) {
@@ -229,12 +227,6 @@ function migrateConfigIfPresent(oldHome: string, staging: string): void {
   const oldPaths = bridgeConfigPaths(oldHome);
   if (existsSync(oldPaths.configPath)) {
     const env = readConfigFileEnvironment(oldPaths);
-    materializeLegacyBotFromEnvironment(staging, env);
-    writeBridgeConfigFile(staging, env);
-    return;
-  }
-  if (existsSync(oldPaths.legacyJsonConfigPath)) {
-    const env = readLegacyJsonConfigFileEnvironment(oldPaths);
     materializeLegacyBotFromEnvironment(staging, env);
     writeBridgeConfigFile(staging, env);
     return;

@@ -13,22 +13,23 @@ import {
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 
+import { feishuChannelConfigDirectory } from './channel-paths';
 import { CachedTenantTokenProvider, type FetchLike } from './lark/client';
 import type { BridgeConfig } from './domain';
 
 export const DEFAULT_BOT_KEY = 'default';
 const BOTS_SCHEMA_VERSION = 2;
-const BOTS_FILE_NAME = 'lark-bots.json';
+const BOTS_FILE_NAME = 'bots.json';
 const MAX_BOTS_FILE_BYTES = 1024 * 1024;
 const MAX_BOT_COUNT = 100;
 const MAX_IDENTIFIER_LENGTH = 512;
 const BOT_INFO_URL = 'https://open.feishu.cn/open-apis/bot/v3/info';
 const MAX_BOT_INFO_BYTES = 64 * 1024;
 
-export type LarkBotConfigSource = 'legacy-env' | 'lark-bots-json' | 'qr' | 'import';
+export type LarkBotConfigSource = 'legacy-env' | 'qr' | 'import';
 
 export interface LarkBotConfig {
-  /** Deprecated runtime alias. New records use the Feishu appId as this identifier. */
+  /** Runtime routing key. New records use the Feishu appId as this identifier. */
   readonly botKey: string;
   readonly appId: string;
   readonly appSecret: string;
@@ -48,8 +49,6 @@ export interface LarkBotConfig {
   readonly source: LarkBotConfigSource;
   readonly createdAtMs: number;
   readonly updatedAtMs: number;
-  /** Old generated/default routing keys accepted only for migration. */
-  readonly legacyBotKey?: string;
 }
 
 export interface LarkBotRoleProfile {
@@ -71,9 +70,7 @@ interface BotDocument {
   readonly bots: readonly SerializedLarkBotConfig[];
 }
 
-type SerializedLarkBotConfig = Omit<LarkBotConfig, 'botKey' | 'legacyBotKey'> & {
-  readonly botKey?: string;
-};
+type SerializedLarkBotConfig = Omit<LarkBotConfig, 'botKey'>;
 
 export class BotConfigStoreError extends Error {
   public constructor(message: string, options?: ErrorOptions) {
@@ -92,7 +89,6 @@ export class BotConfigStore {
   private readonly now: () => number;
   private readonly botsPath: string;
   private readonly bots = new Map<string, LarkBotConfig>();
-  private readonly aliases = new Map<string, string>();
   private materialized = false;
 
   public constructor(configHome: string, options: BotConfigStoreOptions = {}) {
@@ -100,7 +96,9 @@ export class BotConfigStore {
       throw new BotConfigStoreError('Bot config home must not be blank');
     }
     this.now = options.now ?? Date.now;
-    this.botsPath = join(configHome, options.botsFileName ?? BOTS_FILE_NAME);
+    this.botsPath = options.botsFileName
+      ? join(configHome, options.botsFileName)
+      : join(feishuChannelConfigDirectory(configHome), BOTS_FILE_NAME);
   }
 
   public get filePath(): string {
@@ -109,7 +107,6 @@ export class BotConfigStore {
 
   public load(baseConfig: BridgeConfig): void {
     this.bots.clear();
-    this.aliases.clear();
     this.materialized = existsSync(this.botsPath);
     if (!this.materialized) {
       if (hasLegacyLarkBotConfig(baseConfig)) {
@@ -119,22 +116,22 @@ export class BotConfigStore {
     }
     const stat = lstatSync(this.botsPath);
     if (stat.isSymbolicLink() || !stat.isFile()) {
-      throw new BotConfigStoreError('lark-bots.json must be a regular file, not a symlink');
+      throw new BotConfigStoreError('bots.json must be a regular file, not a symlink');
     }
     let content: string;
     try {
       content = readFileSync(this.botsPath, { encoding: 'utf8' });
     } catch (error) {
-      throw new BotConfigStoreError('lark-bots.json could not be read', { cause: error });
+      throw new BotConfigStoreError('bots.json could not be read', { cause: error });
     }
     if (Buffer.byteLength(content, 'utf8') > MAX_BOTS_FILE_BYTES) {
-      throw new BotConfigStoreError('lark-bots.json exceeds the maximum allowed size');
+      throw new BotConfigStoreError('bots.json exceeds the maximum allowed size');
     }
     let document: unknown;
     try {
       document = JSON.parse(content);
     } catch (error) {
-      throw new BotConfigStoreError('lark-bots.json is not valid JSON', { cause: error });
+      throw new BotConfigStoreError('bots.json is not valid JSON', { cause: error });
     }
     for (const bot of parseDocument(document, baseConfig).bots) {
       this.addLoadedBot(bot);
@@ -150,13 +147,9 @@ export class BotConfigStore {
     return resolved ? this.bots.get(resolved) : undefined;
   }
 
-  public identifierAliases(): ReadonlyMap<string, string> {
-    return new Map(this.aliases);
-  }
-
   public resolveBotIdentifier(identifier: string): string | undefined {
     const normalized = requiredBotIdentifier(identifier, 'bot identifier');
-    return this.aliases.get(normalized) ?? this.bots.get(normalized)?.appId;
+    return this.bots.get(normalized)?.appId;
   }
 
   public activeBots(): readonly LarkBotConfig[] {
@@ -179,7 +172,6 @@ export class BotConfigStore {
     this.bots.set(next.appId, next);
     try {
       this.persist();
-      this.rebuildAliases();
       return next;
     } catch (error) {
       if (previous) {
@@ -187,12 +179,11 @@ export class BotConfigStore {
       } else {
         this.bots.delete(next.appId);
       }
-      this.rebuildAliases();
       throw error;
     }
   }
 
-  public update(botKey: string, patch: Partial<Omit<LarkBotConfig, 'botKey' | 'appId' | 'legacyBotKey' | 'createdAtMs' | 'updatedAtMs'>>): LarkBotConfig {
+  public update(botKey: string, patch: Partial<Omit<LarkBotConfig, 'botKey' | 'appId' | 'createdAtMs' | 'updatedAtMs'>>): LarkBotConfig {
     const existing = this.get(botKey);
     if (!existing) {
       throw new BotConfigStoreError('bot record does not exist');
@@ -216,7 +207,6 @@ export class BotConfigStore {
       activateStatus: patch.activateStatus ?? existing.activateStatus,
       roleProfile: patch.roleProfile ?? existing.roleProfile,
       source: patch.source ?? existing.source,
-      legacyBotKey: existing.legacyBotKey,
     });
   }
 
@@ -232,11 +222,9 @@ export class BotConfigStore {
     this.bots.delete(key);
     try {
       this.persist();
-      this.rebuildAliases();
       return true;
     } catch (error) {
       this.bots.set(previous.appId, previous);
-      this.rebuildAliases();
       throw error;
     }
   }
@@ -246,16 +234,11 @@ export class BotConfigStore {
     return this.list().find((bot) => bot.appId.toLowerCase() === normalized.toLowerCase());
   }
 
-  public nextBotKey(appId: string): string {
-    return requiredAppId(appId);
-  }
-
   private addLoadedBot(bot: LarkBotConfig): void {
     if ([...this.bots.values()].some((existing) => existing.appId.toLowerCase() === bot.appId.toLowerCase())) {
-      throw new BotConfigStoreError('lark-bots.json contains duplicate appId values');
+      throw new BotConfigStoreError('bots.json contains duplicate appId values');
     }
     this.bots.set(bot.appId, bot);
-    this.rebuildAliases();
   }
 
   private persist(): void {
@@ -267,7 +250,7 @@ export class BotConfigStore {
     });
     const serialized = `${JSON.stringify(document, null, 2)}\n`;
     if (Buffer.byteLength(serialized, 'utf8') > MAX_BOTS_FILE_BYTES) {
-      throw new BotConfigStoreError('lark-bots.json would exceed the maximum allowed size');
+      throw new BotConfigStoreError('bots.json would exceed the maximum allowed size');
     }
     const temporaryPath = `${this.botsPath}.tmp`;
     let descriptor: number | undefined;
@@ -289,28 +272,10 @@ export class BotConfigStore {
         closeSync(descriptor);
       }
       safelyUnlink(temporaryPath);
-      throw new BotConfigStoreError('lark-bots.json could not be atomically updated', { cause: error });
+      throw new BotConfigStoreError('bots.json could not be atomically updated', { cause: error });
     }
   }
 
-  private rebuildAliases(): void {
-    this.aliases.clear();
-    for (const bot of this.bots.values()) {
-      this.addAlias(bot.appId, bot.appId);
-      this.addAlias(bot.botKey, bot.appId);
-      if (bot.legacyBotKey) {
-        this.addAlias(bot.legacyBotKey, bot.appId);
-      }
-    }
-  }
-
-  private addAlias(alias: string, appId: string): void {
-    const previous = this.aliases.get(alias);
-    if (previous && previous !== appId) {
-      throw new BotConfigStoreError('lark-bots.json contains conflicting legacy bot identifiers');
-    }
-    this.aliases.set(alias, appId);
-  }
 }
 
 export function botConfigToBridgeConfig(baseConfig: BridgeConfig, bot: LarkBotConfig): BridgeConfig {
@@ -349,7 +314,6 @@ export function synthesizeDefaultBot(baseConfig: BridgeConfig, now: number): Lar
     source: 'legacy-env',
     createdAtMs: now,
     updatedAtMs: now,
-    legacyBotKey: DEFAULT_BOT_KEY,
   });
 }
 
@@ -371,7 +335,6 @@ export function materializeDefaultBot(baseConfig: BridgeConfig, identity: BotIde
     avatarUrl: identity.avatarUrl,
     activateStatus: identity.activateStatus,
     source: 'legacy-env',
-    legacyBotKey: DEFAULT_BOT_KEY,
   });
 }
 
@@ -405,21 +368,8 @@ export function materializeLegacyBotFromEnvironment(
     activateStatus: existing?.activateStatus,
     roleProfile: existing?.roleProfile,
     source: existing?.source ?? 'legacy-env',
-    legacyBotKey: existing?.legacyBotKey ?? DEFAULT_BOT_KEY,
   });
   return true;
-}
-
-/**
- * Deprecated compatibility helper. New robot records are identified directly
- * by their Feishu appId.
- */
-export function generateBotKey(
-  appId: string,
-  _existingKeys: ReadonlySet<string>,
-  _appIdForKey: (botKey: string) => string | undefined = () => undefined,
-): string {
-  return requiredAppId(appId);
 }
 
 export async function hydrateBotIdentity(
@@ -472,13 +422,13 @@ export async function hydrateBotIdentity(
 
 function parseDocument(value: unknown, baseConfig: BridgeConfig): { readonly schemaVersion: number; readonly bots: readonly LarkBotConfig[] } {
   if (!isRecord(value) || hasUnknownKeys(value, ['schemaVersion', 'bots'])) {
-    throw new BotConfigStoreError('lark-bots.json has an invalid document shape');
+    throw new BotConfigStoreError('bots.json has an invalid document shape');
   }
-  if ((value.schemaVersion !== 1 && value.schemaVersion !== BOTS_SCHEMA_VERSION) || !Array.isArray(value.bots)) {
-    throw new BotConfigStoreError('lark-bots.json schema version is unsupported');
+  if (value.schemaVersion !== BOTS_SCHEMA_VERSION || !Array.isArray(value.bots)) {
+    throw new BotConfigStoreError('bots.json schema version is unsupported');
   }
   if (value.bots.length > MAX_BOT_COUNT) {
-    throw new BotConfigStoreError('lark-bots.json contains too many bots');
+    throw new BotConfigStoreError('bots.json contains too many bots');
   }
   return Object.freeze({
     schemaVersion: BOTS_SCHEMA_VERSION,
@@ -488,7 +438,6 @@ function parseDocument(value: unknown, baseConfig: BridgeConfig): { readonly sch
 
 function parseBot(value: unknown, baseConfig: BridgeConfig): LarkBotConfig {
   if (!isRecord(value) || hasUnknownKeys(value, [
-    'botKey',
     'appId',
     'appSecret',
     'enabled',
@@ -508,11 +457,11 @@ function parseBot(value: unknown, baseConfig: BridgeConfig): LarkBotConfig {
     'createdAtMs',
     'updatedAtMs',
   ])) {
-    throw new BotConfigStoreError('lark-bots.json contains an invalid bot');
+    throw new BotConfigStoreError('bots.json contains an invalid bot');
   }
   const normalized = normalizeBotInput({
+    botKey: requiredAppId(value.appId),
     appId: requiredAppId(value.appId),
-    botKey: optionalBotIdentifier(value.botKey, 'botKey') ?? requiredAppId(value.appId),
     appSecret: requiredText(value.appSecret, 'appSecret'),
     enabled: value.enabled !== false,
     tenantKey: optionalText(value.tenantKey, 'tenantKey') ?? '',
@@ -530,7 +479,6 @@ function parseBot(value: unknown, baseConfig: BridgeConfig): LarkBotConfig {
     activateStatus: typeof value.activateStatus === 'number' ? value.activateStatus : undefined,
     roleProfile: parseRoleProfile(value.roleProfile),
     source: parseSource(value.source),
-    legacyBotKey: legacyBotIdentifier(value.botKey, value.appId),
   });
   return Object.freeze({
     ...normalized,
@@ -543,8 +491,6 @@ function normalizeBotInput(
   input: Omit<LarkBotConfig, 'createdAtMs' | 'updatedAtMs'>,
 ): Omit<LarkBotConfig, 'createdAtMs' | 'updatedAtMs'> {
   const appId = requiredAppId(input.appId);
-  const legacyBotKey = input.legacyBotKey
-    ?? legacyBotIdentifier(input.botKey, appId);
   return Object.freeze({
     botKey: appId,
     appId,
@@ -563,7 +509,6 @@ function normalizeBotInput(
     ...(typeof input.activateStatus === 'number' ? { activateStatus: input.activateStatus } : {}),
     ...(normalizeRoleProfile(input.roleProfile) ? { roleProfile: normalizeRoleProfile(input.roleProfile) } : {}),
     source: input.source,
-    ...(legacyBotKey ? { legacyBotKey } : {}),
   });
 }
 
@@ -588,7 +533,6 @@ function legacyBotInputFromEnvironment(
     allowExternalGroupUserMentions: envBoolean(env.ALLOW_EXTERNAL_GROUP_USER_MENTIONS, true),
     allowGroupBotMentions: envBoolean(env.ALLOW_GROUP_BOT_MENTIONS, true),
     source: 'legacy-env',
-    legacyBotKey: DEFAULT_BOT_KEY,
   });
 }
 
@@ -714,21 +658,8 @@ function requiredBotIdentifier(value: unknown, label: string): string {
   return key;
 }
 
-function optionalBotIdentifier(value: unknown, label: string): string | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  return requiredBotIdentifier(value, label);
-}
-
-function legacyBotIdentifier(value: unknown, appIdValue: unknown): string | undefined {
-  const appId = requiredAppId(appIdValue);
-  const identifier = optionalBotIdentifier(value, 'botKey');
-  return identifier && identifier !== appId ? identifier : undefined;
-}
-
 function isBotIdentifier(value: string): boolean {
-  return isAppId(value) || /^(?:default|bot_[a-z2-7][a-z2-7]{11,59})$/.test(value);
+  return isAppId(value) || value === DEFAULT_BOT_KEY;
 }
 
 function requiredAppId(value: unknown): string {
@@ -785,9 +716,9 @@ function uniqueStrings(values: readonly unknown[]): readonly string[] {
 }
 
 function parseSource(value: unknown): LarkBotConfigSource {
-  return value === 'legacy-env' || value === 'lark-bots-json' || value === 'qr' || value === 'import'
+  return value === 'legacy-env' || value === 'qr' || value === 'import'
     ? value
-    : 'lark-bots-json';
+    : 'import';
 }
 
 function timestampValue(value: unknown, label: string): number {
@@ -812,7 +743,6 @@ function hasUnknownKeys(record: Record<string, unknown>, allowed: readonly strin
 function serializeBot(bot: LarkBotConfig): SerializedLarkBotConfig {
   const {
     botKey: _botKey,
-    legacyBotKey: _legacyBotKey,
     ...serialized
   } = bot;
   return Object.freeze(serialized);

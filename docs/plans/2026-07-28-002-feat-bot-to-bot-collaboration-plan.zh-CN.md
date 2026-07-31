@@ -79,7 +79,7 @@ bridge 正在从单个远程控制机器人演进成多 agent 工作界面。在
 
 - `src/app/lark/intake.ts` 已经区分 `sender_type=user` 和 `sender_type=bot`，并且当前会拒绝群里的机器人发送者，除非 bot 配置开启 bot mentions。
 - `src/app/config.ts`、`.env.example`、`src/app/bot-config-store.ts` 和 `src/app/bot-command.ts` 已经携带 `ALLOW_GROUP_BOT_MENTIONS` / `allowGroupBotMentions`。对 MVP 来说，这个已有 bot 级开关就是机器人发送者群 @ 的响应闸门。
-- `src/app/binding-store.ts` 以 `botKey + tenantKey + chatId` 持久化 bot-scoped 群绑定。
+- `src/app/binding-store.ts` 以 `channel + larkAppId + tenantKey + chatId` 持久化 bot-scoped 群绑定。
 - `src/app/conversation-binding-service-v3.ts` 已经承载 owner-only 的群绑定/状态策略命令。
 - `src/app/main.ts` 会把接受的入站事件路由到 bot-specific binding service 和共享 orchestrator。
 - `src/app/in-memory-orchestrator.ts` 和 `src/app/task-scheduler.ts` 已经按 ChatGPT thread id 串行，这正是两个机器人绑定到同一线程时的并发边界。
@@ -148,11 +148,11 @@ sequenceDiagram
 - MVP 协作默认开放。bridge 不要求 source-target grant、sender 白名单、成员白名单或 tenant_key 校验。
 - 目标机器人的 enabled 状态和群 @ 响应开关是 MVP 唯一响应闸门。
 - 新增机器人角色 profile，但它和响应控制分离。角色 profile 帮助 AI 判断该调用谁，但不授予或拒绝访问。
-- 为其他 Bridge 实例或其他 owner 管理的机器人维护按 source bot 分组的外部机器人目录。目录只保存 `sourceBotKey + tenantKey + chatId + 外部机器人 open_id + 展示名称`，仅用于渲染真实飞书 `@外部机器人` mention。
+- 为其他 Bridge 实例或其他 owner 管理的机器人维护按 source bot 分组的外部机器人目录。目录只保存 `sourceAppId + tenantKey + chatId + 外部机器人 open_id + 展示名称`，仅用于渲染真实飞书 `@外部机器人` mention。
 - 通过显式 directive contract 驱动 AI 决策。模型可以在最终输出里发出有边界的 `cfb-handoff` directive；bridge 校验后把它物化成真实飞书 `@target bot` 消息。
 - directive parser 保持保守。无效、未知目标、禁用目标、未绑定目标、超长或过期 directive 要么忽略，要么转成可见但不可执行的说明，绝不乐观执行。
 - 机器人发送者消息只允许进入任务路径。如果机器人发送者文本以 `/` 开头，绝不路由到命令服务。
-- 使用 `chainId`、`handoffId`、`parentMessageId`、source `botKey`、target `botKey`、target `chatId` 和 target `threadId` 做去重和审计。
+- 使用 `chainId`、`handoffId`、`parentMessageId`、source `appId`、target `appId`、target `chatId` 和 target `threadId` 做去重和审计。
 - 同线程并发继续使用现有 thread scheduler。协作只是新增跨 bot 入站，不新增第二套执行锁。
 - MVP 优先只做一跳自动 handoff。多跳只能在配置的 hop、TTL、重复和每对 bot cooldown guard 内运行。
 - 只对本地已知的禁用/不可用/未绑定目标机器人返回明确原因。未知或已移除机器人事件保持静默。
@@ -190,7 +190,7 @@ sequenceDiagram
 
 **测试场景：**
 - 不含协作策略字段的已有 bot 和 binding 文件可以正常加载。
-- 已迁移的旧机器人获得生成的 bot key，并保持当前单聊行为。
+- 已迁移的旧机器人在迁移后的 `appId` 下保持当前单聊行为。
 - 禁用机器人或关闭群 @ 响应的机器人不会启动群任务。
 - bot role metadata 可持久化，且不会出现在带 secret 的诊断输出中。
 
@@ -262,12 +262,12 @@ sequenceDiagram
 - 新增一个小型 sender，用源机器人的 Lark 凭据向当前群 send 或 reply 一条 text/post 消息。
 - bot-to-bot handoff 只包含真实目标机器人 mention 和有边界的任务文本。
 - bot-to-human notification 包含真实用户 mention 和短通知正文，但不得创建 bridge task。
-- 对外部 owner 管理的机器人，在源机器人收到群消息、完成群绑定、Bridge 启动后发现新版本群绑定，或收到机器人成员事件时，通过 `GET /open-apis/im/v1/chats/:chat_id/members/bots` 刷新飞书群机器人列表，并把发现到的外部机器人 open ID 写入 `external-bots.json`。
-- 新绑定写入 `chatType` 元数据，启动回填只扫描 `chatType=group` 的绑定。历史绑定没有该字段时，通过下一次群内 @ 或重新 `/bind` 补齐发现目录，避免把私聊绑定误当群聊批量调用群成员接口。
+- 对外部 owner 管理的机器人，在源机器人收到群消息、完成群绑定、Bridge 启动后发现新版本群绑定，或收到机器人成员事件时，通过 `GET /open-apis/im/v1/chats/:chat_id/members/bots` 刷新飞书群机器人列表，并把发现到的外部机器人 open ID 写入 `channels/feishu/external-bots.json`。
+- 新绑定写入 `chatType` 元数据，启动回填只扫描 `chatType=group` 的绑定。历史绑定没有该字段时，下一次该聊天事件携带明确 `chat_type` 就会自动升级；群内再次 @ 即可刷新发现目录，不需要重新 `/bind`，也避免把私聊绑定误当群聊批量调用群成员接口。
 - 将机器人成员事件视为加速器，而不是唯一发现路径。飞书 bot-added 事件会推送给新进群机器人，且机器人邀请机器人可能不触发该事件，因此仍需要普通群消息刷新兜底。
 - 不把任务结果卡片、卡片 `lark_md` 或卡片标题 mention 当作自动触发目标机器人的路径。卡片可以展示 handoff 摘要和人工控件，但目标机器人必须由单独 text/post 消息调用。
 - 优先用 `text` 表达最像普通群聊的触发消息。只有当渠道拒绝 text 创建时，才用 `post` 作为 fallback。
-- 使用基于 `chainId + handoffId + sourceBotKey + targetBotKey` 的飞书 `uuid` 做发送去重。
+- 使用基于 `chainId + handoffId + sourceAppId + targetAppId` 的飞书 `uuid` 做发送去重。
 - 限制任务文本大小，并移除原始推理、凭证、原始日志、本地路径和超大上下文。
 - 生产 rollout 前通过飞书 API explorer 验证目标机器人和用户 mention 格式。在验证前将 emitter 放在 feature flag 后。
 
@@ -305,7 +305,7 @@ sequenceDiagram
 **实现思路：**
 
 - 定义保守的最终答案 directive block，例如：
-  - target bot key 或 display name，
+  - target bot `appId` 或 display name，
   - reason，
   - bounded task，
   - context summary，
@@ -385,7 +385,7 @@ sequenceDiagram
 
 - 维护当前进程内带 TTL 的 chain state：
   - `chainId`,
-  - 仅用于追踪的 advisory visited bot keys,
+  - 仅用于追踪的 advisory visited bot app IDs,
   - emitted handoff IDs,
   - hop count,
   - parent message IDs,

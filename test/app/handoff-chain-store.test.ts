@@ -9,13 +9,13 @@ test('handoff chain store reserves first outbound handoff and rejects duplicates
   const store = new HandoffChainStore({ now: () => now, cooldownMs: 1 });
   const envelope = handoffEnvelope({ expiresAtMs: 10_000 });
 
-  assert.deepEqual(store.reserveOutbound(envelope, 'bot_bbbbbbbbbbbb'), { accepted: true });
-  assert.deepEqual(store.reserveOutbound(envelope, 'bot_bbbbbbbbbbbb'), {
+  assert.deepEqual(store.reserveOutbound(envelope, 'cli_bbbbbbbbbbbbbbbb'), { accepted: true });
+  assert.deepEqual(store.reserveOutbound(envelope, 'cli_bbbbbbbbbbbbbbbb'), {
     accepted: false,
     reason: 'duplicate',
   });
   now = 11_000;
-  assert.deepEqual(store.reserveOutbound(envelope, 'bot_bbbbbbbbbbbb'), {
+  assert.deepEqual(store.reserveOutbound(envelope, 'cli_bbbbbbbbbbbbbbbb'), {
     accepted: false,
     reason: 'expired',
   });
@@ -25,12 +25,12 @@ test('handoff chain store allows visited targets and still blocks outbound hop o
   const store = new HandoffChainStore({ now: () => 1_000, maxHops: 2 });
 
   assert.deepEqual(store.reserveOutbound(
-    handoffEnvelope({ visitedBotKeys: ['bot_aaaaaaaaaaaa', 'bot_bbbbbbbbbbbb'] }),
-    'bot_bbbbbbbbbbbb',
+    handoffEnvelope({ visitedBotKeys: ['cli_aaaaaaaaaaaaaaaa', 'cli_bbbbbbbbbbbbbbbb'] }),
+    'cli_bbbbbbbbbbbbbbbb',
   ), { accepted: true });
   assert.deepEqual(store.reserveOutbound(
     handoffEnvelope({ hop: 3 }),
-    'bot_bbbbbbbbbbbb',
+    'cli_bbbbbbbbbbbbbbbb',
   ), { accepted: false, reason: 'max_hops' });
 });
 
@@ -40,19 +40,19 @@ test('handoff chain store does not reject outbound handoffs only because target 
   assert.deepEqual(store.reserveOutbound(
     handoffEnvelope({
       handoffId: 'hf_visited_target_allowed',
-      visitedBotKeys: ['bot_aaaaaaaaaaaa', 'bot_bbbbbbbbbbbb'],
+      visitedBotKeys: ['cli_aaaaaaaaaaaaaaaa', 'cli_bbbbbbbbbbbbbbbb'],
     }),
-    'bot_bbbbbbbbbbbb',
+    'cli_bbbbbbbbbbbbbbbb',
   ), { accepted: true });
 });
 
 test('handoff chain store rate limits source-target outbound pairs', () => {
   const store = new HandoffChainStore({ now: () => 1_000, cooldownMs: 10_000 });
 
-  assert.deepEqual(store.reserveOutbound(handoffEnvelope({ handoffId: 'hf_first' }), 'bot_bbbbbbbbbbbb'), {
+  assert.deepEqual(store.reserveOutbound(handoffEnvelope({ handoffId: 'hf_first' }), 'cli_bbbbbbbbbbbbbbbb'), {
     accepted: true,
   });
-  assert.deepEqual(store.reserveOutbound(handoffEnvelope({ handoffId: 'hf_second' }), 'bot_bbbbbbbbbbbb'), {
+  assert.deepEqual(store.reserveOutbound(handoffEnvelope({ handoffId: 'hf_second' }), 'cli_bbbbbbbbbbbbbbbb'), {
     accepted: false,
     reason: 'cooldown',
   });
@@ -62,10 +62,10 @@ function handoffEnvelope(overrides: Partial<HandoffEnvelope> = {}): HandoffEnvel
   return {
     chainId: 'ch_aaaaaaaaaaaaaaaaaaaaaaaa',
     handoffId: 'hf_aaaaaaaaaaaaaaaaaaaaaaaa',
-    sourceBotKey: 'bot_aaaaaaaaaaaa',
+    sourceBotKey: 'cli_aaaaaaaaaaaaaaaa',
     hop: 1,
     expiresAtMs: 10_000,
-    visitedBotKeys: ['bot_aaaaaaaaaaaa'],
+    visitedBotKeys: ['cli_aaaaaaaaaaaaaaaa'],
     ...overrides,
   };
 }

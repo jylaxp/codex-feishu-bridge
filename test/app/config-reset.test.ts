@@ -52,7 +52,10 @@ test('config reset classifies a malformed protocol catalog as reset required', (
     assert.equal(existsSync(join(configHome, 'protocol-versions.json')), false);
     assert.equal(existsSync(join(configHome, '.env')), false);
     assert.doesNotMatch(readFileSync(join(configHome, 'config.toml'), 'utf8'), /cli_1111111111111111/);
-    assert.match(readFileSync(join(configHome, 'lark-bots.json'), 'utf8'), /cli_1111111111111111/);
+    assert.match(
+      readFileSync(join(configHome, 'channels', 'feishu', 'bots.json'), 'utf8'),
+      /cli_1111111111111111/,
+    );
   } finally {
     rmSync(configHome, { recursive: true, force: true });
   }
@@ -92,7 +95,7 @@ test('config reset treats residual .env next to config.toml as reset required', 
     writeFileSync(join(configHome, '.env'), 'LARK_APP_ID=cli_ffffffffffffffff\n', { mode: 0o600 });
     writeFileSync(
       join(configHome, 'bindings.json'),
-      '{\n  "schemaVersion": 5,\n  "bindings": []\n}\n',
+      '{\n  "schemaVersion": 6,\n  "bindings": []\n}\n',
       { mode: 0o600 },
     );
 
@@ -125,7 +128,6 @@ test('config reset refuses to migrate a legacy .env symlink', { skip: process.pl
       /config reset could not replace the configuration directory/,
     );
     assert.equal(existsSync(join(configHome, '.env')), true);
-    assert.equal(existsSync(join(configHome, 'config.json')), false);
     assert.equal(existsSync(join(configHome, 'config.toml')), false);
   } finally {
     rmSync(configHome, { recursive: true, force: true });

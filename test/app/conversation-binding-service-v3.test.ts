@@ -559,14 +559,14 @@ test('owner can inspect MVP bot collaboration status for the current binding', a
     let now = 1_000;
     const store = new BindingStore(configHome, { now: () => now });
     store.bind({
-      botKey: 'bot_aaaaaaaaaaaa',
+      botKey: 'cli_aaaaaaaaaaaaaaaa',
       tenantKey: 'tenant',
       chatId: 'chat',
       threadId: 'thread-active',
       workspaceId: '/workspace',
     });
     store.bind({
-      botKey: 'bot_bbbbbbbbbbbb',
+      botKey: 'cli_bbbbbbbbbbbbbbbb',
       tenantKey: 'tenant',
       chatId: 'chat',
       threadId: 'thread-order',
@@ -588,7 +588,7 @@ test('owner can inspect MVP bot collaboration status for the current binding', a
       replaceCard: async (_cardId, _card, sequence) => sequence + 1,
     };
     const service = new ConversationBindingServiceV3(
-      { ...config, botKey: 'bot_aaaaaaaaaaaa' },
+      { ...config, botKey: 'cli_aaaaaaaaaaaaaaaa' },
       store,
       catalog,
       cards,
@@ -601,7 +601,7 @@ test('owner can inspect MVP bot collaboration status for the current binding', a
       undefined,
       () => [
         {
-          botKey: 'bot_aaaaaaaaaaaa',
+          botKey: 'cli_aaaaaaaaaaaaaaaa',
           appId: 'cli_0123456789abcdef',
           appSecret: 'secret-a',
           enabled: true,
@@ -619,7 +619,7 @@ test('owner can inspect MVP bot collaboration status for the current binding', a
           updatedAtMs: 1,
         },
         {
-          botKey: 'bot_bbbbbbbbbbbb',
+          botKey: 'cli_bbbbbbbbbbbbbbbb',
           appId: 'cli_abcdefabcdef1234',
           appSecret: 'secret-b',
           enabled: true,
@@ -649,15 +649,12 @@ test('owner can inspect MVP bot collaboration status for the current binding', a
       senderType: 'user' as const,
       payloadDigest: 'digest',
       createdAtMs: now,
-      botKey: 'bot_aaaaaaaaaaaa',
+      botKey: 'cli_aaaaaaaaaaaaaaaa',
     };
 
     assert.equal(await service.handleCommand({ ...baseMessage, text: '/collab' }), true);
-    const binding = store.get('tenant', 'chat', 'bot_aaaaaaaaaaaa');
-    assert.equal(binding?.allowBotSenderMentions, undefined);
-    assert.deepEqual(binding?.allowedBotSenderKeys ?? [], []);
-    assert.deepEqual(binding?.allowedBotSenderOpenIds ?? [], []);
-    assert.deepEqual(binding?.allowedHandoffTargetBotKeys ?? [], []);
+    const binding = store.get('tenant', 'chat', 'cli_aaaaaaaaaaaaaaaa');
+    assert.equal(binding?.revision, 1);
     assert.match(JSON.stringify(createdCards.at(-1)), /默认开放协作/);
     assert.match(JSON.stringify(createdCards.at(-1)), /Order Bot/);
 
@@ -667,7 +664,7 @@ test('owner can inspect MVP bot collaboration status for the current binding', a
       eventId: 'event-target',
       text: '/collab target add Order Bot',
     }), true);
-    assert.equal(store.get('tenant', 'chat', 'bot_aaaaaaaaaaaa')?.revision, 1);
+    assert.equal(store.get('tenant', 'chat', 'cli_aaaaaaaaaaaaaaaa')?.revision, 1);
     assert.match(JSON.stringify(createdCards.at(-1)), /MVP 只支持/);
   } finally {
     rmSync(configHome, { recursive: true, force: true });
@@ -712,8 +709,7 @@ test('bot sender cannot mutate collaboration policy', async () => {
       botKey: 'default',
     }), true);
 
-    assert.equal(store.get('tenant', 'chat')?.allowBotSenderMentions, undefined);
-    assert.deepEqual(store.get('tenant', 'chat')?.allowedBotSenderOpenIds ?? [], []);
+    assert.equal(store.get('tenant', 'chat')?.revision, 1);
   } finally {
     rmSync(configHome, { recursive: true, force: true });
   }

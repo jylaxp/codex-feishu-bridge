@@ -86,7 +86,7 @@ test('group bot sender slash commands are never accepted as tasks', () => {
     ...message,
     senderType: 'bot',
     senderOpenId: 'ou_source',
-    text: '/collab accept bot_aaaaaaaaaaaa',
+    text: '/collab accept cli_aaaaaaaaaaaaaaaa',
   }, binding, undefined), { accepted: false, reason: 'bot_sender_command' });
 });
 
@@ -100,7 +100,7 @@ test('disabled local source bot cannot invoke a receiver binding', () => {
 
 function sourceBot(enabled: boolean): LarkBotConfig {
   return {
-    botKey: 'bot_aaaaaaaaaaaa',
+    botKey: 'cli_aaaaaaaaaaaaaaaa',
     appId: 'cli_0123456789abcdef',
     appSecret: 'secret',
     enabled,

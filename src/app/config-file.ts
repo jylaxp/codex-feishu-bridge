@@ -19,7 +19,6 @@ import { materializeLegacyBotFromEnvironment } from './bot-config-store';
 import { ConfigurationError, resolveConfigHome } from './config';
 
 export const CONFIG_FILE_NAME = 'config.toml';
-export const LEGACY_JSON_CONFIG_FILE_NAME = 'config.json';
 export const LEGACY_ENV_FILE_NAME = '.env';
 const CONFIG_SCHEMA_VERSION = 1;
 const MAX_CONFIG_FILE_BYTES = 1024 * 1024;
@@ -31,7 +30,6 @@ export interface ConfigFileOptions {
 export interface BridgeConfigPaths {
   readonly configHome: string;
   readonly configPath: string;
-  readonly legacyJsonConfigPath: string;
   readonly legacyEnvPath: string;
 }
 
@@ -86,7 +84,7 @@ type ParsedBridgeConfigDocument = BridgeConfigDocument & {
 
 /**
  * Loads `config.toml` as the current editable config format. Legacy
- * `config.json` and `.env` files are one-time migration sources.
+ * `.env` files are one-time migration sources.
  */
 export function loadBridgeEnvironment(
   baseEnv: NodeJS.ProcessEnv,
@@ -101,7 +99,6 @@ export function bridgeConfigPaths(configHome: string): BridgeConfigPaths {
   return Object.freeze({
     configHome,
     configPath: join(configHome, CONFIG_FILE_NAME),
-    legacyJsonConfigPath: join(configHome, LEGACY_JSON_CONFIG_FILE_NAME),
     legacyEnvPath: join(configHome, LEGACY_ENV_FILE_NAME),
   });
 }
@@ -118,15 +115,6 @@ export function readOrMigratePersistedEnvironment(paths: BridgeConfigPaths): Nod
     if (document.legacyLark) {
       writeBridgeConfigFile(paths.configHome, env);
     }
-    removeLegacyJsonConfigFile(paths);
-    removeLegacyEnvironmentFile(paths);
-    return env;
-  }
-  if (existsSync(paths.legacyJsonConfigPath)) {
-    const env = readLegacyJsonConfigFileEnvironment(paths);
-    materializeLegacyBotFromEnvironment(paths.configHome, env);
-    writeBridgeConfigFile(paths.configHome, env);
-    removeLegacyJsonConfigFile(paths);
     removeLegacyEnvironmentFile(paths);
     return env;
   }
@@ -143,11 +131,6 @@ export function readOrMigratePersistedEnvironment(paths: BridgeConfigPaths): Nod
 export function readConfigFileEnvironment(paths: BridgeConfigPaths): NodeJS.ProcessEnv {
   assertPrivateConfigFile(paths.configPath, 'Bridge config.toml');
   return configDocumentToEnvironment(readConfigDocument(paths.configPath));
-}
-
-export function readLegacyJsonConfigFileEnvironment(paths: BridgeConfigPaths): NodeJS.ProcessEnv {
-  assertPrivateConfigFile(paths.legacyJsonConfigPath, 'Bridge legacy config.json');
-  return configDocumentToEnvironment(readLegacyJsonConfigDocument(paths.legacyJsonConfigPath));
 }
 
 export function readLegacyEnvironmentFile(paths: BridgeConfigPaths): NodeJS.ProcessEnv {
@@ -258,7 +241,7 @@ export function environmentToConfigDocument(env: NodeJS.ProcessEnv): BridgeConfi
 function serializeConfigDocument(document: BridgeConfigDocument): string {
   return `${[
     '# Codex Feishu Bridge process configuration.',
-    '# Robot credentials are stored in lark-bots.json, not in this file.',
+    '# Channel credentials are stored under channels/<channel>/, not in this file.',
     '# See config.example.toml for field-level comments.',
     '',
   ].join('\n')}${stringifyToml(document)}\n`;
@@ -278,20 +261,6 @@ function readConfigDocument(configPath: string): ParsedBridgeConfigDocument {
     }
     throw new ConfigurationError('config.toml is not valid TOML');
   }
-}
-
-function readLegacyJsonConfigDocument(configPath: string): ParsedBridgeConfigDocument {
-  const stat = lstatSync(configPath);
-  if (stat.size > MAX_CONFIG_FILE_BYTES) {
-    throw new ConfigurationError('config.json exceeds the maximum allowed size');
-  }
-  let document: unknown;
-  try {
-    document = JSON.parse(readFileSync(configPath, { encoding: 'utf8' }));
-  } catch {
-    throw new ConfigurationError('config.json is not valid JSON');
-  }
-  return parseConfigDocument(document, 'config.json');
 }
 
 function parseConfigDocument(value: unknown, sourceName: string): ParsedBridgeConfigDocument {
@@ -406,21 +375,6 @@ function assertPrivateConfigFile(path: string, label: string): void {
   const stat = assertRegularFile(path, label);
   if (process.platform !== 'win32' && (stat.mode & 0o077) !== 0) {
     throw new ConfigurationError(`${label} must not be readable or writable by group or others`);
-  }
-}
-
-function removeLegacyJsonConfigFile(paths: BridgeConfigPaths): void {
-  if (!existsSync(paths.legacyJsonConfigPath)) {
-    return;
-  }
-  const stat = lstatSync(paths.legacyJsonConfigPath);
-  if (stat.isDirectory()) {
-    throw new ConfigurationError('Bridge legacy config.json must not be a directory');
-  }
-  try {
-    unlinkSync(paths.legacyJsonConfigPath);
-  } catch {
-    throw new ConfigurationError('Bridge legacy config.json could not be removed after config.toml migration');
   }
 }
 

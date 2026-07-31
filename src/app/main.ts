@@ -13,6 +13,7 @@ import {
 } from './bot-config-store';
 import { CardKitClient, type LarkReplyApi } from './cards/cardkit-client';
 import { CardImageRenderer, type LarkImageApi } from './cards/card-image-renderer';
+import { FEISHU_CHANNEL_ID } from './channel-paths';
 import {
   createImageBatchCancelledCard,
   createImageBatchEmptyCard,
@@ -166,7 +167,6 @@ export async function startBridge(
       botStore.save(materializeDefaultBot(config));
     }
     bindings.load({
-      legacyBotKeyMap: botStore.identifierAliases(),
       legacyDefaultBotIdentifier: config.larkAppId || undefined,
     });
     if (materializeDefault) {
@@ -559,7 +559,12 @@ export async function startBridge(
     ),
     resolveBindingByThreadId: (threadId) => bindings.getUniqueByThreadId(threadId),
     isBindingCurrent: (candidate) => (
-      bindings.get(candidate.tenantKey, candidate.chatId, candidate.botKey)?.threadId === candidate.threadId
+      bindings.get(
+        candidate.tenantKey,
+        candidate.chatId,
+        candidate.botKey,
+        candidate.channel ?? FEISHU_CHANNEL_ID,
+      )?.threadId === candidate.threadId
     ),
     requestThreadSnapshot: (threadId) => desktop.requestThreadFollowingSnapshot(threadId),
     readThreadTitle: (threadId) => readThreadTitle(appServerControlPlane, threadId),
@@ -611,7 +616,9 @@ export async function startBridge(
       currentBot: botStore.get(binding.botKey ?? DEFAULT_BOT_KEY),
       bots: botStore.list(),
       targetBindings: bindings.list().filter((candidate) => (
-        candidate.tenantKey === binding.tenantKey && candidate.chatId === binding.chatId
+        (candidate.channel ?? FEISHU_CHANNEL_ID) === (binding.channel ?? FEISHU_CHANNEL_ID)
+          && candidate.tenantKey === binding.tenantKey
+          && candidate.chatId === binding.chatId
       )),
       externalTargets: externalBotDirectory.listForGroup(
         binding.botKey ?? DEFAULT_BOT_KEY,
@@ -764,6 +771,41 @@ export async function startBridge(
     }
     return service;
   };
+  const bindingWithObservedChatType = (
+    binding: ChatThreadBinding,
+    message: InboundMessage,
+    botKey: string,
+  ): ChatThreadBinding => {
+    if (message.chatType !== 'p2p' && message.chatType !== 'group') {
+      return binding;
+    }
+    try {
+      const updated = bindings.recordObservedChatType(
+        message.tenantKey,
+        message.chatId,
+        message.chatType,
+        botKey,
+      );
+      if (updated && updated.chatType !== binding.chatType) {
+        logger.info('binding_chat_type_recorded', {
+          botKey,
+          tenantKey: message.tenantKey,
+          chatId: message.chatId,
+          chatType: updated.chatType ?? 'unknown',
+          revision: updated.revision,
+        });
+      }
+      return updated ?? binding;
+    } catch (error) {
+      logger.error('binding_chat_type_record_failed', toError(error), {
+        botKey,
+        tenantKey: message.tenantKey,
+        chatId: message.chatId,
+        chatType: message.chatType,
+      });
+      return binding;
+    }
+  };
   const desktopSupervisor = new DesktopIpcSupervisor(desktop, {
     onReady: (handshake) => {
       desktopState = 'READY';
@@ -821,7 +863,7 @@ export async function startBridge(
     if (groupSlashCommand && !botSender) {
       return false;
     }
-    const binding = conversationBindings.getBinding(message.tenantKey, message.chatId, botKey);
+    let binding = conversationBindings.getBinding(message.tenantKey, message.chatId, botKey);
     if (!binding) {
       if ((message.chatType ?? 'p2p') === 'group') {
         await replyUnavailableMessage(runtime, message, 'GROUP_NOT_BOUND');
@@ -830,6 +872,7 @@ export async function startBridge(
       await conversationBindings.ensureBoundOrPrompt(message);
       return false;
     }
+    binding = bindingWithObservedChatType(binding, message, botKey);
     if (shouldSuppressExternalGroupUserMention(message, binding)) {
       logger.info('external_group_user_mention_suppressed', {
         botKey,

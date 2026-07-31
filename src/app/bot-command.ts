@@ -177,7 +177,7 @@ async function migrateDefaultBot(
   configHome: string,
 ): Promise<BotCommandPartialReport> {
   if (!hasLegacyLarkBotConfig(baseConfig)) {
-    return report('migrate-default', store, false, '未发现旧机器人配置；当前机器人配置已在 lark-bots.json 中维护');
+    return report('migrate-default', store, false, '未发现旧机器人配置；当前机器人配置已在 channels/feishu/bots.json 中维护');
   }
   const existing = store.findByAppId(baseConfig.larkAppId);
   const identity = await hydrateBotIdentity(baseConfig.larkAppId, baseConfig.larkAppSecret);
@@ -189,7 +189,6 @@ async function migrateDefaultBot(
   });
   const bindings = new BindingStore(configHome);
   bindings.load({
-    legacyBotKeyMap: store.identifierAliases(),
     legacyDefaultBotIdentifier: baseConfig.larkAppId,
   });
   bindings.materialize();
@@ -262,7 +261,7 @@ function removeBot(
     throw new Error('bot remove requires --confirm');
   }
   const bindings = new BindingStore(configHome);
-  bindings.load({ legacyBotKeyMap: store.identifierAliases(), legacyDefaultBotIdentifier: appId });
+  bindings.load({ legacyDefaultBotIdentifier: appId });
   const removedBindingCount = bindings.removeBotBindings(appId);
   const removed = store.remove(appId);
   return report(

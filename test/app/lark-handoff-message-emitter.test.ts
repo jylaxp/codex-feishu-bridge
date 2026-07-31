@@ -13,7 +13,7 @@ test('handoff emitter sends a direct text mention with only the task', async () 
 
   const messageId = await emitter.send({
     chatId: 'chat',
-    targetBotKey: 'bot_bbbbbbbbbbbb',
+    targetBotKey: 'cli_bbbbbbbbbbbbbbbb',
     targetBotOpenId: 'ou_target',
     targetBotName: 'Order Bot',
     envelope,
@@ -61,7 +61,7 @@ test('handoff emitter falls back to post when text is rejected', async () => {
 
   const messageId = await emitter.send({
     chatId: 'chat',
-    targetBotKey: 'bot_bbbbbbbbbbbb',
+    targetBotKey: 'cli_bbbbbbbbbbbbbbbb',
     targetBotOpenId: 'ou_target',
     targetBotName: 'Order Bot',
     envelope,
@@ -128,10 +128,10 @@ test('handoff emitter can send a plain group member mention without a handoff en
 const envelope: HandoffEnvelope = {
   chainId: 'ch_aaaaaaaaaaaaaaaaaaaaaaaa',
   handoffId: 'hf_aaaaaaaaaaaaaaaaaaaaaaaa',
-  sourceBotKey: 'bot_aaaaaaaaaaaa',
+  sourceBotKey: 'cli_aaaaaaaaaaaaaaaa',
   hop: 1,
   expiresAtMs: 10_000,
-  visitedBotKeys: ['bot_aaaaaaaaaaaa'],
+  visitedBotKeys: ['cli_aaaaaaaaaaaaaaaa'],
 };
 
 function fakeApi(creates: unknown[]): LarkHandoffMessageApi {

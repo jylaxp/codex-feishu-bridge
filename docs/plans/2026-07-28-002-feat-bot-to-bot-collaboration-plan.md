@@ -79,7 +79,7 @@ The business goal is that a user can ask one bot to investigate, and that bot ca
 
 - `src/app/lark/intake.ts` already distinguishes `sender_type=user` and `sender_type=bot`, and currently rejects group bot senders unless the bot config enables bot mentions.
 - `src/app/config.ts`, `.env.example`, `src/app/bot-config-store.ts`, and `src/app/bot-command.ts` already carry `ALLOW_GROUP_BOT_MENTIONS` / `allowGroupBotMentions`. For the MVP, this existing bot-level switch is the response gate for bot-sender group mentions.
-- `src/app/binding-store.ts` persists bot-scoped group bindings with `botKey + tenantKey + chatId`.
+- `src/app/binding-store.ts` persists bot-scoped group bindings with `channel + larkAppId + tenantKey + chatId`.
 - `src/app/conversation-binding-service-v3.ts` already owns owner-only group binding/status policy commands.
 - `src/app/main.ts` routes accepted inbound events to the bot-specific binding service and shared orchestrator.
 - `src/app/in-memory-orchestrator.ts` and `src/app/task-scheduler.ts` already serialize by ChatGPT thread id, which is the right concurrency boundary when two bots bind to the same thread.
@@ -148,11 +148,11 @@ The visible group message intentionally looks like normal human chat. Bridge no 
 - MVP collaboration is open by default. The bridge does not require source-target grants, sender allowlists, member allowlists, or tenant-key checks.
 - The target bot's enabled state and group-mention response switch are the only response gates in the MVP.
 - Add a bot role profile separate from response control. Role profiles help AI decide who to call, but they do not grant or deny access.
-- Maintain a per-source-bot external bot directory for bots owned by other Bridge instances or other owners. The directory stores only `sourceBotKey + tenantKey + chatId + external bot open_id + display name`, and is used only to render a real Feishu `@external bot` mention.
+- Maintain a per-source-bot external bot directory for bots owned by other Bridge instances or other owners. The directory stores only `sourceAppId + tenantKey + chatId + external bot open_id + display name`, and is used only to render a real Feishu `@external bot` mention.
 - Drive AI decision through an explicit directive contract. The model may request a handoff by emitting a bounded `cfb-handoff` directive in its final output. Bridge validates and materializes it as a real Feishu `@target bot` message.
 - Keep the directive parser conservative. Invalid, unknown-target, disabled-target, unbound-target, overlong, or expired directives are ignored or converted to a visible non-actionable note, never executed optimistically.
 - Keep bot-sender messages task-only. If a bot sender text begins with `/`, it is never routed to command services.
-- Use `chainId`, `handoffId`, `parentMessageId`, source `botKey`, target `botKey`, target `chatId`, and target `threadId` for dedupe and audit.
+- Use `chainId`, `handoffId`, `parentMessageId`, source `appId`, target `appId`, target `chatId`, and target `threadId` for dedupe and audit.
 - Use the existing thread scheduler for same-thread concurrency. Collaboration adds cross-bot ingress, not a second execution lock.
 - Prefer one-hop automatic handoff for the MVP. Multi-hop works only within the configured hop, TTL, duplicate, and per-pair cooldown guards.
 - Reply with clear reasons only for locally known disabled/unavailable/unbound target bots. Unknown or removed bot events remain silent.
@@ -190,7 +190,7 @@ The visible group message intentionally looks like normal human chat. Bridge no 
 
 **Test scenarios:**
 - Existing bot and binding files without collaboration policy fields load normally.
-- Existing migrated bots receive a generated bot key and keep their current direct-chat behavior.
+- Existing migrated bots keep their current direct-chat behavior under the migrated `appId`.
 - A disabled bot or a bot with group mention response turned off does not start group tasks.
 - Bot role metadata is persisted and redacted from secret-bearing diagnostic output.
 
@@ -262,12 +262,12 @@ The visible group message intentionally looks like normal human chat. Bridge no 
 - Add a small sender that uses the source bot's Lark credentials to send or reply with a text/post message into the current group.
 - For bot-to-bot handoff, include a real target-bot mention and the bounded task text only.
 - For bot-to-human notification, include a real user mention and a short notification body. This must not create a bridge task.
-- For externally owned bots, refresh Feishu's group-bot list through `GET /open-apis/im/v1/chats/:chat_id/members/bots` when the source bot receives a group message, completes a group binding, starts with new-version group bindings, or receives bot membership events. Store discovered external bot open IDs in `external-bots.json`.
-- New bindings store `chatType` metadata, and startup backfill scans only `chatType=group` bindings. Older bindings without that field are refreshed by the next group mention or by re-running `/bind`, avoiding accidental bulk group-member calls for private bindings.
+- For externally owned bots, refresh Feishu's group-bot list through `GET /open-apis/im/v1/chats/:chat_id/members/bots` when the source bot receives a group message, completes a group binding, starts with new-version group bindings, or receives bot membership events. Store discovered external bot open IDs in `channels/feishu/external-bots.json`.
+- New bindings store `chatType` metadata, and startup backfill scans only `chatType=group` bindings. Older bindings without that field are upgraded when the next event for that chat carries an explicit `chat_type`; a group mention is enough to refresh the directory without re-running `/bind`, avoiding accidental bulk group-member calls for private bindings.
 - Treat bot membership events as accelerators, not the only discovery path. Feishu's bot-added event is delivered to the newly added bot and robot-invites-robot may not trigger it, so ordinary group-message refresh remains required.
 - Do not use task result cards, card `lark_md`, or card title mentions as the automatic trigger for the target bot. Cards may include a visible handoff summary and manual controls, but the target bot must be invoked by the separate text/post message.
 - Prefer `text` for the smallest human-chat-style trigger. Keep `post` only as a fallback if text creation is rejected by the channel.
-- Use Feishu `uuid` for send de-duplication based on `chainId + handoffId + sourceBotKey + targetBotKey`.
+- Use Feishu `uuid` for send de-duplication based on `chainId + handoffId + sourceAppId + targetAppId`.
 - Cap task text and strip raw reasoning, credentials, raw logs, local paths, and oversized context.
 - Verify target bot and user mention formatting through Feishu API explorer before production rollout. Until verified, keep the emitter behind a feature flag.
 
@@ -305,7 +305,7 @@ The visible group message intentionally looks like normal human chat. Bridge no 
 **Approach:**
 
 - Define a conservative final-answer directive block, for example:
-  - target bot key or display name,
+  - target bot `appId` or display name,
   - reason,
   - bounded task,
   - context summary,
@@ -385,7 +385,7 @@ The visible group message intentionally looks like normal human chat. Bridge no 
 
 - Keep current-process chain state with TTL:
   - `chainId`,
-  - advisory visited bot keys for traceability,
+  - advisory visited bot app IDs for traceability,
   - emitted handoff IDs,
   - hop count,
   - parent message IDs,

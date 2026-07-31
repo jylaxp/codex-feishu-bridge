@@ -18,9 +18,9 @@
 | 概念 | 说明 |
 | --- | --- |
 | Bridge 进程 | 本机后台服务，负责飞书事件、绑定、卡片投递和 Codex/ChatGPT 控制。 |
-| 配置目录 | 默认 `~/.codex-feishu-bridge`，保存 `config.toml`、`lark-bots.json`、`bindings.json`、`external-bots.json`、PID、health 和日志。 |
+| 配置目录 | 默认 `~/.codex-feishu-bridge`，根目录保存 `config.toml`、`bindings.json`、PID、health 和日志；飞书配置保存在 `channels/feishu/`。 |
 | appId | 飞书应用 ID，也是 Bridge 识别一个机器人配置的唯一标识。 |
-| 绑定 | 一个飞书聊天绑定到一个 ChatGPT 会话。群聊绑定精确到 `appId + tenantKey + chatId`。 |
+| 绑定 | 一个渠道端点绑定到一个 ChatGPT 会话。飞书群聊绑定精确到 `channel + appId + tenantKey + chatId`。 |
 | owner/admin | 能进行绑定、解绑、模型、CWD、访问策略和审批操作的管理用户。 |
 | 普通任务 | 用户或机器人在群里显式 `@机器人` 后发起的自然语言任务。 |
 | bot-to-bot handoff | 一个机器人在最终答案中声明交接，Bridge 发送真实飞书 `@目标机器人` 消息触发目标机器人继续处理。 |
@@ -75,10 +75,10 @@ cfb setup
 扫码后 Bridge 会把飞书应用凭证写入：
 
 ```text
-~/.codex-feishu-bridge/lark-bots.json
+~/.codex-feishu-bridge/channels/feishu/bots.json
 ```
 
-`config.toml` 只保存 Bridge 进程级配置，不保存飞书机器人凭证；它支持注释，适合用户手工调整运行参数。
+`config.toml` 只保存 Bridge 进程级配置，不保存飞书机器人凭证，也不记录聊天绑定。机器人凭证写入 `channels/feishu/bots.json`；聊天到 ChatGPT 会话的绑定写入根目录 `bindings.json`，其中 `channel` 表示渠道，`chatType` 用于区分 `p2p` 单聊和 `group` 群聊。老绑定缺少 `channel` 时按 `feishu` 读取；老绑定缺少 `chatType` 时，Bridge 会在下一次收到该聊天明确类型的事件后自动回填。
 
 ### 4.2 使用已有机器人
 
@@ -88,17 +88,17 @@ cfb setup
 cfb bot import --app-id cli_xxx --app-secret SECRET
 ```
 
-凭证会写入 `~/.codex-feishu-bridge/lark-bots.json`。`cfb init` 只用于生成 `config.toml` 进程级配置骨架；不要把飞书 `appId`、`appSecret` 手工写入 `config.toml`。
+凭证会写入 `~/.codex-feishu-bridge/channels/feishu/bots.json`。`cfb init` 只用于生成 `config.toml` 进程级配置骨架；不要把飞书 `appId`、`appSecret` 手工写入 `config.toml`。
 
 ### 4.3 迁移已有单聊机器人
 
-如果旧安装已经有 `config.json` 或 `.env`，新版本发现 `config.toml` 不存在时会自动从旧配置生成 `config.toml`，随后删除旧 `config.json` 或 `.env`。要立即把旧单聊机器人和已有绑定物化到多机器人结构，执行：
+如果旧安装已经有 `.env`，新版本发现 `config.toml` 不存在时会自动从 `.env` 生成 `config.toml`，随后删除旧 `.env`。要立即把旧单聊机器人和已有绑定物化到多机器人结构，执行：
 
 ```bash
 cfb config migrate
 ```
 
-这会把旧机器人物化到 `lark-bots.json`，并尽量获取机器人 open ID、名称和启用状态。已有绑定会同步升级为 `appId + tenantKey + chatId` 格式，已绑定群也会同步加入该机器人的 `allowedChats`。
+这会把旧机器人物化到 `channels/feishu/bots.json`，并尽量获取机器人 open ID、名称和启用状态。已有绑定会同步升级为 `channel + appId + tenantKey + chatId` 格式，已绑定群也会同步加入该机器人的 `allowedChats`。发布版正式迁移只支持旧单聊版本的 `.env`；开发期根目录 `lark-bots.json`、`external-bots.json` 不作为用户升级输入。
 
 ## 5. 启停和状态
 
@@ -335,7 +335,7 @@ MVP 目标很简单：
 }
 ```
 
-已物化到 `lark-bots.json` 的 bot 也需要：
+已物化到 `channels/feishu/bots.json` 的 bot 也需要：
 
 ```json
 {
@@ -356,14 +356,27 @@ MVP 目标很简单：
 
 每个机器人可以绑定不同 ChatGPT 会话，也可以绑定同一个会话。同一个会话会按 thread ID 串行执行。机器人之间可以在同一个群里通过真实飞书 `@目标机器人` 消息相互协作。
 
-### 9.2 外部机器人自动发现
+### 9.2 多渠道配置预留
+
+Bridge 的配置目录按渠道拆分。当前飞书渠道使用：
+
+```text
+~/.codex-feishu-bridge/channels/feishu/bots.json
+~/.codex-feishu-bridge/channels/feishu/external-bots.json
+```
+
+未来企业微信等渠道应放在各自目录，例如 `channels/wecom/`。根目录 `bindings.json` 不属于某一个渠道，它记录 `channel + appId + tenantKey + chatId -> threadId`，因此多个渠道可以绑定同一个 ChatGPT 会话，也可以绑定不同会话。
+
+同一个 ChatGPT 会话如果被飞书和企业微信同时绑定，执行仍按 `threadId` 串行。后续 renderer/channel adapter fan-out 层需要按 `threadId -> bindings[]` 同时生成多份渠道投递计划；当前 Feishu CardKit 路径只保证把运行卡片投递到发起任务的飞书端点。
+
+### 9.3 外部机器人自动发现
 
 如果一个群里还有其他 owner 或其他 Bridge 实例管理的机器人，当前 Bridge 不需要拿到对方 app secret。当前 bot 在收到群消息、被拉进群、完成群绑定，或 Bridge 启动后发现已有群绑定时，会尝试调用飞书“获取群内机器人列表”接口，记录同群外部机器人的 open ID 和名称。
 
 记录文件：
 
 ```text
-~/.codex-feishu-bridge/external-bots.json
+~/.codex-feishu-bridge/channels/feishu/external-bots.json
 ```
 
 记录粒度是 `sourceAppId + tenantKey + chatId + externalBotOpenId`。同一个外部机器人在不同群、或被不同本地 bot 发现，会保留独立记录。
@@ -371,12 +384,12 @@ MVP 目标很简单：
 已经在群里的历史机器人不会收到过去的“机器人进群”事件。升级后处理方式是：
 
 - 如果群绑定是新版本创建的，Bridge 重启时会基于绑定里的 `chatType=group` 自动回填外部机器人目录。
-- 如果群绑定来自旧版本，历史 `bindings.json` 没有 `chatType`，Bridge 无法仅凭本地文件判断它是不是群聊；在该群里再次 `@当前机器人`，或重新执行一次 `@当前机器人 /bind`，即可触发刷新并补齐目录。
+- 如果群绑定来自旧版本，历史 `bindings.json` 没有 `chatType`，Bridge 会在下一次收到该聊天明确 `chat_type` 的事件时自动写回；在该群里再次 `@当前机器人` 即可触发刷新并补齐目录。
 - 未绑定的群不会在启动时回填；先在群里 `@机器人 /bind` 绑定会话。
 
 发现目录只解决“源机器人可以发送真实 `@外部机器人` 消息”。外部机器人是否响应，仍取决于它自己的飞书应用权限、Bridge 版本、运行状态、群绑定和群机器人 @ 响应开关。
 
-### 9.3 触发 bot-to-bot handoff
+### 9.4 触发 bot-to-bot handoff
 
 源机器人最终答案中需要包含 `cfb-handoff` directive。Bridge 会额外发一条真实飞书 `text` 消息，内容就是 `@目标机器人 要处理的事情`。目标机器人收到后按普通任务处理。
 
@@ -397,9 +410,9 @@ expected: 给出订单域结论和下一步处理建议
 - 卡片里展示出来的 `@` 只用于阅读，不会触发目标机器人。
 - 只有真实飞书 text/post 消息里的 `@目标机器人` 才能触发目标机器人。
 - 目标机器人收到 bot sender 消息后只能执行普通任务，不能执行管理命令或审批。
-- 目标机器人如果不是当前 Bridge 的本地 bot，必须先出现在 `external-bots.json` 发现目录里；否则源机器人无法拿到可用于真实 @ 的 open ID。
+- 目标机器人如果不是当前 Bridge 的本地 bot，必须先出现在 `channels/feishu/external-bots.json` 发现目录里；否则源机器人无法拿到可用于真实 @ 的 open ID。
 
-### 9.4 bot @ 普通成员
+### 9.5 bot @ 普通成员
 
 Bridge 的飞书发送层支持真实 `@普通成员` 消息，但需要有目标成员的 open ID。MVP 不做“模型输出姓名后自动查通讯录/群成员匹配”的复杂解析链路。
 
@@ -526,7 +539,7 @@ cfb doctor
 
 这通常说明 Bridge 识别到了本地 bot record，但该 bot disabled、未绑定当前群、缺少 open ID、执行路由未就绪或关闭了群机器人 @ 响应。
 
-未知或已移除的机器人一般保持静默，因为 Bridge 没有可信本地 runtime。对外部机器人，如果自动交接提示“未找到目标机器人”，先确认 `external-bots.json` 是否已经记录该群里的目标机器人；没有记录时，在当前群里再次 `@源机器人` 触发一次刷新，或检查应用是否已开通 `im:chat.members:read`。
+未知或已移除的机器人一般保持静默，因为 Bridge 没有可信本地 runtime。对外部机器人，如果自动交接提示“未找到目标机器人”，先确认 `channels/feishu/external-bots.json` 是否已经记录该群里的目标机器人；没有记录时，在当前群里再次 `@源机器人` 触发一次刷新，或检查应用是否已开通 `im:chat.members:read`。
 
 ### 12.5 `status` 是 degraded
 
@@ -549,6 +562,8 @@ cfb status --json
 ### 12.7 同一个会话被多个机器人绑定会不会并发冲突
 
 不会并发写同一个 ChatGPT thread。Bridge 按 `threadId` 串行调度，同一个 thread 同时只能有一个 active turn。
+
+当前运行卡片只投递到发起任务的飞书聊天。多渠道同时推送同一个 thread 的运行状态需要 renderer/channel adapter fan-out 层完成后开启。
 
 ## 13. 运维清单
 

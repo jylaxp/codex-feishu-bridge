@@ -71,7 +71,7 @@ export interface CardProjectionPayload {
 }
 
 export interface BridgeConfig {
-  /** Deprecated runtime alias for the Feishu appId. Legacy files may still contain generated bot keys. */
+  /** Runtime alias for the Feishu appId while older internal call sites still use botKey naming. */
   readonly botKey?: string;
   readonly larkAppId: string;
   readonly larkAppSecret: string;

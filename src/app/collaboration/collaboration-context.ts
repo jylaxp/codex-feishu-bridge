@@ -44,7 +44,7 @@ export function buildCollaborationContext(input: CollaborationContextInput): str
     ...externalTargets.map((bot) => `- ${externalBotRoleLine(bot)}`),
     'To request a handoff, append one fenced block to the final answer:',
     '```cfb-handoff',
-    'target: <botKey, bot display name, or external bot open_id>',
+    'target: <appId, bot display name, or external bot open_id>',
     'task: <bounded task for the target bot>',
     'reason: <why this target is needed>',
     'context: <short summary only>',
@@ -63,7 +63,7 @@ function botRoleLine(bot: LarkBotConfig | undefined, fallbackKey: string): strin
   const profile = bot.roleProfile;
   const parts = [
     bot.displayName ?? profile?.roleName ?? bot.botKey,
-    `botKey=${bot.botKey}`,
+    `appId=${bot.botKey}`,
     profile?.ownerLabel ? `owner=${profile.ownerLabel}` : '',
     profile?.domainDescription ? `domain=${profile.domainDescription}` : '',
     profile?.collaborationInstructions ? `instructions=${profile.collaborationInstructions}` : '',

@@ -13,24 +13,35 @@ Introduce first-class multi-bot support in one Bridge process: multiple Lark app
 
 ## 2026-07-31 Design Revision: Use AppID as the Bot Identifier
 
-This revision supersedes earlier `botKey` and `default` bot decisions in this document. The formal configuration model is: one bot record is one Lark application bot, and `appId` is that record's unique identifier. `botOpenId` is only the Lark messaging identity used for real mentions and event recognition; the bot name is display-only.
+This revision supersedes earlier generated-key and `default` bot decisions in this document. The formal configuration model is: one bot record is one Lark application bot, and `appId` is that record's unique identifier. `botOpenId` is only the Lark messaging identity used for real mentions and event recognition; the bot name is display-only.
 
-- New `lark-bots.json` files no longer persist generated `botKey` values; each record is identified by `appId`.
-- New `bindings.json` files persist `larkAppId + tenantKey + chatId`, instead of using `default` or `bot_xxx` as the binding key.
-- Existing single-bot `.env` or legacy `config.json` installations migrate through `cfb config migrate`: read `LARK_APP_ID`/`LARK_APP_SECRET`, call `/open-apis/bot/v3/info` to hydrate bot open ID, display name, and activation status, write `lark-bots.json`, and materialize old bindings into the new schema.
+- New `channels/feishu/bots.json` files no longer persist generated local keys; each record is identified by `appId`.
+- New `bindings.json` files persist `larkAppId + tenantKey + chatId`, instead of using generated local keys as the binding key.
+- Existing single-bot `.env` installations migrate through `cfb config migrate`: read `LARK_APP_ID`/`LARK_APP_SECRET`, call `/open-apis/bot/v3/info` to hydrate bot open ID, display name, and activation status, write `channels/feishu/bots.json`, and materialize old bindings into the new schema.
 - `bot add` and `bot import` add a new Lark application bot. If a scan/import returns a different `appId`, it is a new bot and must not mutate an existing bot record.
 - `bot enable`, `bot disable`, `bot remove`, and similar management commands select the bot with `--app-id`; the public CLI no longer accepts `--bot-key`.
 
 ## 2026-07-31 Design Revision: Use `config.toml` For Runtime Config
 
-This revision supersedes earlier `.env` fallback, `config.json`, and read-only legacy startup decisions in this document. The formal runtime configuration file is now `config.toml`, so operators can keep inline comments next to process-level settings. Legacy `config.json` and `.env` files are only one-time migration sources.
+This revision supersedes earlier `.env` fallback and read-only legacy startup decisions in this document. The formal runtime configuration file is now `config.toml`, so operators can keep inline comments next to process-level settings. Legacy `.env` files are the only one-time migration source.
 
-- `~/.codex-feishu-bridge/config.toml` is the current configuration marker. If it exists, Bridge loads it and removes leftover legacy `config.json` or `.env`.
-- If `config.toml` is missing and legacy `config.json` exists, Bridge automatically materializes `config.toml` before parsing runtime config, migrates any legacy `lark` credentials into `lark-bots.json`, then removes legacy `config.json`.
-- If both `config.toml` and legacy `config.json` are missing but legacy `.env` exists, Bridge automatically materializes `config.toml`, migrates bot credentials into `lark-bots.json`, then removes legacy `.env`.
-- New setup/init flows write `config.toml`, not `.env` or `config.json`.
-- `cfb config migrate` may still be run explicitly to hydrate the legacy single bot into `lark-bots.json` and materialize old bindings; startup also materializes the current `appId` bot when `lark-bots.json` is absent.
+- `~/.codex-feishu-bridge/config.toml` is the current configuration marker. If it exists, Bridge loads it and removes leftover legacy `.env`.
+- If `config.toml` is missing but legacy `.env` exists, Bridge automatically materializes `config.toml`, migrates bot credentials into `channels/feishu/bots.json`, then removes legacy `.env`.
+- New setup/init flows write `config.toml`, not `.env`.
+- `cfb config migrate` may still be run explicitly to hydrate the legacy single bot into `channels/feishu/bots.json` and materialize old bindings; startup also materializes the current `appId` bot when `channels/feishu/bots.json` is absent.
 - Destructive migration is acceptable for the current group-chat development branch because the multi-bot/group-chat config format has not been released yet.
+
+## 2026-07-31 Design Revision: Channel-Scoped Configuration Directories
+
+This revision prepares Bridge for multiple messaging channels such as Feishu and WeCom running in the same local process. Channel-owned credentials and discovery files live under a channel directory; cross-channel bindings remain in the root because they describe which channel endpoints subscribe to which ChatGPT thread.
+
+- Root `config.toml` remains process-level runtime configuration and must not store channel credentials.
+- Root `bindings.json` remains the cross-channel binding index. Each persisted binding includes `channel + appId + tenantKey + chatId -> threadId`.
+- Feishu bot credentials move to `channels/feishu/bots.json`.
+- Feishu external bot discovery moves to `channels/feishu/external-bots.json`.
+- Official user upgrade migration only imports the legacy single-chat `.env`. Development-only root `lark-bots.json` and `external-bots.json` files are not published compatibility inputs and must not be auto-migrated for other users.
+- Future channels use their own directories, for example `channels/wecom/`, without adding channel-specific credential fields to `config.toml`.
+- Multiple channel endpoints may bind the same ChatGPT thread. The scheduler remains keyed by `threadId`, while renderer/channel-adapter fan-out must later render and deliver one outbound projection per current binding returned by `threadId -> bindings[]`.
 
 ---
 
@@ -55,8 +66,8 @@ The current Bridge is built around one Lark app credential pair and one event se
   Ordinary external group-member mentions are allowed by default through a binding-level policy and do not require sender tenant or chat allowlist checks; owners can manually disable that policy for each group.
 - R11. Group chats have two lanes: owner-only management for the current group, and ordinary `@current bot` task messages after binding. Non-owner users and bot senders must never execute group management commands such as bind, unbind, model, CWD, access, setup, or diagnostics.
 - R12. Desktop approval decisions must be admin-only. A group member may start a task when the binding policy allows it, but only the bot's owner/admin approval set can decide approvals.
-- R13. Any group binding or configuration action must target a concrete group identity. In-group management targets the current event's `botKey + tenantKey + chatId`; private-chat management targets an explicit discovered group selected by that same identity. Group names are display-only and cannot be the binding key.
-- R14. Multi-bot QR registration must create or replace exactly one bot record. A QR scan registers one Lark app credential set, fetches the robot identity/name, generates an internal `botKey`, and must not overwrite other bots, claim ownership, or bind any group to a ChatGPT thread.
+- R13. Any group binding or configuration action must target a concrete group identity. In-group management targets the current event's `larkAppId + tenantKey + chatId`; private-chat management targets an explicit discovered group selected by that same identity. Group names are display-only and cannot be the binding key.
+- R14. Multi-bot QR registration must create or replace exactly one bot record. A QR scan registers one Lark app credential set, fetches the robot identity/name, uses `appId` as the robot identifier, and must not overwrite other bots, claim ownership, or bind any group to a ChatGPT thread.
 - R15. Management must support explicit unbind, group removal, bot disable, and bot removal flows. These operations must be scoped, confirmed, and must not delete ChatGPT threads or replay/abort unrelated tasks silently.
 - R16. Bot availability must be explicit but fail-closed. Unknown or removed bots remain silent because Bridge has no trusted local runtime for them. A locally configured but disabled bot may keep a reply-only event path; when it is `@mentioned` or a stale card action is clicked, Bridge must return the disabled reason and must not accept tasks, commands, approvals, binding changes, or card-side effects.
 - R17. Existing single-bot installs must upgrade in place. A previously scanned robot and existing `bindings.json` v1 records must continue to work as the reserved `default` bot without requiring QR re-registration or chat re-binding.
@@ -111,27 +122,27 @@ The current Bridge is built around one Lark app credential pair and one event se
 ## Key Technical Decisions
 
 - Use a single Bridge runtime with multiple Lark bot ingress adapters and one shared execution/orchestrator layer. This preserves per-thread serialization.
-- Introduce stable `botKey` as the internal identity for each robot. `botKey` is not a secret; it is the routing key used in binding, card action, health, logs, and idempotency scopes.
-- Store multi-bot credentials in `lark-bots.json` under the Bridge config home. Legacy `.env` `LARK_APP_ID` and `LARK_APP_SECRET` remain the backward-compatible source for the default bot.
-- Reserve `botKey = "default"` for legacy single-bot compatibility. `bot add` must never generate this key.
+- Use stable Feishu `appId` as the internal identity for each robot. `appId` is not a secret; it is the routing key used in binding, card action, health, logs, and idempotency scopes.
+- Store multi-bot credentials in `channels/feishu/bots.json` under the Bridge config home. Legacy `.env` `LARK_APP_ID` and `LARK_APP_SECRET` are a one-time migration source for one appId-scoped bot.
+- Keep `default` only as a transient legacy fallback when schema v1 bindings are loaded without a migrated appId.
 - Keep Lark API clients per bot. Lark credentials, tenant tokens, CardKit message updates, reactions, and resource downloads cannot be shared across bots.
 - Keep Desktop/App Server control clients shared. ChatGPT threads belong to the local Desktop runtime, not to a Lark bot.
-- Upgrade binding identity to `botKey + tenantKey + chatId`. A binding points to one ChatGPT thread and stores static execution settings for that bot/chat pair.
+- Upgrade binding identity to `larkAppId + tenantKey + chatId`. A binding points to one ChatGPT thread and stores static execution settings for that bot/chat pair.
 - Keep thread concurrency keyed only by ChatGPT `threadId`. If bot A and bot B both bind to the same thread, their tasks queue behind one active turn.
 - Route task cards and approvals by originating task context, not by reverse lookup from thread alone.
 - Preserve `getUniqueByThreadId` fail-closed behavior for Desktop-originated events when more than one binding points at a thread.
-- Make target-group management first-class in group chat. When the owner sends `@current bot /bind`, `/unbind`, `/model`, `/cwd`, or access commands in a group, the target is the current `botKey + tenantKey + chatId`.
+- Make target-group management first-class in group chat. When the owner sends `@current bot /bind`, `/unbind`, `/model`, `/cwd`, or access commands in a group, the target is the current `larkAppId + tenantKey + chatId`.
 - Keep private chat as an optional management console for the same operations. Private management must require an explicit group selection from discovered or bound groups before mutating any group binding.
 - Treat non-owner group slash-like or management-like input as non-actionable. It must not mutate configuration or Desktop state.
 - Deliver approval requests to the bot's admin approval channel, or otherwise ensure the action token can only be decided by an admin. Non-admin clicks must be rejected even when the non-admin started the group task.
-- Separate three lifecycle concepts: QR credential registration (`botKey -> appId/appSecret/bot identity`), owner claim (`botKey -> tenant/owner/admins`), and group thread binding (`botKey + tenantKey + chatId -> threadId`). No command should silently perform more than one lifecycle step.
+- Separate three lifecycle concepts: QR credential registration (`appId -> appSecret/bot identity`), owner claim (`appId -> tenant/owner/admins`), and group thread binding (`larkAppId + tenantKey + chatId -> threadId`). No command should silently perform more than one lifecycle step.
 - Separate removal meanings:
   - Unbind group: remove only the current group's `threadId` binding and keep the group discovered/authorized.
   - Remove group: remove the current group's binding, mention policy, and authorization for that bot; the bot may still physically remain in the Feishu group.
   - Disable bot: keep credentials and bindings, start only a reply-capable Lark event path when credentials are still usable, and reject inbound tasks/actions with an explicit disabled reason.
   - Remove bot: delete the bot record and all its discovered-group and binding records from Bridge local config after confirmation.
 - Use silent drop semantics for unknown or removed bot events. Bridge may write redacted local diagnostics, but it must not post a group/private reply, acknowledgement card, or hint for those bots. For locally disabled bots that still deliver events to Bridge, return the disabled reason and do not create acknowledgements, tasks, commands, approvals, or binding mutations.
-- Use read-compatible legacy migration. If `lark-bots.json` is absent and legacy `.env` contains valid `LARK_APP_ID`/`LARK_APP_SECRET`, Bridge synthesizes the reserved `default` bot at runtime. Existing `bindings.json` schema v1 records are read as `default + tenantKey + chatId` bindings.
+- Use one-time legacy migration. If `config.toml` is absent and legacy `.env` contains valid `LARK_APP_ID`/`LARK_APP_SECRET`, Bridge writes `config.toml`, materializes one `channels/feishu/bots.json` entry identified by that `appId`, and removes `.env`. Existing `bindings.json` schema v1 records are read with the migrated `appId` when available, with `default` only as an in-memory fallback before materialization.
 
 ---
 
@@ -139,71 +150,65 @@ The current Bridge is built around one Lark app credential pair and one event se
 
 ### Bot Credential Registration
 
-- The existing `setup` command remains backward-compatible and registers the default bot when legacy `LARK_APP_ID` and `LARK_APP_SECRET` are missing.
+- The existing `setup` command creates `config.toml` and registers one appId-scoped bot when no Feishu bot record is configured.
 - Additional bots use explicit bot subcommands. Recommended CLI shape:
-  - `codex-feishu-bridge bot add` prints one QR code, registers one Lark app, fetches the robot identity/name, generates an internal `botKey`, and writes one bot entry.
-  - `codex-feishu-bridge bot import --app-id cli_xxx --app-secret ...` adds an existing Lark app without QR registration, then fetches identity/name and generates the internal `botKey`.
-  - `codex-feishu-bridge bot migrate-default` reads existing legacy credentials, probes the current robot identity/name, and materializes the reserved default bot without QR registration.
+  - `codex-feishu-bridge bot add` prints one QR code, registers one Lark app, fetches the robot identity/name, and writes one appId-scoped bot entry.
+  - `codex-feishu-bridge bot import --app-id cli_xxx --app-secret ...` adds an existing Lark app without QR registration, then fetches identity/name and writes one appId-scoped bot entry.
+  - `codex-feishu-bridge bot migrate-default` reads existing legacy credentials, probes the current robot identity/name, and materializes one appId-scoped bot without QR registration.
   - `codex-feishu-bridge bot rebind` opens an interactive bot selector, prints one QR code, and replaces only the selected bot's credentials.
   - `codex-feishu-bridge bot disable` opens an interactive bot selector and disables one bot's task-capable runtime without deleting local records.
   - `codex-feishu-bridge bot remove` opens an interactive bot selector and removes one bot from Bridge local config after showing affected groups/bindings.
   - `codex-feishu-bridge bot list` and `codex-feishu-bridge bot doctor` report bot status without secrets.
 - `cfb` is a short npm command alias for `codex-feishu-bridge`; both names run the same CLI entrypoint and accept the same arguments.
 - A single CLI invocation should show at most one active QR code. Operators add multiple robots by repeating `bot add`, which avoids mixing registration status between robots.
-- `botKey` is not part of the normal add flow. It is generated by Bridge, persisted in `lark-bots.json`, and shown only in diagnostic or advanced output.
+- A generated local bot key is not part of the public add/import flow. The persisted identifier is the Feishu `appId`.
 - The robot display name is fetched from the registered app/bot identity after credentials are available. User-provided display names are optional aliases, not the source of truth.
-- QR registration writes credentials only. The robot remains `unclaimed` until an owner claims it in private chat.
+- QR registration writes credentials and bot identity only. Group binding remains a separate step.
 - Rebinding through QR creates or selects a different Lark app identity. Because Feishu open IDs are app-scoped and group membership belongs to the app robot, rebinding a selected bot must mark owner/admin identities and discovered groups as needing re-verification before the bot can process group tasks again.
-- `botKey` stays stable for an existing bot record across rebind. It is the Bridge routing key; `appId` is the Lark app identity behind that key.
+- `appId` stays stable for an existing bot record across rebind. Rebind refreshes credentials for the same Lark app identity.
 
-### BotKey Generation Rule
+### AppId Identity Rule
 
-- Operators never provide `botKey` during normal `bot add` or `bot import`.
-- For a new bot record, generate the candidate key from the canonical Lark app identity, not from the robot name:
-  - Canonical seed: `lark-app:${appId.toLowerCase()}`.
-  - Digest: `sha256(seed)`.
-  - Candidate key: `bot_${base32url(digest).toLowerCase().slice(0, 12)}`.
-- The generated key is stable for the same `appId`, does not expose the raw `appId`, and is unaffected by robot display-name changes.
-- `default` is reserved for legacy single-bot compatibility and must never be generated.
-- If the generated key collides with an existing different bot, extend the digest suffix in 4-character increments until unique; if no unique key can be produced within the maximum key length, fail closed.
-- If the same `appId` is already present in `lark-bots.json`, `bot add` or `bot import` must not create a duplicate; it should route the operator to list/rebind/enable the existing bot.
-- For `bot rebind`, do not regenerate `botKey`. The selected existing bot record keeps its current `botKey`, even when the new QR registration returns a different `appId`; owner/admin and group state then require re-verification.
+- Operators never provide a generated local bot key during normal `bot add` or `bot import`.
+- A bot record is uniquely identified by its Feishu `appId`.
+- No generated local bot key is persisted or accepted in the official configuration.
+- `default` is reserved only as a transient in-memory fallback while reading old single-chat schema v1 bindings.
+- If the same `appId` is already present in `channels/feishu/bots.json`, `bot add` or `bot import` must not create a duplicate; it should route the operator to list/rebind/enable the existing bot.
+- For `bot rebind`, require the scanned QR registration to return the same `appId`; a different `appId` is a different bot and must be added as a new record.
 - `displayName` is fetched and persisted separately. It is used for human-readable cards and selectors only, never as a routing key.
 
 ### Legacy Upgrade Compatibility
 
-- On upgrade, an existing installation with only legacy `.env` bot credentials is treated as one enabled bot with reserved `botKey = "default"`.
-- Startup must not force QR re-registration. If legacy credentials are valid, Bridge can start the default bot runtime from `.env`.
-- Startup must not force chat re-binding. Existing `bindings.json` schema v1 records are loaded as default-bot bindings by injecting `botKey = "default"` in memory.
-- Legacy `.env` policy fields map to the default bot:
-  - `LARK_TENANT_KEY` becomes the default bot tenant scope.
-  - `ALLOWED_CHATS` becomes the default bot allowed/discovered chat scope.
-  - `AUTHORIZED_USERS` becomes the initial default bot owner/admin management set for compatibility with existing binding permissions.
-  - `ALLOWED_APPROVERS` remains the approval decision set; if empty, existing owner/admin bootstrap rules still apply.
-- If owner/admin cannot be inferred from legacy config, the default bot enters `claim_required` for management actions, but already-bound allowed chats still keep their thread bindings. The owner must claim before changing settings.
-- Persistent migration is write-through. A read-only `run`, `status`, or `doctor` may operate from legacy files without rewriting them. `bot add`, explicit migration, or the next binding/config mutation materializes `lark-bots.json` and writes `bindings.json` in the upgraded schema atomically.
-- Rollback remains possible before materialization because the legacy `.env` and v1 bindings are not destructively rewritten during read-only startup.
+- On upgrade, an existing installation with only legacy `.env` bot credentials is migrated into one enabled appId-scoped bot record.
+- Startup must not force QR re-registration. If legacy credentials are valid, Bridge can materialize the bot from `.env`.
+- Startup must not force chat re-binding. Existing `bindings.json` schema v1 records are loaded with the migrated `appId` when available; before materialization they may use the transient in-memory `default` fallback.
+- Legacy `.env` policy fields map to the migrated appId-scoped bot:
+  - `LARK_TENANT_KEY` becomes that bot's tenant scope.
+  - `ALLOWED_CHATS` becomes that bot's allowed/discovered chat scope.
+  - `AUTHORIZED_USERS` becomes the initial management set for compatibility with existing binding permissions.
+  - `ALLOWED_APPROVERS` remains the approval decision set.
+- Persistent migration is automatic and one-way: once `config.toml` exists, `.env` no longer participates in runtime loading and may be removed.
 
 ### Legacy Default Migration Command
 
 - Add `codex-feishu-bridge bot migrate-default` as the formal migration path for installations that already have one robot configured through legacy `.env` keys.
-- The command does not accept `botKey`, robot name, or open ID from the operator. It reads the legacy `LARK_APP_ID`, `LARK_APP_SECRET`, and domain settings, then uses app authentication to resolve the robot identity.
+- The command does not accept a generated local bot key, robot name, or open ID from the operator. It reads the legacy `LARK_APP_ID`, `LARK_APP_SECRET`, and domain settings, then uses app authentication to resolve the robot identity.
 - Identity probe:
   - Get `tenant_access_token` with the legacy app credentials.
   - Call `GET /open-apis/bot/v3/info` with the token.
   - Persist `bot.open_id` as `botOpenId`, `bot.app_name` as `displayName`, `bot.avatar_url` as optional avatar metadata, and `bot.activate_status` as the last known Feishu activation state.
-- The target `botKey` is always the reserved `default` key. This command migrates the existing single-bot installation; it must not hash-generate a new bot key because that would force existing v1 bindings to be renamed.
-- Default mode is preview: print the migration plan with secrets redacted, including target `botKey`, resolved `displayName`, masked `botOpenId`, activation status, number of bindings to upgrade, and owner/admin policy source. `--write` materializes the plan atomically; non-interactive automation may also pass `--yes`.
+- The target identifier is the legacy `LARK_APP_ID`. This command migrates the existing single-bot installation without generating any extra bot key.
+- Default mode is preview: print the migration plan with secrets redacted, including target `appId`, resolved `displayName`, masked `botOpenId`, activation status, number of bindings to upgrade, and owner/admin policy source. `--write` materializes the plan atomically; non-interactive automation may also pass `--yes`.
 - If the identity probe fails, migration fails closed and does not materialize a bot entry. The operator should fix credentials, robot capability, publication, or network access before retrying.
 - If `activate_status` is not enabled, the command must not create an enabled runtime. It may report a disabled migration plan; Bridge can only return an unavailable reason if Feishu still delivers events for that bot.
-- The command is idempotent. If `lark-bots.json` already contains `default` with the same app ID or bot open ID, rerunning the command refreshes display metadata and leaves bindings intact. If `default` exists with a different app ID/open ID, the command stops and requires an explicit `bot rebind` or manual conflict resolution path.
+- The command is idempotent. If `channels/feishu/bots.json` already contains the same `appId` or bot open ID, rerunning the command refreshes display metadata and leaves bindings intact. A different `appId` is a different bot and must be added as a separate record.
 
 ### Private Admin Chat
 
 - An added robot starts as unclaimed and only responds to private owner/admin setup commands.
 - The first authorized owner claims the robot in private chat. Existing owners/admins can later add or remove admins.
 - Private chat can manage groups as an optional console: the owner opens the bot's discovered or bound group list, selects one exact group, selects or creates the target ChatGPT thread, sets the group mention policy, and saves the binding.
-- The group list is keyed by `botKey + tenantKey + chatId`, not by group name. Cards may display group name for readability, but must also include a short chat ID suffix and discovery source to avoid same-name ambiguity.
+- The group list is keyed by `larkAppId + tenantKey + chatId`, not by group name. Cards may display group name for readability, but must also include a short chat ID suffix and discovery source to avoid same-name ambiguity.
 - Private group-management cards are optional parity with in-group owner commands. They must never infer a target group from the private chat itself.
 - Private group-management cards support bind, unbind, remove group authorization, model, CWD, and access-policy updates after an explicit group selection.
 - Robot-level actions such as claiming the robot, rotating credentials, disabling/removing the bot, and bot-level doctor/status remain private-chat or CLI actions.
@@ -215,13 +220,13 @@ The current Bridge is built around one Lark app credential pair and one event se
 - `@current bot /unbind`, `/remove`, `/model`, `/cwd`, and access-policy commands mutate only the current group's binding/authorization and require the robot owner.
 - `@current bot /unbind` removes only the current group's ChatGPT thread binding. The group remains authorized and can be rebound later.
 - `@current bot /remove` removes the current group's authorization and binding for this bot. It does not physically remove the Lark app robot from the Feishu group unless a future Feishu API-backed leave operation is explicitly implemented.
-- Group owner management cards and action tokens include `botKey`, `tenantKey`, `chatId`, operator open ID, binding revision, and TTL.
+- Group owner management cards and action tokens include `larkAppId`, `tenantKey`, `chatId`, operator open ID, binding revision, and TTL.
 - Admins who are not the owner may approve Desktop actions if configured as approvers, but they do not get group binding/configuration authority unless a future role policy explicitly adds it.
 
 ### Group Discovery
 
 - A group becomes selectable only after Bridge has evidence that the robot is in that group.
-- Preferred discovery source: a subscribed bot-added-to-group event for that robot, carrying `botKey`, `tenantKey`, and `chatId`.
+- Preferred discovery source: a subscribed bot-added-to-group event for that robot, carrying `larkAppId`, `tenantKey`, and `chatId`.
 - Fallback discovery source: an unbound group mentions the current robot once. If the sender is the owner and the message is an owner management command, Bridge may immediately continue the in-group binding flow; otherwise it records the group as `pending_binding` and sends, at most, a non-actionable group hint that the owner must bind the group.
 - Unbound group mentions never start a ChatGPT task and never execute group commands.
 - If a group is not in the private admin list, the owner can add the robot to the group and use in-group `@current bot /bind`, or rely on the bot-added event if available.
@@ -257,7 +262,7 @@ The current Bridge is built around one Lark app credential pair and one event se
 
 ### Deferred to Implementation
 
-- Exact `lark-bots.json` field names and migration mechanics should be finalized during implementation, but the source split is decided: `config.toml` for current process-level configuration and one-time legacy `config.json`/`.env` import, `lark-bots.json` for appId-scoped bot credentials.
+- Exact `channels/feishu/bots.json` field names and migration mechanics should be finalized during implementation, but the source split is decided: `config.toml` for current process-level configuration and one-time legacy `.env` import, `channels/feishu/bots.json` for appId-scoped bot credentials.
 
 ---
 
@@ -269,7 +274,7 @@ The current Bridge is built around one Lark app credential pair and one event se
 flowchart LR
     B1["Lark Bot A<br/>events + cards"] --> I["Bot-aware ingress"]
     B2["Lark Bot B<br/>events + cards"] --> I
-    I --> BS["BindingStore<br/>botKey + tenantKey + chatId"]
+    I --> BS["BindingStore<br/>channel + larkAppId + tenantKey + chatId"]
     BS --> O["Shared InMemoryOrchestrator"]
     O --> S["ThreadTaskScheduler<br/>keyed by ChatGPT threadId"]
     S --> D["ChatGPT Desktop follower IPC"]
@@ -289,11 +294,11 @@ sequenceDiagram
     participant D as Desktop owner runtime
 
     A->>I: @BotA task for thread T
-    I->>O: inbound(botKey=A, threadId=T)
+    I->>O: inbound(larkAppId=A, threadId=T)
     O->>S: activate T
     S->>D: start turn
     B->>I: @BotB task for same thread T
-    I->>O: inbound(botKey=B, threadId=T)
+    I->>O: inbound(larkAppId=B, threadId=T)
     O->>S: enqueue T
     D-->>O: turn completed for A task
     O->>S: release T and take next
@@ -323,12 +328,12 @@ sequenceDiagram
 
 **Approach:**
 - Add a `LarkBotConfig` concept with `appId`, `appSecret`, tenant/chat/user/approver policy, and optional resolved bot open ID.
-- Migrate existing single-bot `.env` or legacy `config.json.lark` keys directly into one appId-scoped bot record, while `config.toml` receives only process-level settings.
-- Keep legacy `default`/generated `botKey` values only as upgrade aliases; do not persist them in new records.
-- Introduce `lark-bots.json` under config home as the named multi-bot credential source.
-- If `lark-bots.json` is absent, materialize legacy `.env` or legacy `config.json.lark` credentials into one appId-scoped bot record, then remove legacy credentials by writing clean `config.toml`.
+- Migrate existing single-bot `.env` keys directly into one appId-scoped bot record, while `config.toml` receives only process-level settings.
+- Keep `default` only as an in-memory fallback for unmigrated schema v1 bindings; do not persist it in new records.
+- Introduce `channels/feishu/bots.json` under config home as the named multi-bot credential source.
+- If `channels/feishu/bots.json` is absent, materialize legacy `.env` credentials into one appId-scoped bot record, then remove legacy credentials by writing clean `config.toml`.
 - Store QR-registered additional bots as appId-scoped entries instead of rewriting the current bot credentials.
-- Operators do not provide or remember generated bot keys; normal management uses `--app-id`.
+- Operators do not provide or remember generated local bot keys; normal management uses `--app-id`.
 - Fetch and persist the robot display name from the Lark bot/app identity after credentials are available. Manual names are aliases only.
 - Model bot credential status separately from owner claim status and group binding status.
 - Ensure secrets are never emitted in logs, health snapshots, doctor JSON, or setup output.
@@ -338,15 +343,12 @@ sequenceDiagram
 - Existing setup-managed `.env` rendering in `src/app/setup.ts`.
 
 **Test scenarios:**
-- Happy path: existing single-bot `.env` parses into exactly one default bot.
-- Happy path: legacy `.env` without `lark-bots.json` starts as enabled `default` bot without QR re-registration.
-- Happy path: two configured bots parse into two unique `botKey` entries.
-- Happy path: same `appId` produces the same generated `botKey` candidate.
-- Happy path: QR registration through `bot add` creates one generated bot entry with fetched display name.
-- Edge case: duplicate `botKey` fails startup.
-- Edge case: generated/imported bot cannot use reserved `default` key.
-- Edge case: display-name change does not change `botKey`.
-- Edge case: hash collision extends the generated suffix or fails closed without overwriting another bot.
+- Happy path: existing single-bot `.env` migrates into exactly one appId-scoped bot.
+- Happy path: legacy `.env` without `channels/feishu/bots.json` starts without QR re-registration after migration.
+- Happy path: two configured bots parse into two unique `appId` entries.
+- Happy path: QR registration through `bot add` creates one appId-scoped bot entry with fetched display name.
+- Edge case: duplicate `appId` fails startup.
+- Edge case: display-name change does not change routing identity.
 - Edge case: duplicate app IDs with different secrets require explicit rejection or documented behavior.
 - Edge case: rebind of one bot does not overwrite other bots and marks app-scoped owner/group state for re-verification.
 - Error path: missing app secret for one bot fails startup without printing the secret values of other bots.
@@ -387,7 +389,7 @@ sequenceDiagram
 - Happy path: two bots create independent WebSocket starts with distinct app IDs.
 - Happy path: bot identity resolution populates each event server with the correct bot open ID.
 - Happy path: disabled bot is listed as disabled, starts only a reply-capable event path, and returns a disabled reason when mentioned.
-- Error path: one bot WebSocket terminal failure transitions global status to degraded and identifies the bot key.
+- Error path: one bot WebSocket terminal failure transitions global status to degraded and identifies the bot `appId`.
 - Error path: failed bot identity lookup fails startup without leaking raw API payload.
 - Error path: event for unknown or removed bot is dropped without Feishu reply.
 - Error path: disabled bot card action returns a disabled-reason toast without routing the original action.
@@ -411,11 +413,11 @@ sequenceDiagram
 - Test: `test/app/desktop-ipc-regression.test.ts`
 
 **Approach:**
-- Add `botKey` to `ChatThreadBinding`.
+- Add `larkAppId` to persisted `ChatThreadBinding` documents while keeping internal runtime context tied to the same appId.
 - Upgrade binding document schema version.
-- New binding key is `botKey + tenantKey + chatId`.
-- Existing schema v1 bindings migrate to the default bot key.
-- Loading schema v1 bindings must be non-destructive: normalize them in memory as `botKey = "default"` and preserve model/personality/style/plan/activeSkill/workspace fields.
+- New binding key is `channel + larkAppId + tenantKey + chatId`.
+- Existing schema v1 bindings migrate to the appId from legacy `.env` when available, otherwise to the transient `default` fallback until configuration migration completes.
+- Loading schema v1 bindings must be non-destructive and preserve model/personality/style/plan/activeSkill/workspace fields.
 - Persist upgraded binding schema only during explicit migration or the next binding-store mutation, using the existing atomic replacement path.
 - Replace `get(tenantKey, chatId)` callers with bot-aware lookup.
 - Keep `getUniqueByThreadId` fail-closed when multiple bindings point at one thread.
@@ -423,29 +425,29 @@ sequenceDiagram
 - Persist group-level mention policy on the binding, including whether ordinary group users and bot senders may start tasks.
 - Bind, unbind, CWD, model, and access changes for a group are allowed from in-group owner context targeting the current group.
 - The same group-management changes may also be applied from private owner context only after selecting an explicit discovered or bound group.
-- Group unbind removes only `threadId` and static execution settings for that `botKey + tenantKey + chatId`; discovered-group status remains.
-- Group remove deletes the discovered-group authorization, binding, and group policy for that `botKey + tenantKey + chatId`.
-- Bot removal deletes all local records owned by the selected `botKey`, including credentials, owner/admin claim state, discovered groups, and bindings, after confirming affected scope.
+- Group unbind removes only `threadId` and static execution settings for that `larkAppId + tenantKey + chatId`; discovered-group status remains.
+- Group remove deletes the discovered-group authorization, binding, and group policy for that `larkAppId + tenantKey + chatId`.
+- Bot removal deletes all local records owned by the selected `appId`, including credentials, owner/admin claim state, discovered groups, and bindings, after confirming affected scope.
 
 **Patterns to follow:**
 - Existing same-directory atomic replacement and schema validation in `BindingStore`.
 
 **Test scenarios:**
-- Happy path: schema v1 binding loads as default bot binding.
+- Happy path: schema v1 binding loads under the migrated appId when available.
 - Happy path: schema v1 binding keeps its threadId, workspaceId, settings, revision, and updatedAtMs after in-memory normalization.
 - Happy path: next bind/unbind/config mutation writes the upgraded schema atomically without requiring chat re-binding.
 - Happy path: bot A and bot B can bind the same tenant/chat to different threads.
 - Happy path: bot A and bot B can bind different chats to the same thread.
 - Happy path: owner runs `@current bot /bind` in a group and binds that exact group to a thread.
 - Happy path: owner selects one discovered group by stable chat identity in private chat and binds it to a thread.
-- Edge case: duplicate `botKey + tenantKey + chatId` is rejected.
+- Edge case: duplicate `channel + larkAppId + tenantKey + chatId` is rejected.
 - Edge case: two groups with the same display name remain distinguishable by chat identity.
 - Edge case: private owner cannot bind a group that has not been discovered for the current bot.
 - Edge case: non-owner group member cannot bind, unbind, change model, change CWD, or change access policy.
 - Edge case: group unbind preserves discovered group and allows later owner rebind.
 - Edge case: group remove prevents later task start until owner binds/authorizes the group again.
 - Edge case: bot removal refuses or requires explicit force while that bot has active or queued tasks.
-- Error path: unknown keys or malformed bot keys fail closed.
+- Error path: unknown keys or malformed `appId` values fail closed.
 - Integration: command services update only the originating bot's binding.
 - Integration: owner group commands update only the current group's binding; non-owner group commands cannot create, update, or delete bindings.
 
@@ -470,9 +472,9 @@ sequenceDiagram
 - Test: `test/app/lark-image-input.test.ts`
 
 **Approach:**
-- Add `botKey` and `chatType` to `InboundMessage`.
-- Add `botKey` to card actions and verify action context against the bot that created the card.
-- Use `(botKey, tenantKey, chatId, senderOpenId)` as the image aggregation key.
+- Add `larkAppId` and `chatType` to `InboundMessage`.
+- Add `larkAppId` to card actions and verify action context against the bot that created the card.
+- Use `(larkAppId, tenantKey, chatId, senderOpenId)` as the image aggregation key.
 - For group messages, require bot mention unless a future explicit all-group-message mode is enabled.
 - Only remove the current bot's mention placeholder from message text.
 - In group chat, route only owner management commands and accepted task text. Non-owner slash commands and management phrases are rejected before mutating state.
@@ -558,7 +560,7 @@ sequenceDiagram
 - Test: `test/app/lark-client.test.ts`
 
 **Approach:**
-- Store `botKey` in each runtime task from the inbound message.
+- Store `larkAppId` in each runtime task from the inbound message.
 - Resolve the correct `CardKitClient`, acknowledgement client, and output uploader from a bot runtime registry.
 - Approval cards use the active task's bot runtime and admin approval destination.
 - Approval action tokens include bot scope, admin operator scope, and reject cross-bot replay.
@@ -577,7 +579,7 @@ sequenceDiagram
 - Integration: terminal card for queued cross-bot task returns to its original message root.
 
 **Verification:**
-- Every Lark side effect can be traced to exactly one `botKey` without payload logging.
+- Every Lark side effect can be traced to exactly one `larkAppId` without payload logging.
 
 ### U7. Setup, Reset, Doctor, Status, And Documentation
 
@@ -600,7 +602,7 @@ sequenceDiagram
 
 **Approach:**
 - Preserve single-bot `setup` behavior.
-- Preserve legacy single-bot runtime behavior through automatic `.env/config.json -> config.toml + lark-bots.json` migration and appId-scoped binding materialization without re-scan or re-bind.
+- Preserve legacy single-bot runtime behavior through automatic `.env -> config.toml + channels/feishu/bots.json` migration and appId-scoped binding materialization without re-scan or re-bind.
 - Add explicit documentation and CLI help for configuring additional bots through QR registration or existing app import.
 - Add `bot add`, `bot import`, `config migrate`, `bot rebind`, `bot disable`, `bot remove`, `bot list`, and `bot doctor` command design. Bot add/import/migration store appId-scoped records; commands targeting an existing bot use `--app-id`.
 - Implement identity hydration for `bot add`, `bot import`, and `config migrate` through `GET /open-apis/bot/v3/info`, persisting robot open ID, display name, avatar metadata, and activation status without logging secrets.
@@ -609,17 +611,17 @@ sequenceDiagram
 - Reset must preserve bot configuration while clearing only runtime/non-current files according to existing reset semantics.
 - Document group chat permissions: prefer `im:message.group_at_msg` / readonly equivalent; avoid sensitive all-group-message scope unless separately justified.
 - Document local-only removal semantics clearly: Bridge can remove local credentials/bindings, but does not guarantee deletion of the Feishu app or physical removal from Feishu groups unless a separately verified Feishu API flow is implemented.
-- Document upgrade compatibility: old `.env` Lark keys are imported once into `lark-bots.json`, v1 `bindings.json` loads as appId-scoped bindings, and persistent migration is automatic or explicit through `config migrate`.
+- Document upgrade compatibility: old `.env` Lark keys are imported once into `channels/feishu/bots.json`, v1 `bindings.json` loads as appId-scoped bindings, and persistent migration is automatic or explicit through `config migrate`.
 
 **Patterns to follow:**
 - Existing content-free runtime health and redacted logging.
 - Existing config reset dry-run/confirm/destructive split.
 
 **Test scenarios:**
-- Happy path: doctor reports one default bot for legacy config.
-- Happy path: legacy config with existing binding shows the same thread binding under `default` and does not ask for QR.
-- Happy path: `bot migrate-default --write` probes `/open-apis/bot/v3/info`, materializes `lark-bots.json` and upgraded `bindings.json`, stores `botOpenId`/`displayName`, and keeps old thread bindings under `default`.
-- Happy path: `bot add` prints one QR, fetches bot identity/name, generates one internal key, and writes one bot without touching `default`.
+- Happy path: doctor reports one appId-scoped bot for legacy config.
+- Happy path: legacy config with existing binding shows the same thread binding under the migrated appId and does not ask for QR.
+- Happy path: `bot migrate-default --write` probes `/open-apis/bot/v3/info`, materializes `channels/feishu/bots.json` and upgraded `bindings.json`, stores `botOpenId`/`displayName`, and keeps old thread bindings under the migrated appId.
+- Happy path: `bot add` prints one QR, fetches bot identity/name, and writes one appId-scoped bot.
 - Happy path: `bot rebind` selects one existing bot, replaces only that bot's credentials, and requires owner/group re-verification.
 - Happy path: `bot disable` keeps records but stops the selected bot from starting a task-capable runtime.
 - Happy path: `bot remove` shows affected bindings/groups, requires confirmation, and removes only the selected bot's local records.
@@ -654,11 +656,11 @@ sequenceDiagram
 
 | Risk | Mitigation |
 |------|------------|
-| Cross-bot card action accidentally mutates another bot's task | Include `botKey` in action normalization and token scope; verify against originating card context |
+| Cross-bot card action accidentally mutates another bot's task | Include `larkAppId` in action normalization and token scope; verify against originating card context |
 | Two bots start turns on the same ChatGPT thread | Keep exactly one shared `ThreadTaskScheduler` keyed by `threadId`; reject multi-process official design |
 | Multi-bot config leaks secrets in doctor/status/logs | Use redacted structured status and tests that assert secrets are absent |
 | Group message scope becomes too broad | Prefer group `@bot` event permission and retain local `mentionedBot` gate |
-| Binding migration loses existing single-bot installs | Schema v1 migrates to the default bot key and remains atomic |
+| Binding migration loses existing single-bot installs | Schema v1 migrates to the legacy appId when available and remains atomic |
 | One degraded Lark bot hides otherwise healthy bots | Health reports per-bot state plus aggregate degraded status |
 
 ---

@@ -42,7 +42,7 @@ test('group bot discovery stores only external bots returned by Feishu', async (
 
     assert.equal(result.refreshed, true);
     assert.equal(result.externalBotCount, 1);
-    assert.equal(store.listForGroup('bot_aaaaaaaaaaaa', 'tenant', 'chat')[0]?.displayName, 'Order Bot');
+    assert.equal(store.listForGroup('cli_aaaaaaaaaaaaaaaa', 'tenant', 'chat')[0]?.displayName, 'Order Bot');
     assert.ok(fetches.some((url) => url.endsWith('/open-apis/im/v1/chats/chat/members/bots')));
   } finally {
     rmSync(configHome, { recursive: true, force: true });
@@ -87,7 +87,7 @@ function jsonResponse(body: unknown): Response {
 }
 
 const sourceBot: LarkBotConfig = {
-  botKey: 'bot_aaaaaaaaaaaa',
+  botKey: 'cli_aaaaaaaaaaaaaaaa',
   appId: 'cli_0123456789abcdef',
   appSecret: 'secret',
   enabled: true,

@@ -125,13 +125,13 @@ test('group messages require the current bot mention and strip only that mention
     ...config,
     larkBotOpenId: 'bot-open-id',
     authorizedUsers: [],
-  }, () => 1_000_000_001_000, 'bot_exampleaaaa');
+  }, () => 1_000_000_001_000, 'cli_eeeeeeeeeeeeeeee');
 
   assert.equal(result.accepted, true);
   if (!result.accepted) {
     return;
   }
-  assert.equal(result.message.botKey, 'bot_exampleaaaa');
+  assert.equal(result.message.botKey, 'cli_eeeeeeeeeeeeeeee');
   assert.equal(result.message.chatType, 'group');
   assert.equal(result.message.text, '请处理 @_user_2 的问题');
 });
@@ -296,10 +296,10 @@ test('reply context accepts current bot group mentions without task policy check
     ...config,
     larkBotOpenId: 'bot-open-id',
     authorizedUsers: ['owner-only'],
-  }, () => 1_000_000_001_000, 'bot_release_test');
+  }, () => 1_000_000_001_000, 'cli_1111111111111111');
 
   assert.deepEqual(context, {
-    botKey: 'bot_release_test',
+    botKey: 'cli_1111111111111111',
     tenantKey: 'tenant',
     eventId: 'message',
     messageId: 'message',
@@ -330,7 +330,7 @@ test('reply context accepts external group user mentions for unavailable reason 
   }, {
     ...config,
     larkBotOpenId: 'bot-open-id',
-  }, () => 1_000_000_001_000, 'bot_release_test');
+  }, () => 1_000_000_001_000, 'cli_1111111111111111');
 
   assert.equal(context?.tenantKey, 'tenant');
   assert.equal(context?.chatId, 'external-chat');
@@ -349,7 +349,7 @@ test('reply context rejects group mentions for a different bot', () => {
   }, {
     ...config,
     larkBotOpenId: 'bot-open-id',
-  }, () => 1_000_000_001_000, 'bot_release_test');
+  }, () => 1_000_000_001_000, 'cli_1111111111111111');
 
   assert.equal(context, null);
 });

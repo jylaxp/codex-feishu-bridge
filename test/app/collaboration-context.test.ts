@@ -35,7 +35,7 @@ test('collaboration context includes discovered external bots in the same group'
     bots: [searchBot],
     targetBindings: [],
     externalTargets: [{
-      sourceBotKey: 'bot_aaaaaaaaaaaa',
+      sourceBotKey: 'cli_aaaaaaaaaaaaaaaa',
       tenantKey: 'tenant',
       chatId: 'chat',
       botOpenId: 'ou_external_order',
@@ -51,7 +51,7 @@ test('collaboration context includes discovered external bots in the same group'
 });
 
 const sourceBinding: ChatThreadBinding = {
-  botKey: 'bot_aaaaaaaaaaaa',
+  botKey: 'cli_aaaaaaaaaaaaaaaa',
   tenantKey: 'tenant',
   chatId: 'chat',
   threadId: 'thread-search',
@@ -61,7 +61,7 @@ const sourceBinding: ChatThreadBinding = {
 };
 
 const targetBinding: ChatThreadBinding = {
-  botKey: 'bot_bbbbbbbbbbbb',
+  botKey: 'cli_bbbbbbbbbbbbbbbb',
   tenantKey: 'tenant',
   chatId: 'chat',
   threadId: 'thread-order',
@@ -71,7 +71,7 @@ const targetBinding: ChatThreadBinding = {
 };
 
 const pricingBinding: ChatThreadBinding = {
-  botKey: 'bot_cccccccccccc',
+  botKey: 'cli_cccccccccccccccc',
   tenantKey: 'tenant',
   chatId: 'chat',
   threadId: 'thread-pricing',
@@ -80,9 +80,9 @@ const pricingBinding: ChatThreadBinding = {
   updatedAtMs: 1,
 };
 
-const searchBot = bot('bot_aaaaaaaaaaaa', 'Search Bot', '搜索组', '擅长搜索排查');
-const orderBot = bot('bot_bbbbbbbbbbbb', 'Order Bot', '订单组', '擅长下单排查');
-const pricingBot = bot('bot_cccccccccccc', 'Pricing Bot', '价格组', '擅长价格排查');
+const searchBot = bot('cli_aaaaaaaaaaaaaaaa', 'Search Bot', '搜索组', '擅长搜索排查');
+const orderBot = bot('cli_bbbbbbbbbbbbbbbb', 'Order Bot', '订单组', '擅长下单排查');
+const pricingBot = bot('cli_cccccccccccccccc', 'Pricing Bot', '价格组', '擅长价格排查');
 
 function bot(
   botKey: string,

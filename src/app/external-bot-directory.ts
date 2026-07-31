@@ -13,6 +13,7 @@ import {
 import { dirname, join } from 'node:path';
 
 import { DEFAULT_BOT_KEY } from './bot-config-store';
+import { feishuChannelConfigDirectory } from './channel-paths';
 
 const DIRECTORY_SCHEMA_VERSION = 2;
 const DIRECTORY_FILE_NAME = 'external-bots.json';
@@ -23,7 +24,7 @@ const MAX_DISPLAY_NAME_LENGTH = 200;
 
 export interface ExternalBotDirectoryEntry {
   readonly sourceAppId?: string;
-  /** Deprecated runtime alias. New persisted entries write sourceAppId only. */
+  /** Runtime alias. Persisted entries write sourceAppId only. */
   readonly sourceBotKey: string;
   readonly tenantKey: string;
   readonly chatId: string;
@@ -80,7 +81,9 @@ export class ExternalBotDirectoryStore {
       throw new ExternalBotDirectoryError('External bot directory config home must not be blank');
     }
     this.now = options.now ?? Date.now;
-    this.directoryPath = join(configHome, options.fileName ?? DIRECTORY_FILE_NAME);
+    this.directoryPath = options.fileName
+      ? join(configHome, options.fileName)
+      : join(feishuChannelConfigDirectory(configHome), DIRECTORY_FILE_NAME);
   }
 
   public get filePath(): string {
@@ -247,7 +250,7 @@ export class ExternalBotDirectoryStore {
       throw new ExternalBotDirectoryError('external-bots.json would contain too many entries');
     }
     const directory = dirname(this.directoryPath);
-    mkdirSync(directory, { recursive: true });
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
     const document: ExternalBotDirectoryDocument = Object.freeze({
       schemaVersion: DIRECTORY_SCHEMA_VERSION,
       entries: Object.freeze([...this.entries.values()].map(serializeEntry)),
@@ -284,7 +287,7 @@ function parseDocument(value: unknown): { readonly schemaVersion: number; readon
   if (!isRecord(value) || hasUnknownKeys(value, ['schemaVersion', 'entries'])) {
     throw new ExternalBotDirectoryError('external-bots.json has an invalid document shape');
   }
-  if ((value.schemaVersion !== 1 && value.schemaVersion !== DIRECTORY_SCHEMA_VERSION) || !Array.isArray(value.entries)) {
+  if (value.schemaVersion !== DIRECTORY_SCHEMA_VERSION || !Array.isArray(value.entries)) {
     throw new ExternalBotDirectoryError('external-bots.json schema version is unsupported');
   }
   if (value.entries.length > MAX_ENTRY_COUNT) {
@@ -298,7 +301,6 @@ function parseDocument(value: unknown): { readonly schemaVersion: number; readon
 
 function parseEntry(value: unknown): ExternalBotDirectoryEntry {
   if (!isRecord(value) || hasUnknownKeys(value, [
-    'sourceBotKey',
     'sourceAppId',
     'tenantKey',
     'chatId',
@@ -311,9 +313,10 @@ function parseEntry(value: unknown): ExternalBotDirectoryEntry {
   }
   const discoveredAtMs = safeTimestamp(value.discoveredAtMs, 'discoveredAtMs');
   const updatedAtMs = safeTimestamp(value.updatedAtMs, 'updatedAtMs');
+  const sourceAppId = requiredBotIdentifier(value.sourceAppId, 'sourceAppId');
   return Object.freeze({
-    sourceBotKey: requiredBotIdentifier(value.sourceAppId ?? value.sourceBotKey ?? DEFAULT_BOT_KEY, 'sourceAppId'),
-    sourceAppId: requiredBotIdentifier(value.sourceAppId ?? value.sourceBotKey ?? DEFAULT_BOT_KEY, 'sourceAppId'),
+    sourceBotKey: sourceAppId,
+    sourceAppId,
     tenantKey: requiredText(value.tenantKey, 'tenantKey'),
     chatId: requiredText(value.chatId, 'chatId'),
     botOpenId: requiredOpenId(value.botOpenId),
@@ -340,7 +343,7 @@ function uniqueBots(bots: readonly ExternalBotDirectoryBotInput[]): readonly Ext
 
 function requiredBotIdentifier(value: unknown, label: string): string {
   const key = value === undefined ? DEFAULT_BOT_KEY : requiredText(value, label);
-  if (!/^cli_[0-9a-fA-F]{16}$/.test(key) && !/^(?:default|bot_[a-z2-7][a-z2-7]{11,59})$/.test(key)) {
+  if (!/^cli_[0-9a-fA-F]{16}$/.test(key) && key !== DEFAULT_BOT_KEY) {
     throw new ExternalBotDirectoryError(`${label} is invalid`);
   }
   return key;
