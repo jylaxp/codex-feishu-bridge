@@ -6,8 +6,8 @@ import test from 'node:test';
 
 import { loadBridgeEnvironment, writeBridgeConfigFile } from '../../src/app/config-file';
 
-test('config loader migrates legacy .env to config.json when JSON config is missing', () => {
-  const configHome = mkdtempSync(join(tmpdir(), 'bridge-config-json-migrate-'));
+test('config loader migrates legacy .env to config.toml when current config is missing', () => {
+  const configHome = mkdtempSync(join(tmpdir(), 'bridge-config-toml-migrate-'));
   try {
     writeFileSync(join(configHome, '.env'), [
       'LARK_APP_ID=cli_1111111111111111',
@@ -24,16 +24,15 @@ test('config loader migrates legacy .env to config.json when JSON config is miss
     assert.equal(env.LARK_APP_ID, 'cli_1111111111111111');
     assert.equal(env.ALLOWED_CHATS, 'chat-a,chat-b');
     assert.equal(env.LOG_TO_FILE, 'true');
-    assert.equal(existsSync(join(configHome, 'config.json')), true);
+    assert.equal(existsSync(join(configHome, 'config.toml')), true);
+    assert.equal(existsSync(join(configHome, 'config.json')), false);
     assert.equal(existsSync(join(configHome, 'lark-bots.json')), true);
     assert.equal(existsSync(join(configHome, '.env')), false);
 
-    const document = JSON.parse(readFileSync(join(configHome, 'config.json'), 'utf8')) as {
-      readonly lark?: unknown;
-      readonly logging: { readonly toFile: boolean };
-    };
-    assert.equal(document.lark, undefined);
-    assert.equal(document.logging.toFile, true);
+    const configText = readFileSync(join(configHome, 'config.toml'), 'utf8');
+    assert.doesNotMatch(configText, /\[lark]/);
+    assert.match(configText, /toFile = true/);
+    assert.match(configText, /Robot credentials are stored in lark-bots\.json/);
     const bots = JSON.parse(readFileSync(join(configHome, 'lark-bots.json'), 'utf8')) as {
       readonly bots: readonly {
         readonly appId: string;
@@ -49,8 +48,8 @@ test('config loader migrates legacy .env to config.json when JSON config is miss
   }
 });
 
-test('config loader ignores legacy .env after config.json exists', () => {
-  const configHome = mkdtempSync(join(tmpdir(), 'bridge-config-json-current-'));
+test('config loader ignores legacy .env after config.toml exists', () => {
+  const configHome = mkdtempSync(join(tmpdir(), 'bridge-config-toml-current-'));
   try {
     writeBridgeConfigFile(configHome, {
       LARK_APP_ID: 'cli_1111111111111111',
@@ -71,16 +70,14 @@ test('config loader ignores legacy .env after config.json exists', () => {
     assert.equal(env.LARK_APP_SECRET, undefined);
     assert.equal(env.ALLOWED_CHATS, undefined);
     assert.equal(existsSync(join(configHome, '.env')), false);
-    const document = JSON.parse(readFileSync(join(configHome, 'config.json'), 'utf8')) as {
-      readonly lark?: unknown;
-    };
-    assert.equal(document.lark, undefined);
+    assert.equal(existsSync(join(configHome, 'config.json')), false);
+    assert.doesNotMatch(readFileSync(join(configHome, 'config.toml'), 'utf8'), /\[lark]/);
   } finally {
     rmSync(configHome, { recursive: true, force: true });
   }
 });
 
-test('config loader moves legacy config lark credentials into lark-bots.json', () => {
+test('config loader migrates legacy config.json lark credentials into lark-bots.json', () => {
   const configHome = mkdtempSync(join(tmpdir(), 'bridge-config-json-legacy-lark-'));
   try {
     writeFileSync(join(configHome, 'config.json'), JSON.stringify({
@@ -114,10 +111,9 @@ test('config loader moves legacy config lark credentials into lark-bots.json', (
 
     assert.equal(env.LARK_APP_ID, 'cli_2222222222222222');
     assert.equal(env.LARK_APP_SECRET, 'legacy-secret');
-    const configDocument = JSON.parse(readFileSync(join(configHome, 'config.json'), 'utf8')) as {
-      readonly lark?: unknown;
-    };
-    assert.equal(configDocument.lark, undefined);
+    assert.equal(existsSync(join(configHome, 'config.toml')), true);
+    assert.equal(existsSync(join(configHome, 'config.json')), false);
+    assert.doesNotMatch(readFileSync(join(configHome, 'config.toml'), 'utf8'), /\[lark]/);
     const botDocument = JSON.parse(readFileSync(join(configHome, 'lark-bots.json'), 'utf8')) as {
       readonly bots: readonly {
         readonly appId: string;
@@ -136,7 +132,7 @@ test('config loader moves legacy config lark credentials into lark-bots.json', (
 });
 
 test('config loader materializes placeholders for blank legacy required values', () => {
-  const configHome = mkdtempSync(join(tmpdir(), 'bridge-config-json-blank-required-'));
+  const configHome = mkdtempSync(join(tmpdir(), 'bridge-config-toml-blank-required-'));
   try {
     writeFileSync(join(configHome, '.env'), [
       'LARK_APP_ID=',
@@ -151,25 +147,26 @@ test('config loader materializes placeholders for blank legacy required values',
     assert.equal(reloaded.LARK_APP_ID, undefined);
     assert.equal(reloaded.LARK_APP_SECRET, undefined);
     assert.equal(reloaded.CODEX_BIN, '/absolute/path/to/codex');
+    assert.equal(existsSync(join(configHome, 'config.toml')), true);
     assert.equal(existsSync(join(configHome, '.env')), false);
   } finally {
     rmSync(configHome, { recursive: true, force: true });
   }
 });
 
-test('config loader rejects group-readable config.json files', { skip: process.platform === 'win32' }, () => {
-  const configHome = mkdtempSync(join(tmpdir(), 'bridge-config-json-permission-'));
+test('config loader rejects group-readable config.toml files', { skip: process.platform === 'win32' }, () => {
+  const configHome = mkdtempSync(join(tmpdir(), 'bridge-config-toml-permission-'));
   try {
     writeBridgeConfigFile(configHome, {
       LARK_APP_ID: 'cli_0123456789abcdef',
       LARK_APP_SECRET: 'secret',
       CODEX_BIN: '/codex',
     });
-    chmodSync(join(configHome, 'config.json'), 0o644);
+    chmodSync(join(configHome, 'config.toml'), 0o644);
 
     assert.throws(
       () => loadBridgeEnvironment({ BRIDGE_CONFIG_HOME: configHome }),
-      /config\.json must not be readable or writable by group or others/,
+      /config\.toml must not be readable or writable by group or others/,
     );
   } finally {
     rmSync(configHome, { recursive: true, force: true });
@@ -177,11 +174,11 @@ test('config loader rejects group-readable config.json files', { skip: process.p
 });
 
 test('config writer refuses a pre-existing symlink temp file', { skip: process.platform === 'win32' }, () => {
-  const configHome = mkdtempSync(join(tmpdir(), 'bridge-config-json-temp-symlink-'));
+  const configHome = mkdtempSync(join(tmpdir(), 'bridge-config-toml-temp-symlink-'));
   const target = join(configHome, 'target.txt');
   try {
     writeFileSync(target, 'original', { mode: 0o600 });
-    symlinkSync(target, join(configHome, 'config.json.tmp'));
+    symlinkSync(target, join(configHome, 'config.toml.tmp'));
 
     assert.throws(
       () => writeBridgeConfigFile(configHome, {
@@ -189,7 +186,7 @@ test('config writer refuses a pre-existing symlink temp file', { skip: process.p
         LARK_APP_SECRET: 'secret',
         CODEX_BIN: '/codex',
       }),
-      /config\.json could not be written/,
+      /config\.toml could not be written/,
     );
     assert.equal(readFileSync(target, 'utf8'), 'original');
   } finally {
@@ -197,11 +194,11 @@ test('config writer refuses a pre-existing symlink temp file', { skip: process.p
   }
 });
 
-test('config example matches the runtime JSON schema', () => {
-  const configHome = mkdtempSync(join(tmpdir(), 'bridge-config-json-example-'));
+test('config example matches the runtime TOML schema', () => {
+  const configHome = mkdtempSync(join(tmpdir(), 'bridge-config-toml-example-'));
   try {
-    const example = readFileSync(resolve('config.example.json'), 'utf8');
-    writeFileSync(join(configHome, 'config.json'), example, { mode: 0o600 });
+    const example = readFileSync(resolve('config.example.toml'), 'utf8');
+    writeFileSync(join(configHome, 'config.toml'), example, { mode: 0o600 });
 
     const env = loadBridgeEnvironment({ BRIDGE_CONFIG_HOME: configHome });
 

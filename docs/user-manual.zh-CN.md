@@ -18,7 +18,7 @@
 | 概念 | 说明 |
 | --- | --- |
 | Bridge 进程 | 本机后台服务，负责飞书事件、绑定、卡片投递和 Codex/ChatGPT 控制。 |
-| 配置目录 | 默认 `~/.codex-feishu-bridge`，保存 `config.json`、`lark-bots.json`、`bindings.json`、`external-bots.json`、PID、health 和日志。 |
+| 配置目录 | 默认 `~/.codex-feishu-bridge`，保存 `config.toml`、`lark-bots.json`、`bindings.json`、`external-bots.json`、PID、health 和日志。 |
 | appId | 飞书应用 ID，也是 Bridge 识别一个机器人配置的唯一标识。 |
 | 绑定 | 一个飞书聊天绑定到一个 ChatGPT 会话。群聊绑定精确到 `appId + tenantKey + chatId`。 |
 | owner/admin | 能进行绑定、解绑、模型、CWD、访问策略和审批操作的管理用户。 |
@@ -78,7 +78,7 @@ cfb setup
 ~/.codex-feishu-bridge/lark-bots.json
 ```
 
-`config.json` 只保存 Bridge 进程级配置，不保存飞书机器人凭证。
+`config.toml` 只保存 Bridge 进程级配置，不保存飞书机器人凭证；它支持注释，适合用户手工调整运行参数。
 
 ### 4.2 使用已有机器人
 
@@ -88,11 +88,11 @@ cfb setup
 cfb bot import --app-id cli_xxx --app-secret SECRET
 ```
 
-凭证会写入 `~/.codex-feishu-bridge/lark-bots.json`。`cfb init` 只用于生成 `config.json` 进程级配置骨架；不要把飞书 `appId`、`appSecret` 手工写入 `config.json`。
+凭证会写入 `~/.codex-feishu-bridge/lark-bots.json`。`cfb init` 只用于生成 `config.toml` 进程级配置骨架；不要把飞书 `appId`、`appSecret` 手工写入 `config.toml`。
 
 ### 4.3 迁移已有单聊机器人
 
-如果旧安装已经有 `.env`，新版本发现 `config.json` 不存在时会自动从 `.env` 生成 `config.json`，随后删除旧 `.env`。要立即把旧单聊机器人和已有绑定物化到多机器人结构，执行：
+如果旧安装已经有 `config.json` 或 `.env`，新版本发现 `config.toml` 不存在时会自动从旧配置生成 `config.toml`，随后删除旧 `config.json` 或 `.env`。要立即把旧单聊机器人和已有绑定物化到多机器人结构，执行：
 
 ```bash
 cfb config migrate

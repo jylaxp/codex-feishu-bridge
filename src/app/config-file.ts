@@ -13,11 +13,13 @@ import {
   type Stats,
 } from 'node:fs';
 import { join } from 'node:path';
+import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
 
 import { materializeLegacyBotFromEnvironment } from './bot-config-store';
 import { ConfigurationError, resolveConfigHome } from './config';
 
-export const CONFIG_FILE_NAME = 'config.json';
+export const CONFIG_FILE_NAME = 'config.toml';
+export const LEGACY_JSON_CONFIG_FILE_NAME = 'config.json';
 export const LEGACY_ENV_FILE_NAME = '.env';
 const CONFIG_SCHEMA_VERSION = 1;
 const MAX_CONFIG_FILE_BYTES = 1024 * 1024;
@@ -29,6 +31,7 @@ export interface ConfigFileOptions {
 export interface BridgeConfigPaths {
   readonly configHome: string;
   readonly configPath: string;
+  readonly legacyJsonConfigPath: string;
   readonly legacyEnvPath: string;
 }
 
@@ -82,8 +85,8 @@ type ParsedBridgeConfigDocument = BridgeConfigDocument & {
 };
 
 /**
- * Loads `config.json` as the only current config format. A legacy `.env` is
- * read exactly once when `config.json` is missing, then materialized to JSON.
+ * Loads `config.toml` as the current editable config format. Legacy
+ * `config.json` and `.env` files are one-time migration sources.
  */
 export function loadBridgeEnvironment(
   baseEnv: NodeJS.ProcessEnv,
@@ -98,6 +101,7 @@ export function bridgeConfigPaths(configHome: string): BridgeConfigPaths {
   return Object.freeze({
     configHome,
     configPath: join(configHome, CONFIG_FILE_NAME),
+    legacyJsonConfigPath: join(configHome, LEGACY_JSON_CONFIG_FILE_NAME),
     legacyEnvPath: join(configHome, LEGACY_ENV_FILE_NAME),
   });
 }
@@ -108,9 +112,21 @@ export function configFileExists(configHome: string): boolean {
 
 export function readOrMigratePersistedEnvironment(paths: BridgeConfigPaths): NodeJS.ProcessEnv {
   if (existsSync(paths.configPath)) {
-    const env = readConfigFileEnvironment(paths);
+    const document = readConfigDocument(paths.configPath);
+    const env = configDocumentToEnvironment(document);
+    materializeLegacyBotFromEnvironment(paths.configHome, env);
+    if (document.legacyLark) {
+      writeBridgeConfigFile(paths.configHome, env);
+    }
+    removeLegacyJsonConfigFile(paths);
+    removeLegacyEnvironmentFile(paths);
+    return env;
+  }
+  if (existsSync(paths.legacyJsonConfigPath)) {
+    const env = readLegacyJsonConfigFileEnvironment(paths);
     materializeLegacyBotFromEnvironment(paths.configHome, env);
     writeBridgeConfigFile(paths.configHome, env);
+    removeLegacyJsonConfigFile(paths);
     removeLegacyEnvironmentFile(paths);
     return env;
   }
@@ -125,8 +141,13 @@ export function readOrMigratePersistedEnvironment(paths: BridgeConfigPaths): Nod
 }
 
 export function readConfigFileEnvironment(paths: BridgeConfigPaths): NodeJS.ProcessEnv {
-  assertPrivateConfigFile(paths.configPath);
+  assertPrivateConfigFile(paths.configPath, 'Bridge config.toml');
   return configDocumentToEnvironment(readConfigDocument(paths.configPath));
+}
+
+export function readLegacyJsonConfigFileEnvironment(paths: BridgeConfigPaths): NodeJS.ProcessEnv {
+  assertPrivateConfigFile(paths.legacyJsonConfigPath, 'Bridge legacy config.json');
+  return configDocumentToEnvironment(readLegacyJsonConfigDocument(paths.legacyJsonConfigPath));
 }
 
 export function readLegacyEnvironmentFile(paths: BridgeConfigPaths): NodeJS.ProcessEnv {
@@ -148,11 +169,11 @@ export function writeBridgeConfigFile(configHome: string, env: NodeJS.ProcessEnv
   }
   const { configPath } = bridgeConfigPaths(configHome);
   if (existsSync(configPath)) {
-    assertRegularFile(configPath, 'Bridge config.json');
+    assertRegularFile(configPath, 'Bridge config.toml');
   }
-  const serialized = `${JSON.stringify(environmentToConfigDocument(env), null, 2)}\n`;
+  const serialized = serializeConfigDocument(environmentToConfigDocument(env));
   if (Buffer.byteLength(serialized, 'utf8') > MAX_CONFIG_FILE_BYTES) {
-    throw new ConfigurationError('config.json would exceed the maximum allowed size');
+    throw new ConfigurationError('config.toml would exceed the maximum allowed size');
   }
   const temporaryPath = `${configPath}.tmp`;
   let descriptor: number | undefined;
@@ -177,7 +198,7 @@ export function writeBridgeConfigFile(configHome: string, env: NodeJS.ProcessEnv
     } catch {
       // Missing temp files are already clean.
     }
-    throw new ConfigurationError('config.json could not be written');
+    throw new ConfigurationError('config.toml could not be written');
   }
 }
 
@@ -234,7 +255,32 @@ export function environmentToConfigDocument(env: NodeJS.ProcessEnv): BridgeConfi
   });
 }
 
+function serializeConfigDocument(document: BridgeConfigDocument): string {
+  return `${[
+    '# Codex Feishu Bridge process configuration.',
+    '# Robot credentials are stored in lark-bots.json, not in this file.',
+    '# See config.example.toml for field-level comments.',
+    '',
+  ].join('\n')}${stringifyToml(document)}\n`;
+}
+
 function readConfigDocument(configPath: string): ParsedBridgeConfigDocument {
+  assertPrivateConfigFile(configPath, 'Bridge config.toml');
+  const stat = lstatSync(configPath);
+  if (stat.size > MAX_CONFIG_FILE_BYTES) {
+    throw new ConfigurationError('config.toml exceeds the maximum allowed size');
+  }
+  try {
+    return parseConfigDocument(parseToml(readFileSync(configPath, { encoding: 'utf8' })), 'config.toml');
+  } catch (error) {
+    if (error instanceof ConfigurationError) {
+      throw error;
+    }
+    throw new ConfigurationError('config.toml is not valid TOML');
+  }
+}
+
+function readLegacyJsonConfigDocument(configPath: string): ParsedBridgeConfigDocument {
   const stat = lstatSync(configPath);
   if (stat.size > MAX_CONFIG_FILE_BYTES) {
     throw new ConfigurationError('config.json exceeds the maximum allowed size');
@@ -245,77 +291,77 @@ function readConfigDocument(configPath: string): ParsedBridgeConfigDocument {
   } catch {
     throw new ConfigurationError('config.json is not valid JSON');
   }
-  return parseConfigDocument(document);
+  return parseConfigDocument(document, 'config.json');
 }
 
-function parseConfigDocument(value: unknown): ParsedBridgeConfigDocument {
-  const document = recordValue(value, 'config.json');
+function parseConfigDocument(value: unknown, sourceName: string): ParsedBridgeConfigDocument {
+  const document = recordValue(value, sourceName);
   if (document.schemaVersion !== CONFIG_SCHEMA_VERSION) {
-    throw new ConfigurationError('config.json schema version is unsupported');
+    throw new ConfigurationError(`${sourceName} schema version is unsupported`);
   }
-  const approval = recordValue(document.approval, 'config.json.approval');
-  const appServer = recordValue(document.appServer, 'config.json.appServer');
-  const codex = recordValue(document.codex, 'config.json.codex');
-  const card = recordValue(document.card, 'config.json.card');
-  const queue = recordValue(document.queue, 'config.json.queue');
-  const usage = recordValue(document.usage, 'config.json.usage');
-  const logging = recordValue(document.logging, 'config.json.logging');
-  const files = recordValue(document.files, 'config.json.files');
+  const approval = recordValue(document.approval, `${sourceName}.approval`);
+  const appServer = recordValue(document.appServer, `${sourceName}.appServer`);
+  const codex = recordValue(document.codex, `${sourceName}.codex`);
+  const card = recordValue(document.card, `${sourceName}.card`);
+  const queue = recordValue(document.queue, `${sourceName}.queue`);
+  const usage = recordValue(document.usage, `${sourceName}.usage`);
+  const logging = recordValue(document.logging, `${sourceName}.logging`);
+  const files = recordValue(document.files, `${sourceName}.files`);
   const legacyLark = document.lark === undefined
     ? undefined
-    : parseLegacyLarkConfig(recordValue(document.lark, 'config.json.lark'));
+    : parseLegacyLarkConfig(recordValue(document.lark, `${sourceName}.lark`), `${sourceName}.lark`);
   return Object.freeze({
     schemaVersion: CONFIG_SCHEMA_VERSION,
     approval: Object.freeze({
-      summaryMode: jsonBoolean(approval.summaryMode, 'config.json.approval.summaryMode'),
+      summaryMode: jsonBoolean(approval.summaryMode, `${sourceName}.approval.summaryMode`),
     }),
     appServer: Object.freeze({
-      mode: requiredString(appServer.mode, 'config.json.appServer.mode'),
-      socketPath: optionalJsonString(appServer.socketPath, 'config.json.appServer.socketPath'),
+      mode: requiredString(appServer.mode, `${sourceName}.appServer.mode`),
+      socketPath: optionalJsonString(appServer.socketPath, `${sourceName}.appServer.socketPath`),
     }),
     codex: Object.freeze({
-      bin: requiredString(codex.bin, 'config.json.codex.bin'),
-      cwd: optionalJsonString(codex.cwd, 'config.json.codex.cwd') ?? '',
-      allowedShellCommands: jsonStringArray(codex.allowedShellCommands, 'config.json.codex.allowedShellCommands'),
+      bin: requiredString(codex.bin, `${sourceName}.codex.bin`),
+      cwd: optionalJsonString(codex.cwd, `${sourceName}.codex.cwd`) ?? '',
+      allowedShellCommands: jsonStringArray(codex.allowedShellCommands, `${sourceName}.codex.allowedShellCommands`),
     }),
     card: Object.freeze({
-      maxTextLength: jsonInteger(card.maxTextLength, 'config.json.card.maxTextLength'),
-      updateIntervalMs: jsonInteger(card.updateIntervalMs, 'config.json.card.updateIntervalMs'),
+      maxTextLength: jsonInteger(card.maxTextLength, `${sourceName}.card.maxTextLength`),
+      updateIntervalMs: jsonInteger(card.updateIntervalMs, `${sourceName}.card.updateIntervalMs`),
     }),
     queue: Object.freeze({
-      maxQueuedTasks: jsonInteger(queue.maxQueuedTasks, 'config.json.queue.maxQueuedTasks'),
+      maxQueuedTasks: jsonInteger(queue.maxQueuedTasks, `${sourceName}.queue.maxQueuedTasks`),
     }),
     usage: Object.freeze({
       rateLimitQueryIntervalMs: jsonInteger(
         usage.rateLimitQueryIntervalMs,
-        'config.json.usage.rateLimitQueryIntervalMs',
+        `${sourceName}.usage.rateLimitQueryIntervalMs`,
       ),
     }),
     logging: Object.freeze({
-      toFile: jsonBoolean(logging.toFile, 'config.json.logging.toFile'),
-      filePath: optionalJsonString(logging.filePath, 'config.json.logging.filePath'),
+      toFile: jsonBoolean(logging.toFile, `${sourceName}.logging.toFile`),
+      filePath: optionalJsonString(logging.filePath, `${sourceName}.logging.filePath`),
     }),
     files: Object.freeze({
-      enableAutoFileUpload: jsonBoolean(files.enableAutoFileUpload, 'config.json.files.enableAutoFileUpload'),
+      enableAutoFileUpload: jsonBoolean(files.enableAutoFileUpload, `${sourceName}.files.enableAutoFileUpload`),
     }),
     ...(legacyLark ? { legacyLark } : {}),
   });
 }
 
-function parseLegacyLarkConfig(lark: Record<string, unknown>): LegacyLarkConfigDocument {
+function parseLegacyLarkConfig(lark: Record<string, unknown>, sourceName: string): LegacyLarkConfigDocument {
   return Object.freeze({
-    appId: requiredString(lark.appId, 'config.json.lark.appId'),
-    appSecret: requiredString(lark.appSecret, 'config.json.lark.appSecret'),
-    tenantKey: optionalJsonString(lark.tenantKey, 'config.json.lark.tenantKey') ?? '',
-    allowedChats: jsonStringArray(lark.allowedChats, 'config.json.lark.allowedChats'),
-    authorizedUsers: jsonStringArray(lark.authorizedUsers, 'config.json.lark.authorizedUsers'),
-    allowedApprovers: jsonStringArray(lark.allowedApprovers, 'config.json.lark.allowedApprovers'),
-    allowGroupUserMentions: jsonBoolean(lark.allowGroupUserMentions, 'config.json.lark.allowGroupUserMentions'),
+    appId: requiredString(lark.appId, `${sourceName}.appId`),
+    appSecret: requiredString(lark.appSecret, `${sourceName}.appSecret`),
+    tenantKey: optionalJsonString(lark.tenantKey, `${sourceName}.tenantKey`) ?? '',
+    allowedChats: jsonStringArray(lark.allowedChats, `${sourceName}.allowedChats`),
+    authorizedUsers: jsonStringArray(lark.authorizedUsers, `${sourceName}.authorizedUsers`),
+    allowedApprovers: jsonStringArray(lark.allowedApprovers, `${sourceName}.allowedApprovers`),
+    allowGroupUserMentions: jsonBoolean(lark.allowGroupUserMentions, `${sourceName}.allowGroupUserMentions`),
     allowExternalGroupUserMentions: jsonBoolean(
       lark.allowExternalGroupUserMentions,
-      'config.json.lark.allowExternalGroupUserMentions',
+      `${sourceName}.allowExternalGroupUserMentions`,
     ),
-    allowGroupBotMentions: jsonBoolean(lark.allowGroupBotMentions, 'config.json.lark.allowGroupBotMentions'),
+    allowGroupBotMentions: jsonBoolean(lark.allowGroupBotMentions, `${sourceName}.allowGroupBotMentions`),
   });
 }
 
@@ -356,10 +402,25 @@ function assertRegularFile(path: string, label: string): Stats {
   return stat;
 }
 
-function assertPrivateConfigFile(path: string): void {
-  const stat = assertRegularFile(path, 'Bridge config.json');
+function assertPrivateConfigFile(path: string, label: string): void {
+  const stat = assertRegularFile(path, label);
   if (process.platform !== 'win32' && (stat.mode & 0o077) !== 0) {
-    throw new ConfigurationError('Bridge config.json must not be readable or writable by group or others');
+    throw new ConfigurationError(`${label} must not be readable or writable by group or others`);
+  }
+}
+
+function removeLegacyJsonConfigFile(paths: BridgeConfigPaths): void {
+  if (!existsSync(paths.legacyJsonConfigPath)) {
+    return;
+  }
+  const stat = lstatSync(paths.legacyJsonConfigPath);
+  if (stat.isDirectory()) {
+    throw new ConfigurationError('Bridge legacy config.json must not be a directory');
+  }
+  try {
+    unlinkSync(paths.legacyJsonConfigPath);
+  } catch {
+    throw new ConfigurationError('Bridge legacy config.json could not be removed after config.toml migration');
   }
 }
 
@@ -374,7 +435,7 @@ function removeLegacyEnvironmentFile(paths: BridgeConfigPaths): void {
   try {
     unlinkSync(paths.legacyEnvPath);
   } catch {
-    throw new ConfigurationError('Bridge legacy .env could not be removed after config.json migration');
+    throw new ConfigurationError('Bridge legacy .env could not be removed after config.toml migration');
   }
 }
 
@@ -480,10 +541,14 @@ function integerEnvValue(value: string | undefined, fallback: number): number {
 }
 
 function recordValue(value: unknown, label: string): Record<string, unknown> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+  if (!isRecord(value)) {
     throw new ConfigurationError(`${label} must be an object`);
   }
-  return value as Record<string, unknown>;
+  return value;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 function requiredString(value: unknown, label: string): string {

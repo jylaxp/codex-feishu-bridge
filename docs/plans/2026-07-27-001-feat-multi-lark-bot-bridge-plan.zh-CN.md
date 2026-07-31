@@ -21,13 +21,14 @@ date: 2026-07-27
 - `bot add` 和 `bot import` 添加的是新的飞书应用机器人。如果扫码/导入得到另一个 `appId`，就是新机器人，不会修改已有机器人配置。
 - `bot enable`、`bot disable`、`bot remove` 和同类管理命令使用 `--app-id` 选择机器人；公开 CLI 不再接受 `--bot-key`。
 
-## 2026-07-31 设计修订：使用 `config.json` 替换 `.env`
+## 2026-07-31 设计修订：使用 `config.toml` 作为运行配置
 
-本修订覆盖本文早期关于 `.env` fallback 和只读 legacy 启动的设计。正式运行配置文件改为 `config.json`；legacy `.env` 只作为一次性迁移来源。
+本修订覆盖本文早期关于 `.env` fallback、`config.json` 和只读 legacy 启动的设计。正式运行配置文件改为 `config.toml`，方便 operator 在进程级配置旁保留行内注释。Legacy `config.json` 和 `.env` 只作为一次性迁移来源。
 
-- `~/.codex-feishu-bridge/config.json` 是当前配置标志。只要它存在，Bridge 就加载它，并忽略残留的 `.env`。
-- 如果 `config.json` 不存在但 legacy `.env` 存在，Bridge 会在解析运行配置前自动物化 `config.json`，随后删除旧 `.env`。
-- 新的 setup/init 流程写入 `config.json`，不再写 `.env`。
+- `~/.codex-feishu-bridge/config.toml` 是当前配置标志。只要它存在，Bridge 就加载它，并清理残留的 legacy `config.json` 或 `.env`。
+- 如果 `config.toml` 不存在但 legacy `config.json` 存在，Bridge 会在解析运行配置前自动物化 `config.toml`，把 legacy `lark` 凭证迁移到 `lark-bots.json`，随后删除 legacy `config.json`。
+- 如果 `config.toml` 和 legacy `config.json` 都不存在，但 legacy `.env` 存在，Bridge 会自动物化 `config.toml`，把 bot 凭证迁移到 `lark-bots.json`，随后删除 legacy `.env`。
+- 新的 setup/init 流程写入 `config.toml`，不再写 `.env` 或 `config.json`。
 - `cfb config migrate` 仍可显式执行，用于把 legacy 单机器人 hydrate 到 `lark-bots.json` 并物化旧 bindings；启动时如果 `lark-bots.json` 不存在，也会物化当前 `appId` 机器人。
 - 当前群聊开发分支尚未发布多机器人/群聊配置格式，因此允许破坏性迁移。
 
@@ -256,7 +257,7 @@ date: 2026-07-27
 
 ### 延后到实现
 
-- `lark-bots.json` 的精确字段名和迁移机制在实现期间最终确定，但来源拆分已经确定：`config.json` 用于当前进程级配置和一次性 legacy `.env` 导入，`lark-bots.json` 用于 appId 作用域的 bot credentials。
+- `lark-bots.json` 的精确字段名和迁移机制在实现期间最终确定，但来源拆分已经确定：`config.toml` 用于当前进程级配置和一次性 legacy `config.json` / `.env` 导入，`lark-bots.json` 用于 appId 作用域的 bot credentials。
 
 ---
 
@@ -316,16 +317,16 @@ sequenceDiagram
 - 修改：`src/app/config.ts`
 - 修改：`src/app/config-file.ts`
 - 修改：`src/app/setup.ts`
-- 修改：`config.example.json`
+- 修改：`config.example.toml`
 - 测试：`test/app/config-reset.test.ts`
 - 测试：`test/app/doctor.test.ts`
 
 **方法：**
 - 增加 `LarkBotConfig` 概念，包含 `appId`、`appSecret`、tenant/chat/user/approver policy，以及可选的 resolved bot open ID。
-- 将现有单 bot `.env` keys 迁移到 `config.json`，再物化为一个 appId 作用域的 bot record。
+- 将现有单 bot `.env` 或 legacy `config.json.lark` keys 直接迁移为一个 appId 作用域的 bot record，而 `config.toml` 只接收进程级配置。
 - 旧 `default` / generated `botKey` 只作为升级别名保留；新记录不再持久化这些 key。
 - 在 config home 下引入 `lark-bots.json` 作为 named multi-bot credential source。
-- 如果 `lark-bots.json` 不存在，则把 legacy `.env` 或 legacy `config.json.lark` credentials 物化为一个 appId 作用域的 bot record，然后从 `config.json` 移除凭证。
+- 如果 `lark-bots.json` 不存在，则把 legacy `.env` 或 legacy `config.json.lark` credentials 物化为一个 appId 作用域的 bot record，然后通过写入干净的 `config.toml` 移除 legacy credentials。
 - QR 注册的额外 bot 以 appId 作用域 entries 存储，而不是改写当前 bot credentials。
 - operator 不需要提供或记住 generated bot key；正常管理使用 `--app-id`。
 - 在凭证可用后，从 Lark bot/app identity 获取并持久化机器人 display name。手工名称只作为 alias。
@@ -592,14 +593,14 @@ sequenceDiagram
 - 修改：`src/app/doctor.ts`
 - 修改：`src/app/runtime-health.ts`
 - 修改：`README.md`
-- 修改：`config.example.json`
+- 修改：`config.example.toml`
 - 测试：`test/app/config-reset.test.ts`
 - 测试：`test/app/doctor.test.ts`
 - 测试：`test/app/runtime-health.test.ts`
 
 **方法：**
 - 保留单 bot `setup` 行为。
-- 通过自动 `.env -> config.json + lark-bots.json` 迁移和 appId 作用域 binding 物化，保留 legacy single-bot runtime 行为，不要求重新扫码或重新绑定。
+- 通过自动 `.env/config.json -> config.toml + lark-bots.json` 迁移和 appId 作用域 binding 物化，保留 legacy single-bot runtime 行为，不要求重新扫码或重新绑定。
 - 增加通过 QR registration 或 existing app import 配置额外 bots 的明确文档和 CLI help。
 - 增加 `bot add`、`bot import`、`config migrate`、`bot rebind`、`bot disable`、`bot remove`、`bot list` 和 `bot doctor` command design。Bot add/import/migration 存储 appId 作用域记录；针对 existing bot 的命令使用 `--app-id`。
 - 为 `bot add`、`bot import` 和 `config migrate` 通过 `GET /open-apis/bot/v3/info` 实现 identity hydration，持久化机器人 open ID、display name、avatar metadata 和 activation status，且不记录 secrets。

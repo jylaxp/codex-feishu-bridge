@@ -1,5 +1,5 @@
 const REQUIRED_METADATA_FILES = Object.freeze([
-  'config.example.json',
+  'config.example.toml',
   'docs/user-manual.zh-CN.md',
   'README.md',
   'package.json',

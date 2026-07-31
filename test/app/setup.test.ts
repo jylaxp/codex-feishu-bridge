@@ -36,10 +36,9 @@ test('setup preserves an existing configured Codex working directory', async () 
       stdout: { write: () => undefined },
     }, {});
 
-    const document = JSON.parse(readFileSync(join(configHome, 'config.json'), 'utf8')) as {
-      readonly codex: { readonly cwd: string };
-    };
-    assert.equal(document.codex.cwd, workspace);
+    assert.match(readFileSync(join(configHome, 'config.toml'), 'utf8'), new RegExp(
+      `cwd = "${workspace.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`,
+    ));
   } finally {
     rmSync(configHome, { recursive: true, force: true });
     rmSync(workspace, { recursive: true, force: true });

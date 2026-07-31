@@ -644,7 +644,7 @@ export class BridgeCommandService {
         message,
         '⚠️ 安全警示',
         `根据系统安全策略，本地命令 \`${command}\` 不在执行白名单中。\n\n`
-          + '如需执行，请联系网桥管理员在 `config.json` 配置文件中通过 '
+          + '如需执行，请联系网桥管理员在 `config.toml` 配置文件中通过 '
           + '`ALLOWED_SHELL_COMMANDS` 加上该命令名。',
         'shell-denied',
         'orange',

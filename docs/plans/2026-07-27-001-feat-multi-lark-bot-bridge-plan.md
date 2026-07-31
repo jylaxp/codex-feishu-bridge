@@ -17,17 +17,18 @@ This revision supersedes earlier `botKey` and `default` bot decisions in this do
 
 - New `lark-bots.json` files no longer persist generated `botKey` values; each record is identified by `appId`.
 - New `bindings.json` files persist `larkAppId + tenantKey + chatId`, instead of using `default` or `bot_xxx` as the binding key.
-- Existing single-bot `.env` installations migrate through `cfb config migrate`: read `LARK_APP_ID`/`LARK_APP_SECRET`, call `/open-apis/bot/v3/info` to hydrate bot open ID, display name, and activation status, write `lark-bots.json`, and materialize old bindings into the new schema.
+- Existing single-bot `.env` or legacy `config.json` installations migrate through `cfb config migrate`: read `LARK_APP_ID`/`LARK_APP_SECRET`, call `/open-apis/bot/v3/info` to hydrate bot open ID, display name, and activation status, write `lark-bots.json`, and materialize old bindings into the new schema.
 - `bot add` and `bot import` add a new Lark application bot. If a scan/import returns a different `appId`, it is a new bot and must not mutate an existing bot record.
 - `bot enable`, `bot disable`, `bot remove`, and similar management commands select the bot with `--app-id`; the public CLI no longer accepts `--bot-key`.
 
-## 2026-07-31 Design Revision: Replace `.env` with `config.json`
+## 2026-07-31 Design Revision: Use `config.toml` For Runtime Config
 
-This revision supersedes earlier `.env` fallback and read-only legacy startup decisions in this document. The formal runtime configuration file is now `config.json`; legacy `.env` is only a one-time migration source.
+This revision supersedes earlier `.env` fallback, `config.json`, and read-only legacy startup decisions in this document. The formal runtime configuration file is now `config.toml`, so operators can keep inline comments next to process-level settings. Legacy `config.json` and `.env` files are only one-time migration sources.
 
-- `~/.codex-feishu-bridge/config.json` is the current configuration marker. If it exists, Bridge loads it and ignores any leftover `.env`.
-- If `config.json` is missing and legacy `.env` exists, Bridge automatically materializes `config.json` before parsing runtime config, then removes the legacy `.env`.
-- New setup/init flows write `config.json`, not `.env`.
+- `~/.codex-feishu-bridge/config.toml` is the current configuration marker. If it exists, Bridge loads it and removes leftover legacy `config.json` or `.env`.
+- If `config.toml` is missing and legacy `config.json` exists, Bridge automatically materializes `config.toml` before parsing runtime config, migrates any legacy `lark` credentials into `lark-bots.json`, then removes legacy `config.json`.
+- If both `config.toml` and legacy `config.json` are missing but legacy `.env` exists, Bridge automatically materializes `config.toml`, migrates bot credentials into `lark-bots.json`, then removes legacy `.env`.
+- New setup/init flows write `config.toml`, not `.env` or `config.json`.
 - `cfb config migrate` may still be run explicitly to hydrate the legacy single bot into `lark-bots.json` and materialize old bindings; startup also materializes the current `appId` bot when `lark-bots.json` is absent.
 - Destructive migration is acceptable for the current group-chat development branch because the multi-bot/group-chat config format has not been released yet.
 
@@ -256,7 +257,7 @@ The current Bridge is built around one Lark app credential pair and one event se
 
 ### Deferred to Implementation
 
-- Exact `lark-bots.json` field names and migration mechanics should be finalized during implementation, but the source split is decided: `config.json` for current process-level configuration and one-time legacy `.env` import, `lark-bots.json` for appId-scoped bot credentials.
+- Exact `lark-bots.json` field names and migration mechanics should be finalized during implementation, but the source split is decided: `config.toml` for current process-level configuration and one-time legacy `config.json`/`.env` import, `lark-bots.json` for appId-scoped bot credentials.
 
 ---
 
@@ -316,16 +317,16 @@ sequenceDiagram
 - Modify: `src/app/config.ts`
 - Modify: `src/app/config-file.ts`
 - Modify: `src/app/setup.ts`
-- Modify: `config.example.json`
+- Modify: `config.example.toml`
 - Test: `test/app/config-reset.test.ts`
 - Test: `test/app/doctor.test.ts`
 
 **Approach:**
 - Add a `LarkBotConfig` concept with `appId`, `appSecret`, tenant/chat/user/approver policy, and optional resolved bot open ID.
-- Migrate existing single-bot `.env` keys directly into one appId-scoped bot record, while `config.json` receives only process-level settings.
+- Migrate existing single-bot `.env` or legacy `config.json.lark` keys directly into one appId-scoped bot record, while `config.toml` receives only process-level settings.
 - Keep legacy `default`/generated `botKey` values only as upgrade aliases; do not persist them in new records.
 - Introduce `lark-bots.json` under config home as the named multi-bot credential source.
-- If `lark-bots.json` is absent, materialize legacy `.env` or legacy `config.json.lark` credentials into one appId-scoped bot record, then remove the credentials from `config.json`.
+- If `lark-bots.json` is absent, materialize legacy `.env` or legacy `config.json.lark` credentials into one appId-scoped bot record, then remove legacy credentials by writing clean `config.toml`.
 - Store QR-registered additional bots as appId-scoped entries instead of rewriting the current bot credentials.
 - Operators do not provide or remember generated bot keys; normal management uses `--app-id`.
 - Fetch and persist the robot display name from the Lark bot/app identity after credentials are available. Manual names are aliases only.
@@ -592,14 +593,14 @@ sequenceDiagram
 - Modify: `src/app/doctor.ts`
 - Modify: `src/app/runtime-health.ts`
 - Modify: `README.md`
-- Modify: `config.example.json`
+- Modify: `config.example.toml`
 - Test: `test/app/config-reset.test.ts`
 - Test: `test/app/doctor.test.ts`
 - Test: `test/app/runtime-health.test.ts`
 
 **Approach:**
 - Preserve single-bot `setup` behavior.
-- Preserve legacy single-bot runtime behavior through automatic `.env -> config.json + lark-bots.json` migration and appId-scoped binding materialization without re-scan or re-bind.
+- Preserve legacy single-bot runtime behavior through automatic `.env/config.json -> config.toml + lark-bots.json` migration and appId-scoped binding materialization without re-scan or re-bind.
 - Add explicit documentation and CLI help for configuring additional bots through QR registration or existing app import.
 - Add `bot add`, `bot import`, `config migrate`, `bot rebind`, `bot disable`, `bot remove`, `bot list`, and `bot doctor` command design. Bot add/import/migration store appId-scoped records; commands targeting an existing bot use `--app-id`.
 - Implement identity hydration for `bot add`, `bot import`, and `config migrate` through `GET /open-apis/bot/v3/info`, persisting robot open ID, display name, avatar metadata, and activation status without logging secrets.

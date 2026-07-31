@@ -51,7 +51,7 @@ test('config reset classifies a malformed protocol catalog as reset required', (
     assert.equal(reset.action, 'already_current');
     assert.equal(existsSync(join(configHome, 'protocol-versions.json')), false);
     assert.equal(existsSync(join(configHome, '.env')), false);
-    assert.doesNotMatch(readFileSync(join(configHome, 'config.json'), 'utf8'), /cli_1111111111111111/);
+    assert.doesNotMatch(readFileSync(join(configHome, 'config.toml'), 'utf8'), /cli_1111111111111111/);
     assert.match(readFileSync(join(configHome, 'lark-bots.json'), 'utf8'), /cli_1111111111111111/);
   } finally {
     rmSync(configHome, { recursive: true, force: true });
@@ -81,7 +81,7 @@ test('config reset accepts a valid protocol catalog as current', () => {
   }
 });
 
-test('config reset treats residual .env next to config.json as reset required', () => {
+test('config reset treats residual .env next to config.toml as reset required', () => {
   const configHome = mkdtempSync(join(tmpdir(), 'bridge-config-reset-env-leftover-'));
   try {
     writeBridgeConfigFile(configHome, {
@@ -98,7 +98,7 @@ test('config reset treats residual .env next to config.json as reset required', 
 
     const inspection = inspectConfigReset(configHome);
     assert.equal(inspection.action, 'reset_required');
-    assert.deepEqual(inspection.entriesToRemove, ['.env', 'bindings.json', 'config.json']);
+    assert.deepEqual(inspection.entriesToRemove, ['.env', 'bindings.json', 'config.toml']);
 
     const reset = resetConfigHome(configHome, { confirm: true });
     assert.equal(reset.action, 'already_current');
@@ -126,6 +126,7 @@ test('config reset refuses to migrate a legacy .env symlink', { skip: process.pl
     );
     assert.equal(existsSync(join(configHome, '.env')), true);
     assert.equal(existsSync(join(configHome, 'config.json')), false);
+    assert.equal(existsSync(join(configHome, 'config.toml')), false);
   } finally {
     rmSync(configHome, { recursive: true, force: true });
   }
@@ -163,7 +164,7 @@ test('config reset establishes and cleans inner locks when config home is initia
     const reset = resetConfigHome(configHome, { confirm: true });
 
     assert.equal(reset.action, 'already_current');
-    assert.equal(existsSync(join(configHome, 'config.json')), true);
+    assert.equal(existsSync(join(configHome, 'config.toml')), true);
     assert.equal(existsSync(join(configHome, 'bindings.json')), true);
     assert.equal(existsSync(join(configHome, 'bridge.lock')), false);
     assert.equal(

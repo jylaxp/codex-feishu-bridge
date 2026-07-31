@@ -1,0 +1,43 @@
+# Codex Feishu Bridge process configuration.
+# Robot credentials are stored in lark-bots.json, not in this file.
+schemaVersion = 1
+
+[approval]
+# Whether approval cards include a generated summary.
+summaryMode = false
+
+[appServer]
+# owned_stdio starts and owns the local App Server process.
+mode = "owned_stdio"
+# socketPath = "/absolute/path/to/app-server.sock"
+
+[codex]
+# Absolute path to the Codex CLI binary used by the bridge.
+bin = "/absolute/path/to/codex"
+# Default working directory for new bindings when a chat has no per-chat CWD.
+cwd = "/absolute/path/to/resolved/config-home"
+# Commands that can be run from the approval UI.
+allowedShellCommands = ["ls", "pwd", "git", "find", "cd"]
+
+[card]
+# Maximum text length rendered into one Feishu card page.
+maxTextLength = 10000
+# Minimum interval between card updates for one active task.
+updateIntervalMs = 1500
+
+[queue]
+# Maximum number of queued tasks held in memory.
+maxQueuedTasks = 100
+
+[usage]
+# Minimum interval between usage refreshes.
+rateLimitQueryIntervalMs = 300000
+
+[logging]
+# Write bridge logs to a file under the config home when true.
+toFile = false
+filePath = "bridge.log"
+
+[files]
+# Enable automatic upload of files referenced by Codex output.
+enableAutoFileUpload = false

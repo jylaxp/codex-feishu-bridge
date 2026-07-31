@@ -40,7 +40,7 @@ export interface SetupReport {
   readonly missingRequiredValues: readonly string[];
 }
 
-/** Creates the editable JSON configuration skeleton without starting QR registration. */
+/** Creates the editable TOML configuration skeleton without starting QR registration. */
 export function initializeSetupFiles(
   configHomeOption: string | undefined,
   baseEnv: NodeJS.ProcessEnv = process.env,

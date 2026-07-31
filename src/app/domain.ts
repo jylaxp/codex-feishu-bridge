@@ -93,7 +93,7 @@ export interface BridgeConfig {
   readonly codexBin: string;
   /** Default working directory. Task execution itself uses full-machine access. */
   readonly codexCwd: string;
-  /** Current runtime home; config.json and binding/bot JSON files are persistent state. */
+  /** Current runtime home; config.toml and binding/bot JSON files are persistent state. */
   readonly configHome?: string;
   readonly maxTextLength: number;
   readonly cardUpdateIntervalMs: number;

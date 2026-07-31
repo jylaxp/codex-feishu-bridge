@@ -16,7 +16,7 @@ const packageManifest = Object.freeze({
 });
 
 const completePackageFiles = Object.freeze([
-  { path: 'config.example.json' },
+  { path: 'config.example.toml' },
   { path: 'README.md' },
   { path: 'docs/user-manual.zh-CN.md' },
   { path: 'dist/app/cli.js' },
@@ -50,7 +50,7 @@ test('derives required main and bin paths from package metadata', () => {
     })].sort(),
     [
       'README.md',
-      'config.example.json',
+      'config.example.toml',
       'dist/app/cli.js',
       'dist/app/helper.js',
       'dist/app/main.js',
@@ -66,7 +66,7 @@ test('derives required main and bin paths from package metadata', () => {
     })].sort(),
     [
       'README.md',
-      'config.example.json',
+      'config.example.toml',
       'dist/app/cli.js',
       'dist/app/main.js',
       'docs/user-manual.zh-CN.md',
