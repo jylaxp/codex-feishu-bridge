@@ -6,13 +6,14 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { runBackgroundCommand, type ProcessSnapshot } from '../../src/app/background-service';
+import { writeBridgeConfigFile } from '../../src/app/config-file';
 
 test('background service ignores process output and does not create log files when logging is off', async () => {
-  for (const source of [undefined, 'LOG_TO_FILE=false\n', 'LOG_TO_FILE=invalid\n']) {
+  for (const loggingEnabled of [undefined, false]) {
     const root = mkdtempSync(join(tmpdir(), 'bridge-background-log-off-'));
     try {
-      if (source !== undefined) {
-        writeFileSync(join(root, '.env'), source, { mode: 0o600 });
+      if (loggingEnabled !== undefined) {
+        writeBridgeConfigFile(root, { LOG_TO_FILE: `${loggingEnabled}` });
       }
       const spawned = recordingSpawn();
       const output: string[] = [];
@@ -38,7 +39,7 @@ test('background service ignores process output and does not create log files wh
 test('background service captures process output only when file logging is enabled', async () => {
   const root = mkdtempSync(join(tmpdir(), 'bridge-background-log-on-'));
   try {
-    writeFileSync(join(root, '.env'), 'LOG_TO_FILE=true\n', { mode: 0o600 });
+    writeBridgeConfigFile(root, { LOG_TO_FILE: 'true' });
     const spawned = recordingSpawn();
     const output: string[] = [];
 

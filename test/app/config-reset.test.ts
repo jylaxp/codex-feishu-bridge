@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -15,6 +16,7 @@ import {
   PROTOCOL_VERSION_CONFIG_LOCK_FILE_NAME,
   ProtocolVersionConfigStore,
 } from '../../src/app/codex/protocol-version-config';
+import { writeBridgeConfigFile } from '../../src/app/config-file';
 import { BridgeProcessLock } from '../../src/app/process-lock';
 
 test('config reset classifies a malformed protocol catalog as reset required', () => {
@@ -34,7 +36,7 @@ test('config reset classifies a malformed protocol catalog as reset required', (
 
     const inspection = inspectConfigReset(configHome);
     assert.equal(inspection.action, 'reset_required');
-    assert.equal(inspection.preservesEnv, true);
+    assert.equal(inspection.preservesConfig, true);
     assert.deepEqual(
       inspection.entriesToRemove,
       ['.env', 'bindings.json', 'protocol-versions.json'],
@@ -48,8 +50,8 @@ test('config reset classifies a malformed protocol catalog as reset required', (
     const reset = resetConfigHome(configHome, { confirm: true });
     assert.equal(reset.action, 'already_current');
     assert.equal(existsSync(join(configHome, 'protocol-versions.json')), false);
-    assert.match(readFileSync(join(configHome, '.env'), 'utf8'), /LARK_APP_ID=cli_0123456789abcdef/);
-    assert.match(readFileSync(join(configHome, '.env'), 'utf8'), /BRIDGE_CONFIG_VERSION=2/);
+    assert.equal(existsSync(join(configHome, '.env')), false);
+    assert.match(readFileSync(join(configHome, 'config.json'), 'utf8'), /cli_0123456789abcdef/);
   } finally {
     rmSync(configHome, { recursive: true, force: true });
   }
@@ -58,6 +60,11 @@ test('config reset classifies a malformed protocol catalog as reset required', (
 test('config reset accepts a valid protocol catalog as current', () => {
   const configHome = mkdtempSync(join(tmpdir(), 'bridge-config-reset-valid-protocol-'));
   try {
+    writeBridgeConfigFile(configHome, {
+      LARK_APP_ID: 'cli_0123456789abcdef',
+      LARK_APP_SECRET: 'secret',
+      CODEX_BIN: '/codex',
+    });
     writeFileSync(
       join(configHome, 'bindings.json'),
       '{\n  "schemaVersion": 1,\n  "bindings": []\n}\n',
@@ -68,6 +75,56 @@ test('config reset accepts a valid protocol catalog as current', () => {
     const inspection = inspectConfigReset(configHome);
     assert.equal(inspection.action, 'already_current');
     assert.deepEqual(inspection.entriesToRemove, []);
+  } finally {
+    rmSync(configHome, { recursive: true, force: true });
+  }
+});
+
+test('config reset treats residual .env next to config.json as reset required', () => {
+  const configHome = mkdtempSync(join(tmpdir(), 'bridge-config-reset-env-leftover-'));
+  try {
+    writeBridgeConfigFile(configHome, {
+      LARK_APP_ID: 'cli_0123456789abcdef',
+      LARK_APP_SECRET: 'secret',
+      CODEX_BIN: '/codex',
+    });
+    writeFileSync(join(configHome, '.env'), 'LARK_APP_ID=cli_ffffffffffffffff\n', { mode: 0o600 });
+    writeFileSync(
+      join(configHome, 'bindings.json'),
+      '{\n  "schemaVersion": 5,\n  "bindings": []\n}\n',
+      { mode: 0o600 },
+    );
+
+    const inspection = inspectConfigReset(configHome);
+    assert.equal(inspection.action, 'reset_required');
+    assert.deepEqual(inspection.entriesToRemove, ['.env', 'bindings.json', 'config.json']);
+
+    const reset = resetConfigHome(configHome, { confirm: true });
+    assert.equal(reset.action, 'already_current');
+    assert.equal(existsSync(join(configHome, '.env')), false);
+  } finally {
+    rmSync(configHome, { recursive: true, force: true });
+  }
+});
+
+test('config reset refuses to migrate a legacy .env symlink', { skip: process.platform === 'win32' }, () => {
+  const configHome = mkdtempSync(join(tmpdir(), 'bridge-config-reset-env-symlink-'));
+  const target = join(configHome, 'secret.env');
+  try {
+    writeFileSync(target, 'LARK_APP_ID=cli_0123456789abcdef\n', { mode: 0o600 });
+    symlinkSync(target, join(configHome, '.env'));
+    writeFileSync(
+      join(configHome, 'bindings.json'),
+      '{\n  "schemaVersion": 1,\n  "bindings": []\n}\n',
+      { mode: 0o600 },
+    );
+
+    assert.throws(
+      () => resetConfigHome(configHome, { confirm: true }),
+      /config reset could not replace the configuration directory/,
+    );
+    assert.equal(existsSync(join(configHome, '.env')), true);
+    assert.equal(existsSync(join(configHome, 'config.json')), false);
   } finally {
     rmSync(configHome, { recursive: true, force: true });
   }
@@ -105,6 +162,7 @@ test('config reset establishes and cleans inner locks when config home is initia
     const reset = resetConfigHome(configHome, { confirm: true });
 
     assert.equal(reset.action, 'already_current');
+    assert.equal(existsSync(join(configHome, 'config.json')), true);
     assert.equal(existsSync(join(configHome, 'bindings.json')), true);
     assert.equal(existsSync(join(configHome, 'bridge.lock')), false);
     assert.equal(

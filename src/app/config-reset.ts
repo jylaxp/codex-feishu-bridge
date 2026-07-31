@@ -3,7 +3,6 @@ import {
   lstatSync,
   mkdirSync,
   readdirSync,
-  readFileSync,
   renameSync,
   rmSync,
   writeFileSync,
@@ -17,16 +16,21 @@ import {
   PROTOCOL_VERSION_CONFIG_LOCK_FILE_NAME,
   ProtocolVersionConfigStore,
 } from './codex/protocol-version-config';
+import {
+  bridgeConfigPaths,
+  readConfigFileEnvironment,
+  readLegacyEnvironmentFile,
+  writeBridgeConfigFile,
+} from './config-file';
 import { BridgeProcessLock } from './process-lock';
 
-const CONFIG_VERSION_LINE = 'BRIDGE_CONFIG_VERSION=2';
 const CONFIG_HOME_NAME = '.codex-feishu-bridge';
 
 export interface ConfigResetReport {
   readonly configHome: string;
   readonly action: 'reset_required' | 'already_current';
   readonly entriesToRemove: readonly string[];
-  readonly preservesEnv: boolean;
+  readonly preservesConfig: boolean;
   readonly requiresConfirmation: boolean;
 }
 
@@ -55,7 +59,7 @@ export function inspectConfigReset(configHome: string): ConfigResetReport {
       configHome,
       action: 'reset_required',
       entriesToRemove: Object.freeze([]),
-      preservesEnv: false,
+      preservesConfig: false,
       requiresConfirmation: true,
     });
   }
@@ -67,14 +71,14 @@ export function inspectConfigReset(configHome: string): ConfigResetReport {
     configHome,
     action: current ? 'already_current' : 'reset_required',
     entriesToRemove: Object.freeze(current ? [] : entries),
-    preservesEnv: entries.includes('.env'),
+    preservesConfig: entries.includes('config.json') || entries.includes('.env'),
     requiresConfirmation: !current,
   });
 }
 
 /**
- * Replaces an old config directory as one unit. It copies only .env verbatim;
- * no legacy business state is parsed or migrated.
+ * Replaces an old config directory as one unit. It migrates only legacy
+ * configuration into config.json; no task/runtime state is parsed or migrated.
  */
 export function resetConfigHome(
   configHome: string,
@@ -128,8 +132,8 @@ export function resetConfigHome(
   let movedOldDirectory = false;
   try {
     mkdirSync(staging, { recursive: false, mode: 0o700 });
-    copyEnvironmentIfPresent(configHome, staging);
-    writeFileSync(join(staging, 'bindings.json'), '{\n  "schemaVersion": 1,\n  "bindings": []\n}\n', {
+    migrateConfigIfPresent(configHome, staging);
+    writeFileSync(join(staging, 'bindings.json'), '{\n  "schemaVersion": 5,\n  "bindings": []\n}\n', {
       encoding: 'utf8',
       mode: 0o600,
     });
@@ -190,11 +194,17 @@ function assertConfigHome(configHome: string): void {
 }
 
 function isCurrentStructure(configHome: string, entries: readonly string[]): boolean {
-  const allowed = new Set(['.env', 'bindings.json', 'protocol-versions.json']);
+  const allowed = new Set([
+    'config.json',
+    'bindings.json',
+    'lark-bots.json',
+    'external-bots.json',
+    'protocol-versions.json',
+  ]);
   if (entries.some((entry) => !allowed.has(entry))) {
     return false;
   }
-  if (!hasCurrentConfigVersion(configHome, entries)) {
+  if (!entries.includes('config.json')) {
     return false;
   }
   const bindingsPath = join(configHome, 'bindings.json');
@@ -213,34 +223,17 @@ function isCurrentStructure(configHome: string, entries: readonly string[]): boo
   }
 }
 
-function hasCurrentConfigVersion(configHome: string, entries: readonly string[]): boolean {
-  if (!entries.includes('.env')) {
-    return true;
-  }
-  try {
-    return /^(?:export\s+)?BRIDGE_CONFIG_VERSION\s*=\s*2\s*$/m.test(
-      readFileSync(join(configHome, '.env'), 'utf8'),
-    );
-  } catch {
-    return false;
-  }
-}
-
-function copyEnvironmentIfPresent(oldHome: string, staging: string): void {
-  const oldEnv = join(oldHome, '.env');
-  if (!existsSync(oldEnv)) {
-    writeFileSync(join(staging, '.env'), `${CONFIG_VERSION_LINE}\n`, {
-      encoding: 'utf8',
-      mode: 0o600,
-    });
+function migrateConfigIfPresent(oldHome: string, staging: string): void {
+  const oldPaths = bridgeConfigPaths(oldHome);
+  if (existsSync(oldPaths.configPath)) {
+    writeBridgeConfigFile(staging, readConfigFileEnvironment(oldPaths));
     return;
   }
-  const source = readFileSync(oldEnv, 'utf8');
-  const withTrailingNewline = source.endsWith('\n') ? source : `${source}\n`;
-  const upgraded = /^(?:export\s+)?BRIDGE_CONFIG_VERSION\s*=.*$/m.test(withTrailingNewline)
-    ? withTrailingNewline.replace(/^(?:export\s+)?BRIDGE_CONFIG_VERSION\s*=.*$/m, CONFIG_VERSION_LINE)
-    : `${withTrailingNewline}${CONFIG_VERSION_LINE}\n`;
-  writeFileSync(join(staging, '.env'), upgraded, { encoding: 'utf8', mode: 0o600 });
+  if (existsSync(oldPaths.legacyEnvPath)) {
+    writeBridgeConfigFile(staging, readLegacyEnvironmentFile(oldPaths));
+    return;
+  }
+  writeBridgeConfigFile(staging, {});
 }
 
 function resetLockName(configHome: string): string {

@@ -44,9 +44,11 @@ test('external bot directory replaces one source-bot group and preserves discove
 
     const document = JSON.parse(readFileSync(join(configHome, 'external-bots.json'), 'utf8')) as {
       readonly schemaVersion: number;
-      readonly entries: readonly { readonly displayName: string }[];
+      readonly entries: readonly { readonly sourceAppId?: string; readonly sourceBotKey?: string; readonly displayName: string }[];
     };
-    assert.equal(document.schemaVersion, 1);
+    assert.equal(document.schemaVersion, 2);
+    assert.equal(document.entries[0]?.sourceAppId, 'bot_aaaaaaaaaaaa');
+    assert.equal(document.entries[0]?.sourceBotKey, undefined);
     assert.deepEqual(document.entries.map((entry) => entry.displayName), ['Order Assistant']);
   } finally {
     rmSync(configHome, { recursive: true, force: true });

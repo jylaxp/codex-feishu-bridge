@@ -64,11 +64,15 @@ test('bot config store persists optional role profile metadata', () => {
 
     const loaded = new BotConfigStore(configHome);
     loaded.load(baseConfig);
-    assert.deepEqual(loaded.get('bot_aaaaaaaaaaaa')?.roleProfile, bot.roleProfile);
+    assert.deepEqual(loaded.get('cli_abcdefabcdef1234')?.roleProfile, bot.roleProfile);
 
     const document = JSON.parse(readFileSync(join(configHome, 'lark-bots.json'), 'utf8')) as {
+      readonly schemaVersion: number;
       readonly bots: readonly Partial<LarkBotConfig>[];
     };
+    assert.equal(document.schemaVersion, 2);
+    assert.equal(document.bots[1]?.botKey, undefined);
+    assert.equal(document.bots[1]?.appId, 'cli_abcdefabcdef1234');
     assert.deepEqual(document.bots[1]?.roleProfile, bot.roleProfile);
   } finally {
     rmSync(configHome, { recursive: true, force: true });

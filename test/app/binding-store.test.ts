@@ -30,6 +30,30 @@ test('binding store loads schema v1 bindings as the default bot', () => {
   }
 });
 
+test('binding store maps legacy default bindings to the migrated app id', () => {
+  const configHome = mkdtempSync(join(tmpdir(), 'bridge-binding-v1-appid-'));
+  try {
+    writeFileSync(join(configHome, 'bindings.json'), JSON.stringify({
+      schemaVersion: 1,
+      bindings: [{
+        tenantKey: 'tenant',
+        chatId: 'chat',
+        threadId: 'thread',
+        workspaceId: '/workspace',
+        revision: 1,
+        updatedAtMs: 1,
+      }],
+    }));
+    const store = new BindingStore(configHome);
+    store.load({ legacyDefaultBotIdentifier: 'cli_0123456789abcdef' });
+
+    assert.equal(store.get('tenant', 'chat', 'cli_0123456789abcdef')?.larkAppId, 'cli_0123456789abcdef');
+    assert.equal(store.get('tenant', 'chat', 'cli_0123456789abcdef')?.threadId, 'thread');
+  } finally {
+    rmSync(configHome, { recursive: true, force: true });
+  }
+});
+
 test('binding store scopes the same tenant chat by bot key', () => {
   const configHome = mkdtempSync(join(tmpdir(), 'bridge-binding-bots-'));
   try {
@@ -55,13 +79,14 @@ test('binding store scopes the same tenant chat by bot key', () => {
 
     const document = JSON.parse(readFileSync(join(configHome, 'bindings.json'), 'utf8')) as {
       readonly schemaVersion: number;
-      readonly bindings: readonly { readonly botKey?: string }[];
+      readonly bindings: readonly { readonly larkAppId?: string; readonly botKey?: string }[];
     };
-    assert.equal(document.schemaVersion, 4);
-    assert.deepEqual(document.bindings.map((binding) => binding.botKey).sort(), [
+    assert.equal(document.schemaVersion, 5);
+    assert.deepEqual(document.bindings.map((binding) => binding.larkAppId).sort(), [
       'bot_aaaaaaaaaaaa',
       'bot_bbbbbbbbbbbb',
     ]);
+    assert.deepEqual(document.bindings.map((binding) => binding.botKey), [undefined, undefined]);
   } finally {
     rmSync(configHome, { recursive: true, force: true });
   }
@@ -166,6 +191,43 @@ test('binding store loads old bindings with bot collaboration disabled', () => {
   }
 });
 
+test('binding store materializes legacy bot keys as app ids', () => {
+  const configHome = mkdtempSync(join(tmpdir(), 'bridge-binding-legacy-appid-'));
+  try {
+    writeFileSync(join(configHome, 'bindings.json'), JSON.stringify({
+      schemaVersion: 4,
+      bindings: [{
+        botKey: 'bot_aaaaaaaaaaaa',
+        tenantKey: 'tenant',
+        chatId: 'chat',
+        threadId: 'thread',
+        workspaceId: '/workspace',
+        revision: 1,
+        updatedAtMs: 1,
+      }],
+    }));
+    const store = new BindingStore(configHome);
+    store.load({
+      legacyBotKeyMap: new Map([['bot_aaaaaaaaaaaa', 'cli_abcdefabcdef1234']]),
+    });
+    store.materialize();
+
+    const loaded = store.get('tenant', 'chat', 'cli_abcdefabcdef1234');
+    assert.equal(loaded?.larkAppId, 'cli_abcdefabcdef1234');
+    assert.equal(loaded?.botKey, 'cli_abcdefabcdef1234');
+
+    const document = JSON.parse(readFileSync(join(configHome, 'bindings.json'), 'utf8')) as {
+      readonly schemaVersion: number;
+      readonly bindings: readonly { readonly larkAppId?: string; readonly botKey?: string }[];
+    };
+    assert.equal(document.schemaVersion, 5);
+    assert.equal(document.bindings[0]?.larkAppId, 'cli_abcdefabcdef1234');
+    assert.equal(document.bindings[0]?.botKey, undefined);
+  } finally {
+    rmSync(configHome, { recursive: true, force: true });
+  }
+});
+
 test('binding store persists bot collaboration policy per binding', () => {
   const configHome = mkdtempSync(join(tmpdir(), 'bridge-binding-collab-policy-'));
   try {
@@ -196,7 +258,7 @@ test('binding store persists bot collaboration policy per binding', () => {
         readonly allowedHandoffTargetBotKeys?: readonly string[];
       }[];
     };
-    assert.equal(document.schemaVersion, 4);
+    assert.equal(document.schemaVersion, 5);
     assert.equal(document.bindings[0]?.allowBotSenderMentions, true);
     assert.deepEqual(document.bindings[0]?.allowedBotSenderKeys, ['bot_bbbbbbbbbbbb']);
     assert.deepEqual(document.bindings[0]?.allowedBotSenderOpenIds, ['ou_source']);

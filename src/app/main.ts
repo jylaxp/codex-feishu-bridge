@@ -7,6 +7,7 @@ import {
   BotConfigStore,
   botConfigToBridgeConfig,
   DEFAULT_BOT_KEY,
+  materializeDefaultBot,
   type LarkBotConfig,
 } from './bot-config-store';
 import { CardKitClient, type LarkReplyApi } from './cards/cardkit-client';
@@ -77,7 +78,7 @@ import {
   InboundMessageAggregator,
   MAX_INBOUND_IMAGES,
 } from './lark/inbound-message-aggregator';
-import { LarkScopeConfigStore, type LarkScope } from './lark/scope-config-store';
+import type { LarkScope } from './lark/scope-config-store';
 import { BridgeLogger } from './logger';
 import { runPreflight } from './preflight';
 import { BridgeProcessLock } from './process-lock';
@@ -158,8 +159,19 @@ export async function startBridge(
   let runtimeContract: Awaited<ReturnType<typeof verifyCodexRuntimeContract>>;
   let protocolAdapter: ReturnType<typeof adapterForAppServerProfile>;
   try {
-    bindings.load();
     botStore.load(config);
+    const materializeDefault = !botStore.hasMaterializedFile();
+    if (materializeDefault) {
+      botStore.save(materializeDefaultBot(config));
+    }
+    bindings.load({
+      legacyBotKeyMap: botStore.identifierAliases(),
+      legacyDefaultBotIdentifier: config.larkAppId,
+    });
+    if (materializeDefault) {
+      materializeDefaultBotScope(botStore, bindings.list(), config);
+      bindings.materialize();
+    }
     externalBotDirectory.load();
     runtimeContract = await verifyCodexRuntimeContract(
       config,
@@ -1315,34 +1327,41 @@ function scopeStoreForBot(
   });
 }
 
+function materializeDefaultBotScope(
+  botStore: BotConfigStore,
+  bindings: readonly ChatThreadBinding[],
+  baseConfig: BridgeConfig,
+): void {
+  const bot = botStore.get(baseConfig.larkAppId);
+  if (!bot) {
+    return;
+  }
+  const allowedChats = mergeBindingAllowedChats(bot.allowedChats, bindings, bot.appId);
+  const updated = sameStringList(bot.allowedChats, allowedChats)
+    ? bot
+    : botStore.update(bot.appId, { allowedChats });
+  Object.assign(baseConfig, botConfigToBridgeConfig(baseConfig, updated));
+}
+
 function persistBotScope(
   botKey: string,
   scope: LarkScope,
   botStore: BotConfigStore,
   baseConfig: BridgeConfig,
-  configHome: string,
+  _configHome: string,
 ): void {
-  if (botKey === DEFAULT_BOT_KEY && !botStore.hasMaterializedFile()) {
-    new LarkScopeConfigStore(configHome).save(scope);
-    Object.assign(baseConfig, {
-      larkTenantKey: scope.tenantKey,
-      allowedChats: splitScopeList(scope.allowedChats),
-      authorizedUsers: splitScopeList(scope.authorizedUsers ?? ''),
-      allowedApprovers: splitScopeList(scope.allowedApprovers ?? ''),
-    });
-    return;
-  }
   const existing = botStore.get(botKey);
   if (!existing) {
     return;
   }
+  const resolvedBotId = botStore.resolveBotIdentifier(botKey);
   const next = botStore.update(botKey, {
     tenantKey: scope.tenantKey,
     allowedChats: splitScopeList(scope.allowedChats),
     authorizedUsers: splitScopeList(scope.authorizedUsers ?? ''),
     allowedApprovers: splitScopeList(scope.allowedApprovers ?? ''),
   });
-  Object.assign(baseConfig, botKey === DEFAULT_BOT_KEY ? {
+  Object.assign(baseConfig, resolvedBotId === baseConfig.larkAppId ? {
     larkTenantKey: next.tenantKey,
     allowedChats: next.allowedChats,
     authorizedUsers: next.authorizedUsers,
@@ -1352,6 +1371,33 @@ function persistBotScope(
 
 function splitScopeList(value: string): readonly string[] {
   return Object.freeze([...new Set(value.split(',').map((item) => item.trim()).filter(Boolean))]);
+}
+
+function mergeBindingAllowedChats(
+  currentAllowedChats: readonly string[],
+  bindings: readonly ChatThreadBinding[],
+  appId: string,
+): readonly string[] {
+  const merged: string[] = [];
+  const seen = new Set<string>();
+  for (const value of [
+    ...currentAllowedChats,
+    ...bindings
+      .filter((binding) => (binding.larkAppId ?? binding.botKey) === appId)
+      .map((binding) => binding.chatId),
+  ]) {
+    const normalized = value.trim();
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    merged.push(normalized);
+  }
+  return Object.freeze(merged);
+}
+
+function sameStringList(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function aggregateLarkConnections(
@@ -1394,7 +1440,7 @@ function unavailableCard(
     return Object.freeze({
       title: '机器人当前不可用',
       reason: `${displayName} 已被 Bridge 管理员禁用，当前不会接收任务、命令或审批操作。`,
-      nextStep: `请联系 owner/admin 执行 \`codex-feishu-bridge bot enable --bot-key ${bot.botKey}\` 后再试。`,
+      nextStep: `请联系 owner/admin 执行 \`codex-feishu-bridge bot enable --app-id ${bot.appId}\` 后再试。`,
     });
   }
   if (reason === 'GROUP_NOT_BOUND') {

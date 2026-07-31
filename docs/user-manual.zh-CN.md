@@ -18,9 +18,9 @@
 | 概念 | 说明 |
 | --- | --- |
 | Bridge 进程 | 本机后台服务，负责飞书事件、绑定、卡片投递和 Codex/ChatGPT 控制。 |
-| 配置目录 | 默认 `~/.codex-feishu-bridge`，保存 `.env`、`bindings.json`、`lark-bots.json`、PID、health 和日志。 |
-| botKey | Bridge 内部生成的机器人路由 key。旧单机器人保留为 `default`。正常 `bot add` 不需要也不能手工指定 botKey。 |
-| 绑定 | 一个飞书聊天绑定到一个 ChatGPT 会话。群聊绑定精确到 `botKey + tenantKey + chatId`。 |
+| 配置目录 | 默认 `~/.codex-feishu-bridge`，保存 `config.json`、`lark-bots.json`、`bindings.json`、`external-bots.json`、PID、health 和日志。 |
+| appId | 飞书应用 ID，也是 Bridge 识别一个机器人配置的唯一标识。 |
+| 绑定 | 一个飞书聊天绑定到一个 ChatGPT 会话。群聊绑定精确到 `appId + tenantKey + chatId`。 |
 | owner/admin | 能进行绑定、解绑、模型、CWD、访问策略和审批操作的管理用户。 |
 | 普通任务 | 用户或机器人在群里显式 `@机器人` 后发起的自然语言任务。 |
 | bot-to-bot handoff | 一个机器人在最终答案中声明交接，Bridge 发送真实飞书 `@目标机器人` 消息触发目标机器人继续处理。 |
@@ -75,7 +75,7 @@ cfb setup
 扫码后 Bridge 会把飞书应用凭证写入：
 
 ```text
-~/.codex-feishu-bridge/.env
+~/.codex-feishu-bridge/config.json
 ```
 
 ### 4.2 使用已有机器人
@@ -89,29 +89,49 @@ cfb init
 编辑：
 
 ```text
-~/.codex-feishu-bridge/.env
+~/.codex-feishu-bridge/config.json
 ```
 
 至少填写：
 
-```dotenv
-LARK_APP_ID=cli_xxx
-LARK_APP_SECRET=replace_me
-CODEX_BIN=/absolute/path/to/codex
-ALLOW_GROUP_USER_MENTIONS=true
-ALLOW_EXTERNAL_GROUP_USER_MENTIONS=true
-ALLOW_GROUP_BOT_MENTIONS=true
+```json
+{
+  "schemaVersion": 1,
+  "lark": {
+    "appId": "cli_xxx",
+    "appSecret": "replace_me",
+    "tenantKey": "",
+    "allowedChats": [],
+    "authorizedUsers": [],
+    "allowedApprovers": [],
+    "allowGroupUserMentions": true,
+    "allowExternalGroupUserMentions": true,
+    "allowGroupBotMentions": true
+  },
+  "approval": { "summaryMode": false },
+  "appServer": { "mode": "owned_stdio", "socketPath": null },
+  "codex": {
+    "bin": "/absolute/path/to/codex",
+    "cwd": "/absolute/path/to/default/directory",
+    "allowedShellCommands": ["ls", "pwd", "git", "find", "cd"]
+  },
+  "card": { "maxTextLength": 10000, "updateIntervalMs": 1500 },
+  "queue": { "maxQueuedTasks": 100 },
+  "usage": { "rateLimitQueryIntervalMs": 300000 },
+  "logging": { "toFile": false, "filePath": "bridge.log" },
+  "files": { "enableAutoFileUpload": false }
+}
 ```
 
 ### 4.3 迁移已有单聊机器人
 
-如果旧安装已经有 `.env` 里的 `LARK_APP_ID` 和 `LARK_APP_SECRET`，执行：
+如果旧安装已经有 `.env`，新版本发现 `config.json` 不存在时会自动从 `.env` 生成 `config.json`，随后删除旧 `.env`。要立即把旧单聊机器人和已有绑定物化到多机器人结构，执行：
 
 ```bash
-cfb bot migrate-default
+cfb config migrate
 ```
 
-这会把旧机器人物化为保留的 `default` bot，并尽量获取机器人 open ID、名称和启用状态。已有绑定会继续作为 `default` bot 的绑定使用。
+这会把旧机器人物化到 `lark-bots.json`，并尽量获取机器人 open ID、名称和启用状态。已有绑定会同步升级为 `appId + tenantKey + chatId` 格式，已绑定群也会同步加入该机器人的 `allowedChats`。
 
 ## 5. 启停和状态
 
@@ -269,7 +289,7 @@ MVP 中 `/collab` 只读，不维护 source-target 授权列表。
 cfb bot add
 ```
 
-该命令会显示一个飞书 QR code。扫码后 Bridge 自动创建一个 bot 记录，获取机器人身份和名称，并生成内部 `botKey`。
+该命令会显示一个飞书 QR code。扫码后 Bridge 自动创建一个 bot 记录，获取机器人身份和名称，并使用飞书 `appId` 作为机器人标识。
 
 不需要传 `--key`，也不需要手工命名机器人。
 
@@ -279,7 +299,7 @@ cfb bot add
 cfb bot import --app-id cli_xxx --app-secret replace_me
 ```
 
-Bridge 会探测机器人 identity/name，并自动生成 `botKey`。
+Bridge 会探测机器人 identity/name，并按 `appId` 写入结构化配置。
 
 ### 8.3 查看机器人
 
@@ -303,13 +323,13 @@ cfb bot doctor
 禁用：
 
 ```bash
-cfb bot disable --bot-key BOT_KEY
+cfb bot disable --app-id cli_xxx
 ```
 
 启用：
 
 ```bash
-cfb bot enable --bot-key BOT_KEY
+cfb bot enable --app-id cli_xxx
 ```
 
 禁用后的本地机器人不会接收任务、命令、审批或卡片副作用。如果飞书仍然投递事件，Bridge 可以返回不可用原因。
@@ -317,18 +337,18 @@ cfb bot enable --bot-key BOT_KEY
 ### 8.5 重新扫码绑定某个机器人
 
 ```bash
-cfb bot rebind --bot-key BOT_KEY
+cfb bot rebind --app-id cli_xxx
 ```
 
-rebind 会替换该 bot 的飞书应用凭证，但保留内部 `botKey`。
+rebind 只允许刷新同一个 `appId` 的凭证。如果扫码返回另一个 `appId`，那就是一个新机器人，应使用 `cfb bot add` 添加。
 
 ### 8.6 移除机器人
 
 ```bash
-cfb bot remove --bot-key BOT_KEY --confirm
+cfb bot remove --app-id cli_xxx --confirm
 ```
 
-移除会删除该 bot 的本地配置和相关绑定记录。`default` bot 不能 remove，只能 disable。
+移除会删除该 bot 的本地配置和相关绑定记录。
 
 ## 9. MVP 多机器人协作
 
@@ -342,8 +362,12 @@ MVP 目标很简单：
 
 全局默认：
 
-```dotenv
-ALLOW_GROUP_BOT_MENTIONS=true
+```json
+{
+  "lark": {
+    "allowGroupBotMentions": true
+  }
+}
 ```
 
 已物化到 `lark-bots.json` 的 bot 也需要：
@@ -377,7 +401,7 @@ ALLOW_GROUP_BOT_MENTIONS=true
 ~/.codex-feishu-bridge/external-bots.json
 ```
 
-记录粒度是 `sourceBotKey + tenantKey + chatId + externalBotOpenId`。同一个外部机器人在不同群、或被不同本地 bot 发现，会保留独立记录。
+记录粒度是 `sourceAppId + tenantKey + chatId + externalBotOpenId`。同一个外部机器人在不同群、或被不同本地 bot 发现，会保留独立记录。
 
 已经在群里的历史机器人不会收到过去的“机器人进群”事件。升级后处理方式是：
 
@@ -584,7 +608,7 @@ tail -f ~/.codex-feishu-bridge/logs/bridge_stdout.log
 tail -f ~/.codex-feishu-bridge/logs/bridge_stderr.log
 ```
 
-注意：只有 `LOG_TO_FILE=true` 时才写日志文件。
+注意：只有 `logging.toFile=true` 时才写日志文件。
 
 更新：
 
@@ -623,7 +647,7 @@ cfb config reset --confirm --destructive
 - 群聊普通任务默认开放，但群管理、模型、CWD、解绑和审批仍只允许 owner/admin。
 - bot sender 只能发起普通任务，不能执行管理动作。
 - 审批只能由管理员处理。
-- `ENABLE_AUTO_FILE_UPLOAD=true` 会上传最终回复中引用的本地文件，启用前需要确认组织策略。
+- `files.enableAutoFileUpload=true` 会上传最终回复中引用的本地文件，启用前需要确认组织策略。
 - Codex 任务以本机 owner 权限执行，具备本机文件访问能力，生产使用前应明确机器隔离和账号边界。
 
 ## 15. 快速命令索引
@@ -639,11 +663,11 @@ cfb config reset --confirm --destructive
 | 诊断 | `cfb doctor` |
 | 添加机器人 | `cfb bot add` |
 | 导入机器人 | `cfb bot import --app-id cli_xxx --app-secret SECRET` |
-| 迁移旧机器人 | `cfb bot migrate-default` |
+| 迁移旧机器人 | `cfb config migrate` |
 | 查看机器人 | `cfb bot list` |
-| 禁用机器人 | `cfb bot disable --bot-key BOT_KEY` |
-| 启用机器人 | `cfb bot enable --bot-key BOT_KEY` |
-| 移除机器人 | `cfb bot remove --bot-key BOT_KEY --confirm` |
+| 禁用机器人 | `cfb bot disable --app-id cli_xxx` |
+| 启用机器人 | `cfb bot enable --app-id cli_xxx` |
+| 移除机器人 | `cfb bot remove --app-id cli_xxx --confirm` |
 | 私聊绑定 | `/bind` |
 | 群聊绑定 | `@机器人 /bind` |
 | 群聊任务 | `@机器人 任务内容` |

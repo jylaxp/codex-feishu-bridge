@@ -2,11 +2,10 @@
 
 import * as Lark from '@larksuiteoapi/node-sdk';
 
-import { BindingStore } from './binding-store';
+import { BindingStore, type ChatThreadBinding } from './binding-store';
 import {
   BotConfigStore,
   type LarkBotConfig,
-  DEFAULT_BOT_KEY,
   hydrateBotIdentity,
   materializeDefaultBot,
 } from './bot-config-store';
@@ -31,7 +30,6 @@ export interface BotCommandOptions {
   readonly configHome?: string;
   readonly appId?: string;
   readonly appSecret?: string;
-  readonly botKey?: string;
   readonly confirm?: boolean;
   readonly json?: boolean;
   readonly stdout?: OutputWriter;
@@ -47,7 +45,6 @@ export interface BotCommandReport {
 }
 
 export interface BotCommandBotView {
-  readonly botKey: string;
   readonly appId: string;
   readonly enabled: boolean;
   readonly tenantKeyConfigured: boolean;
@@ -86,7 +83,7 @@ export async function runBotCommand(
   } else if (options.action === 'import') {
     report = await importBot(store, baseConfig, options);
   } else if (options.action === 'migrate-default') {
-    report = await migrateDefaultBot(store, baseConfig);
+    report = await migrateDefaultBot(store, baseConfig, configHome);
   } else if (options.action === 'rebind') {
     report = await rebindBot(store, options, output);
   } else if (options.action === 'enable' || options.action === 'disable') {
@@ -116,12 +113,11 @@ async function addBot(
   const appSecret = result.client_secret.trim();
   const existing = store.findByAppId(appId);
   if (existing) {
-    return report('add', store, false, `机器人已存在：${existing.botKey}`);
+    return report('add', store, false, `机器人已存在：${existing.appId}`);
   }
   const identity = await hydrateBotIdentity(appId, appSecret);
-  const botKey = store.nextBotKey(appId);
   store.save({
-    botKey,
+    botKey: appId,
     appId,
     appSecret,
     enabled: true,
@@ -138,7 +134,7 @@ async function addBot(
     activateStatus: identity.activateStatus,
     source: 'qr',
   });
-  return report('add', store, true, `已添加机器人：${botKey}`);
+  return report('add', store, true, `已添加机器人：${appId}`);
 }
 
 async function importBot(
@@ -150,12 +146,11 @@ async function importBot(
   const appSecret = requiredOption(options.appSecret, '--app-secret');
   const existing = store.findByAppId(appId);
   if (existing) {
-    return report('import', store, false, `机器人已存在：${existing.botKey}`);
+    return report('import', store, false, `机器人已存在：${existing.appId}`);
   }
   const identity = await hydrateBotIdentity(appId, appSecret);
-  const botKey = store.nextBotKey(appId);
   store.save({
-    botKey,
+    botKey: appId,
     appId,
     appSecret,
     enabled: true,
@@ -172,20 +167,38 @@ async function importBot(
     activateStatus: identity.activateStatus,
     source: 'import',
   });
-  return report('import', store, true, `已导入机器人：${botKey}`);
+  return report('import', store, true, `已导入机器人：${appId}`);
 }
 
 async function migrateDefaultBot(
   store: BotConfigStore,
   baseConfig: ReturnType<typeof parseEnvironment>,
+  configHome: string,
 ): Promise<BotCommandPartialReport> {
-  const existing = store.get(DEFAULT_BOT_KEY);
+  const existing = store.findByAppId(baseConfig.larkAppId);
   const identity = await hydrateBotIdentity(baseConfig.larkAppId, baseConfig.larkAppSecret);
+  const materialized = materializeDefaultBot(baseConfig, identity);
   store.save({
-    ...materializeDefaultBot(baseConfig, identity),
+    ...materialized,
     enabled: existing?.enabled ?? true,
+    allowedChats: mergeUniqueStrings(materialized.allowedChats, existing?.allowedChats ?? []),
   });
-  return report('migrate-default', store, true, '已物化 default 机器人配置');
+  const bindings = new BindingStore(configHome);
+  bindings.load({
+    legacyBotKeyMap: store.identifierAliases(),
+    legacyDefaultBotIdentifier: baseConfig.larkAppId,
+  });
+  bindings.materialize();
+  const migratedBot = store.get(baseConfig.larkAppId);
+  const migratedAllowedChats = mergeMigratedBindingAllowedChats(
+    migratedBot?.allowedChats ?? materialized.allowedChats,
+    bindings.list(),
+    baseConfig.larkAppId,
+  );
+  if (migratedBot && !sameStringList(migratedBot.allowedChats, migratedAllowedChats)) {
+    store.update(migratedBot.appId, { allowedChats: migratedAllowedChats });
+  }
+  return report('migrate-default', store, true, `已迁移旧机器人配置：${baseConfig.larkAppId}`);
 }
 
 async function rebindBot(
@@ -193,10 +206,10 @@ async function rebindBot(
   options: BotCommandOptions,
   output: OutputWriter,
 ): Promise<BotCommandPartialReport> {
-  const botKey = requiredOption(options.botKey, '--bot-key');
-  const existing = store.get(botKey);
+  const selectedAppId = selectedBotIdentifier(options);
+  const existing = store.get(selectedAppId);
   if (!existing) {
-    throw new Error(`机器人不存在：${botKey}`);
+    throw new Error(`机器人不存在：${selectedAppId}`);
   }
   const result = await registerFeishuApp({
     output,
@@ -205,13 +218,11 @@ async function rebindBot(
   });
   const appId = result.client_id.trim();
   const appSecret = result.client_secret.trim();
-  const duplicate = store.findByAppId(appId);
-  if (duplicate && duplicate.botKey !== botKey) {
-    throw new Error(`扫码返回的应用已属于其他机器人：${duplicate.botKey}`);
+  if (appId !== existing.appId) {
+    throw new Error(`扫码返回的是新机器人应用：${appId}。请使用 bot add 添加新机器人，或继续使用 ${existing.appId}`);
   }
   const identity = await hydrateBotIdentity(appId, appSecret);
-  store.update(botKey, {
-    appId,
+  store.update(existing.appId, {
     appSecret,
     enabled: true,
     tenantKey: '',
@@ -224,7 +235,7 @@ async function rebindBot(
     activateStatus: identity.activateStatus,
     source: 'qr',
   });
-  return report('rebind', store, true, `已重新扫码绑定机器人：${botKey}`);
+  return report('rebind', store, true, `已刷新机器人凭证：${existing.appId}`);
 }
 
 function updateEnabled(
@@ -232,9 +243,9 @@ function updateEnabled(
   options: BotCommandOptions,
   enabled: boolean,
 ): BotCommandPartialReport {
-  const botKey = requiredOption(options.botKey, '--bot-key');
-  store.update(botKey, { enabled });
-  return report(enabled ? 'enable' : 'disable', store, true, `${enabled ? '已启用' : '已禁用'}机器人：${botKey}`);
+  const appId = selectedBotIdentifier(options);
+  store.update(appId, { enabled });
+  return report(enabled ? 'enable' : 'disable', store, true, `${enabled ? '已启用' : '已禁用'}机器人：${appId}`);
 }
 
 function removeBot(
@@ -242,22 +253,19 @@ function removeBot(
   configHome: string,
   options: BotCommandOptions,
 ): BotCommandPartialReport {
-  const botKey = requiredOption(options.botKey, '--bot-key');
+  const appId = selectedBotIdentifier(options);
   if (!options.confirm) {
     throw new Error('bot remove requires --confirm');
   }
-  if (botKey === DEFAULT_BOT_KEY) {
-    throw new Error('default bot cannot be removed; use bot disable instead');
-  }
   const bindings = new BindingStore(configHome);
-  bindings.load();
-  const removedBindingCount = bindings.removeBotBindings(botKey);
-  const removed = store.remove(botKey);
+  bindings.load({ legacyBotKeyMap: store.identifierAliases(), legacyDefaultBotIdentifier: appId });
+  const removedBindingCount = bindings.removeBotBindings(appId);
+  const removed = store.remove(appId);
   return report(
     'remove',
     store,
     removed || removedBindingCount > 0,
-    removed ? `已移除机器人：${botKey}` : `机器人不存在：${botKey}`,
+    removed ? `已移除机器人：${appId}` : `机器人不存在：${appId}`,
     removedBindingCount,
   );
 }
@@ -284,7 +292,6 @@ function report(
 
 function botView(bot: LarkBotConfig): BotCommandBotView {
   return Object.freeze({
-    botKey: bot.botKey,
     appId: bot.appId,
     enabled: bot.enabled,
     tenantKeyConfigured: bot.tenantKey.length > 0,
@@ -314,7 +321,7 @@ function formatBotReport(report: BotCommandReport): string {
   } else {
     for (const bot of report.bots) {
       lines.push([
-        `- ${bot.botKey}`,
+        `- ${bot.displayName ?? bot.appId}`,
         bot.displayName ? `名称=${bot.displayName}` : '名称=未获取',
         `appId=${bot.appId}`,
         `状态=${bot.enabled ? 'enabled' : 'disabled'}`,
@@ -338,4 +345,42 @@ function requiredOption(value: string | undefined, name: string): string {
     throw new Error(`${name} is required`);
   }
   return normalized;
+}
+
+function selectedBotIdentifier(options: BotCommandOptions): string {
+  return requiredOption(options.appId, '--app-id');
+}
+
+export function mergeMigratedBindingAllowedChats(
+  currentAllowedChats: readonly string[],
+  bindings: readonly ChatThreadBinding[],
+  appId: string,
+): readonly string[] {
+  return mergeUniqueStrings(
+    currentAllowedChats,
+    bindings
+      .filter((binding) => (binding.larkAppId ?? binding.botKey) === appId)
+      .map((binding) => binding.chatId),
+  );
+}
+
+function mergeUniqueStrings(
+  left: readonly string[],
+  right: readonly string[],
+): readonly string[] {
+  const merged: string[] = [];
+  const seen = new Set<string>();
+  for (const value of [...left, ...right]) {
+    const normalized = value.trim();
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    merged.push(normalized);
+  }
+  return Object.freeze(merged);
+}
+
+function sameStringList(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }

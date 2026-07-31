@@ -27,6 +27,7 @@ type Command =
   | 'compatibility'
   | 'validate-ui-sync'
   | 'config-reset'
+  | 'config-migrate'
   | 'bot'
   | 'setup'
   | 'rebind'
@@ -46,7 +47,6 @@ interface CliArguments {
   readonly botAction: BotCommandAction | undefined;
   readonly appId: string | undefined;
   readonly appSecret: string | undefined;
-  readonly botKey: string | undefined;
 }
 
 export interface CliRuntime {
@@ -80,7 +80,6 @@ export interface CliDependencies {
       readonly configHome?: string;
       readonly appId?: string;
       readonly appSecret?: string;
-      readonly botKey?: string;
       readonly confirm?: boolean;
       readonly json?: boolean;
     },
@@ -112,7 +111,7 @@ export async function runCli(
   if (parsed.command === 'init') {
     const initialize = dependencies.initializeSetupFiles ?? initializeSetupFiles;
     const report = initialize(parsed.configHome, runtimeEnv);
-    process.stdout.write(`✅ 已初始化配置：${report.envPath}\n`);
+    process.stdout.write(`✅ 已初始化配置：${report.configPath}\n`);
     return;
   }
 
@@ -160,6 +159,16 @@ export async function runCli(
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
     return;
   }
+  if (parsed.command === 'config-migrate') {
+    const botCommand = await import('./bot-command');
+    const run = dependencies.runBotCommand ?? botCommand.runBotCommand;
+    await run({
+      action: 'migrate-default',
+      configHome: parsed.configHome,
+      json: parsed.json,
+    }, runtimeEnv);
+    return;
+  }
   if (parsed.command === 'bot') {
     const botCommand = await import('./bot-command');
     const run = dependencies.runBotCommand ?? botCommand.runBotCommand;
@@ -168,7 +177,6 @@ export async function runCli(
       configHome: parsed.configHome,
       appId: parsed.appId,
       appSecret: parsed.appSecret,
-      botKey: parsed.botKey,
       confirm: parsed.confirm,
       json: parsed.json,
     }, runtimeEnv);
@@ -273,7 +281,6 @@ function parseArguments(args: readonly string[]): CliArguments {
   let botAction: BotCommandAction | undefined;
   let appId: string | undefined;
   let appSecret: string | undefined;
-  let botKey: string | undefined;
   let commandSeen = false;
 
   for (let index = 0; index < args.length; index += 1) {
@@ -322,11 +329,6 @@ function parseArguments(args: readonly string[]): CliArguments {
       index += 1;
       continue;
     }
-    if (argument === '--bot-key') {
-      botKey = requireOptionValue(args, index, '--bot-key');
-      index += 1;
-      continue;
-    }
     if (argument === '--help' || argument === '-h') {
       command = 'help';
       commandSeen = true;
@@ -334,6 +336,12 @@ function parseArguments(args: readonly string[]): CliArguments {
     }
     if (!commandSeen && argument === 'config' && args[index + 1] === 'reset') {
       command = 'config-reset';
+      commandSeen = true;
+      index += 1;
+      continue;
+    }
+    if (!commandSeen && argument === 'config' && args[index + 1] === 'migrate') {
+      command = 'config-migrate';
       commandSeen = true;
       index += 1;
       continue;
@@ -361,6 +369,7 @@ function parseArguments(args: readonly string[]): CliArguments {
   if (
     configHome
     && command !== 'config-reset'
+    && command !== 'config-migrate'
     && command !== 'setup'
     && command !== 'rebind'
     && command !== 'init'
@@ -388,31 +397,36 @@ function parseArguments(args: readonly string[]): CliArguments {
   if (force && command !== 'update') {
     throw new Error('--force is only valid with update');
   }
-  if (json && command !== 'status' && command !== 'version' && command !== 'compatibility' && command !== 'bot') {
-    throw new Error('--json is only valid with status, version, compatibility, or bot');
+  if (
+    json
+    && command !== 'status'
+    && command !== 'version'
+    && command !== 'compatibility'
+    && command !== 'config-migrate'
+    && command !== 'bot'
+  ) {
+    throw new Error('--json is only valid with status, version, compatibility, config migrate, or bot');
   }
   if (approve && command !== 'compatibility') {
     throw new Error('--approve is only valid with compatibility');
   }
   if ((appId || appSecret) && command !== 'bot') {
-    throw new Error('--app-id and --app-secret are only valid with bot import');
-  }
-  if (botKey && command !== 'bot') {
-    throw new Error('--bot-key is only valid with bot management commands');
+    throw new Error('--app-id and --app-secret are only valid with bot management commands');
   }
   if (command === 'bot') {
     const action = botAction ?? 'list';
-    if ((appId || appSecret) && action !== 'import') {
-      throw new Error('--app-id and --app-secret are only valid with bot import');
+    if (appSecret && action !== 'import') {
+      throw new Error('--app-secret is only valid with bot import');
     }
     if (
-      botKey
+      appId
+      && action !== 'import'
       && action !== 'rebind'
       && action !== 'enable'
       && action !== 'disable'
       && action !== 'remove'
     ) {
-      throw new Error('--bot-key is only valid with bot rebind, enable, disable, or remove');
+      throw new Error('--app-id is only valid with bot import, rebind, enable, disable, or remove');
     }
   }
   return {
@@ -428,7 +442,6 @@ function parseArguments(args: readonly string[]): CliArguments {
     botAction,
     appId,
     appSecret,
-    botKey,
   };
 }
 
@@ -457,6 +470,7 @@ function isCommand(value: string | undefined): value is Command {
     || value === 'compatibility'
     || value === 'validate-ui-sync'
     || value === 'config-reset'
+    || value === 'config-migrate'
     || value === 'bot'
     || value === 'setup'
     || value === 'rebind'
@@ -521,28 +535,29 @@ function helpText(): string {
     '  codex-feishu-bridge doctor',
     '  codex-feishu-bridge version [--json] [--config-home PATH]',
     '  codex-feishu-bridge compatibility [--json] [--approve] [--config-home PATH]',
+    '  codex-feishu-bridge config migrate [--json] [--config-home PATH]',
     '  codex-feishu-bridge bot add [--config-home PATH]',
     '  codex-feishu-bridge bot import --app-id APP_ID --app-secret SECRET [--config-home PATH]',
-    '  codex-feishu-bridge bot migrate-default [--config-home PATH]',
-    '  codex-feishu-bridge bot rebind --bot-key BOT_KEY [--config-home PATH]',
-    '  codex-feishu-bridge bot enable --bot-key BOT_KEY [--config-home PATH]',
-    '  codex-feishu-bridge bot disable --bot-key BOT_KEY [--config-home PATH]',
-    '  codex-feishu-bridge bot remove --bot-key BOT_KEY --confirm [--config-home PATH]',
+    '  codex-feishu-bridge bot rebind --app-id APP_ID [--config-home PATH]',
+    '  codex-feishu-bridge bot enable --app-id APP_ID [--config-home PATH]',
+    '  codex-feishu-bridge bot disable --app-id APP_ID [--config-home PATH]',
+    '  codex-feishu-bridge bot remove --app-id APP_ID --confirm [--config-home PATH]',
     '  codex-feishu-bridge bot list [--json] [--config-home PATH]',
     '  codex-feishu-bridge validate-ui-sync [--thread THREAD_ID]',
     '  codex-feishu-bridge config reset [--config-home PATH] [--confirm] [--destructive]',
     '',
     'Alias: cfb is equivalent to codex-feishu-bridge.',
-    'Configuration is loaded from ~/.codex-feishu-bridge/.env by default.',
-    'Process/service-manager environment values override the .env file.',
-    'setup creates the private .env and scans a Feishu QR code when app credentials are missing.',
+    'Configuration is loaded from ~/.codex-feishu-bridge/config.json by default.',
+    'Legacy .env is read only once when config.json is missing, then migrated to JSON and removed.',
+    'Process/service-manager environment values override config.json at runtime.',
+    'setup creates the private config.json and scans a Feishu QR code when app credentials are missing.',
     'run/start/restart also invoke setup automatically when credentials are missing.',
-    'rebind forces a new Feishu QR-code app registration and replaces LARK_APP_ID/LARK_APP_SECRET.',
+    'rebind forces a new Feishu QR-code app registration and replaces lark.appId/lark.appSecret in config.json.',
     'start/restart/stop/status manage the PID file and logs under ~/.codex-feishu-bridge/.',
     'version detects local ChatGPT/Codex versions and refreshes protocol-versions.json.',
     'compatibility reports 兼容/不兼容; --approve explicitly adds a compatible exact version.',
-    'bot add scans one QR code, fetches the robot identity, and generates the internal botKey.',
-    'bot migrate-default materializes the existing .env robot as the reserved default bot.',
+    'config migrate converts legacy .env/config.json bot credentials into lark-bots.json using the appId as the robot identifier.',
+    'bot add scans one QR code, fetches the robot identity, and stores one appId-scoped robot config.',
     'validate-ui-sync without --thread lists recent workspace tasks.',
     'config reset is a dry run until --confirm; --destructive is required to clear an already-current binding.',
     '',

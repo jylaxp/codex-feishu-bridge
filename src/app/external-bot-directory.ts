@@ -14,15 +14,16 @@ import { dirname, join } from 'node:path';
 
 import { DEFAULT_BOT_KEY } from './bot-config-store';
 
-const DIRECTORY_SCHEMA_VERSION = 1;
+const DIRECTORY_SCHEMA_VERSION = 2;
 const DIRECTORY_FILE_NAME = 'external-bots.json';
 const MAX_DIRECTORY_FILE_BYTES = 1024 * 1024;
 const MAX_ENTRY_COUNT = 20_000;
 const MAX_IDENTIFIER_LENGTH = 512;
 const MAX_DISPLAY_NAME_LENGTH = 200;
-const MAX_BOT_KEY_LENGTH = 64;
 
 export interface ExternalBotDirectoryEntry {
+  readonly sourceAppId?: string;
+  /** Deprecated runtime alias. New persisted entries write sourceAppId only. */
   readonly sourceBotKey: string;
   readonly tenantKey: string;
   readonly chatId: string;
@@ -46,8 +47,10 @@ export interface ExternalBotDirectoryGroupInput {
 
 interface ExternalBotDirectoryDocument {
   readonly schemaVersion: number;
-  readonly entries: readonly ExternalBotDirectoryEntry[];
+  readonly entries: readonly SerializedExternalBotDirectoryEntry[];
 }
+
+type SerializedExternalBotDirectoryEntry = Omit<ExternalBotDirectoryEntry, 'sourceBotKey'>;
 
 export type ExternalBotDirectoryResolution =
   | { readonly status: 'found'; readonly entry: ExternalBotDirectoryEntry }
@@ -123,7 +126,7 @@ export class ExternalBotDirectoryStore {
     tenantKey: string,
     chatId: string,
   ): readonly ExternalBotDirectoryEntry[] {
-    const normalizedSourceBotKey = requiredBotKey(sourceBotKey);
+    const normalizedSourceBotKey = requiredBotIdentifier(sourceBotKey, 'sourceAppId');
     const normalizedTenantKey = requiredText(tenantKey, 'tenantKey');
     const normalizedChatId = requiredText(chatId, 'chatId');
     return Object.freeze([...this.entries.values()].filter((entry) => (
@@ -161,7 +164,7 @@ export class ExternalBotDirectoryStore {
   }
 
   public replaceGroup(input: ExternalBotDirectoryGroupInput): readonly ExternalBotDirectoryEntry[] {
-    const sourceBotKey = requiredBotKey(input.sourceBotKey);
+    const sourceBotKey = requiredBotIdentifier(input.sourceBotKey, 'sourceAppId');
     const tenantKey = requiredText(input.tenantKey, 'tenantKey');
     const chatId = requiredText(input.chatId, 'chatId');
     const now = safeNow(this.now);
@@ -177,6 +180,7 @@ export class ExternalBotDirectoryStore {
       const previous = previousGroupEntries.get(bot.botOpenId);
       return Object.freeze({
         sourceBotKey,
+        sourceAppId: sourceBotKey,
         tenantKey,
         chatId,
         botOpenId: bot.botOpenId,
@@ -207,7 +211,7 @@ export class ExternalBotDirectoryStore {
   }
 
   public removeGroup(sourceBotKey: string, tenantKey: string, chatId: string): number {
-    const normalizedSourceBotKey = requiredBotKey(sourceBotKey);
+    const normalizedSourceBotKey = requiredBotIdentifier(sourceBotKey, 'sourceAppId');
     const normalizedTenantKey = requiredText(tenantKey, 'tenantKey');
     const normalizedChatId = requiredText(chatId, 'chatId');
     const removed: ExternalBotDirectoryEntry[] = [];
@@ -246,7 +250,7 @@ export class ExternalBotDirectoryStore {
     mkdirSync(directory, { recursive: true });
     const document: ExternalBotDirectoryDocument = Object.freeze({
       schemaVersion: DIRECTORY_SCHEMA_VERSION,
-      entries: Object.freeze([...this.entries.values()]),
+      entries: Object.freeze([...this.entries.values()].map(serializeEntry)),
     });
     const serialized = `${JSON.stringify(document, null, 2)}\n`;
     if (Buffer.byteLength(serialized, 'utf8') > MAX_DIRECTORY_FILE_BYTES) {
@@ -276,11 +280,11 @@ export class ExternalBotDirectoryStore {
   }
 }
 
-function parseDocument(value: unknown): ExternalBotDirectoryDocument {
+function parseDocument(value: unknown): { readonly schemaVersion: number; readonly entries: readonly ExternalBotDirectoryEntry[] } {
   if (!isRecord(value) || hasUnknownKeys(value, ['schemaVersion', 'entries'])) {
     throw new ExternalBotDirectoryError('external-bots.json has an invalid document shape');
   }
-  if (value.schemaVersion !== DIRECTORY_SCHEMA_VERSION || !Array.isArray(value.entries)) {
+  if ((value.schemaVersion !== 1 && value.schemaVersion !== DIRECTORY_SCHEMA_VERSION) || !Array.isArray(value.entries)) {
     throw new ExternalBotDirectoryError('external-bots.json schema version is unsupported');
   }
   if (value.entries.length > MAX_ENTRY_COUNT) {
@@ -295,6 +299,7 @@ function parseDocument(value: unknown): ExternalBotDirectoryDocument {
 function parseEntry(value: unknown): ExternalBotDirectoryEntry {
   if (!isRecord(value) || hasUnknownKeys(value, [
     'sourceBotKey',
+    'sourceAppId',
     'tenantKey',
     'chatId',
     'botOpenId',
@@ -307,7 +312,8 @@ function parseEntry(value: unknown): ExternalBotDirectoryEntry {
   const discoveredAtMs = safeTimestamp(value.discoveredAtMs, 'discoveredAtMs');
   const updatedAtMs = safeTimestamp(value.updatedAtMs, 'updatedAtMs');
   return Object.freeze({
-    sourceBotKey: requiredBotKey(value.sourceBotKey),
+    sourceBotKey: requiredBotIdentifier(value.sourceAppId ?? value.sourceBotKey ?? DEFAULT_BOT_KEY, 'sourceAppId'),
+    sourceAppId: requiredBotIdentifier(value.sourceAppId ?? value.sourceBotKey ?? DEFAULT_BOT_KEY, 'sourceAppId'),
     tenantKey: requiredText(value.tenantKey, 'tenantKey'),
     chatId: requiredText(value.chatId, 'chatId'),
     botOpenId: requiredOpenId(value.botOpenId),
@@ -332,10 +338,10 @@ function uniqueBots(bots: readonly ExternalBotDirectoryBotInput[]): readonly Ext
   return Object.freeze(result);
 }
 
-function requiredBotKey(value: unknown): string {
-  const key = value === undefined ? DEFAULT_BOT_KEY : requiredText(value, 'sourceBotKey');
-  if (key.length > MAX_BOT_KEY_LENGTH || !/^(?:default|bot_[a-z2-7][a-z2-7]{11,59})$/.test(key)) {
-    throw new ExternalBotDirectoryError('sourceBotKey is invalid');
+function requiredBotIdentifier(value: unknown, label: string): string {
+  const key = value === undefined ? DEFAULT_BOT_KEY : requiredText(value, label);
+  if (!/^cli_[0-9a-fA-F]{16}$/.test(key) && !/^(?:default|bot_[a-z2-7][a-z2-7]{11,59})$/.test(key)) {
+    throw new ExternalBotDirectoryError(`${label} is invalid`);
   }
   return key;
 }
@@ -387,6 +393,18 @@ function safeNow(now: () => number): number {
 
 function entryKey(sourceBotKey: string, tenantKey: string, chatId: string, botOpenId: string): string {
   return `${sourceBotKey}\0${tenantKey}\0${chatId}\0${botOpenId}`;
+}
+
+function serializeEntry(entry: ExternalBotDirectoryEntry): SerializedExternalBotDirectoryEntry {
+  const {
+    sourceBotKey: _sourceBotKey,
+    sourceAppId,
+    ...serialized
+  } = entry;
+  return Object.freeze({
+    ...serialized,
+    sourceAppId: sourceAppId ?? entry.sourceBotKey,
+  });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

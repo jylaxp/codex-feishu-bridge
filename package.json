@@ -14,7 +14,8 @@
   "files": [
     "dist/app/**/*.js",
     "README.md",
-    ".env.example"
+    "docs/user-manual.zh-CN.md",
+    "config.example.json"
   ],
   "scripts": {
     "prepare": "npm run build",

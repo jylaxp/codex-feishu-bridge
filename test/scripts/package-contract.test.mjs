@@ -16,8 +16,9 @@ const packageManifest = Object.freeze({
 });
 
 const completePackageFiles = Object.freeze([
-  { path: '.env.example' },
+  { path: 'config.example.json' },
   { path: 'README.md' },
+  { path: 'docs/user-manual.zh-CN.md' },
   { path: 'dist/app/cli.js' },
   { path: 'dist/app/main.js' },
   { path: 'dist/app/runtime/module.js' },
@@ -48,11 +49,12 @@ test('derives required main and bin paths from package metadata', () => {
       },
     })].sort(),
     [
-      '.env.example',
       'README.md',
+      'config.example.json',
       'dist/app/cli.js',
       'dist/app/helper.js',
       'dist/app/main.js',
+      'docs/user-manual.zh-CN.md',
       'package.json',
     ],
   );
@@ -63,10 +65,11 @@ test('derives required main and bin paths from package metadata', () => {
       bin: './dist/app/cli.js',
     })].sort(),
     [
-      '.env.example',
       'README.md',
+      'config.example.json',
       'dist/app/cli.js',
       'dist/app/main.js',
+      'docs/user-manual.zh-CN.md',
       'package.json',
     ],
   );

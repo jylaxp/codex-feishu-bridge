@@ -2,7 +2,7 @@
 
 一个本机、单用户的飞书控制桥：飞书的消息被投递到已绑定的 ChatGPT Desktop 会话；Desktop owner runtime 负责在 ChatGPT 页面执行和渲染，Bridge 将同一 turn 的状态实时投影为飞书 CardKit 卡片。
 
-Bridge 不读取或修改 ChatGPT/Codex 数据库、不注入 Electron，也不保存 prompt、回复、推理、审批、队列或卡片状态。唯一跨重启文件是 `bindings.json`：它记录“当前飞书 chat 绑定到哪个 ChatGPT thread”及静态执行设置。
+Bridge 不读取或修改 ChatGPT/Codex 数据库、不注入 Electron，也不保存 prompt、回复、推理、审批、队列或卡片状态。跨重启的业务文件只有 `config.json`、`lark-bots.json`、`bindings.json` 和 `external-bots.json`：它们分别记录进程配置、机器人配置、聊天到 ChatGPT thread 的绑定，以及群内可 @ 的外部机器人目录。
 
 日常安装、绑定、群聊、多机器人协作和排障步骤见 [使用手册](docs/user-manual.zh-CN.md)。
 
@@ -77,7 +77,7 @@ npm install -g ./codex-feishu-bridge-2.1.0.tgz
 
 ## 初始化与飞书扫码绑定
 
-默认配置为 `~/.codex-feishu-bridge/.env`。`BRIDGE_CONFIG_HOME` 可改为当前机器的绝对路径；显式进程环境优先于 `.env`。请从 `.env.example` 复制并按机器实际路径填写，不要复制其他开发者的路径。
+默认配置为 `~/.codex-feishu-bridge/config.json`。`BRIDGE_CONFIG_HOME` 可改为当前机器的绝对路径；显式进程环境优先于 `config.json`。旧版本 `.env` 只作为一次性自动迁移来源：如果 `config.json` 不存在但 `.env` 存在，Bridge 会先从 `.env` 生成 `config.json`，随后删除旧 `.env`；一旦 `config.json` 存在，`.env` 就不再参与运行。
 
 新用户可以直接运行前台或后台启动命令。若 Bridge 检测到飞书应用凭证为空或仍是占位值，会自动进入扫码注册流程：
 
@@ -93,9 +93,9 @@ codex-feishu-bridge start
 codex-feishu-bridge setup
 ```
 
-终端会显示飞书授权链接和二维码。用飞书扫码确认后，Bridge 自动创建自建应用、取得 `LARK_APP_ID` 和 `LARK_APP_SECRET`，并写入 `~/.codex-feishu-bridge/.env`。
+终端会显示飞书授权链接和二维码。用飞书扫码确认后，Bridge 自动创建自建应用、取得飞书 `appId` 和 `appSecret`，并写入 `~/.codex-feishu-bridge/config.json`。
 
-`LARK_TENANT_KEY`、`ALLOWED_CHATS`、`AUTHORIZED_USERS`、`ALLOWED_APPROVERS` 默认都可以为空。机器人收到第一条单聊消息时，会自动把该租户、当前单聊和发送者保存为 owner/审批人，不需要用户先查询 Open ID，也不需要额外发送绑定指令。为了避免误开放，首次群聊消息不会自动认领。
+`lark.tenantKey`、`lark.allowedChats`、`lark.authorizedUsers`、`lark.allowedApprovers` 默认都可以为空。机器人收到第一条单聊消息时，会自动把该租户、当前单聊和发送者保存为 owner/审批人，不需要用户先查询 Open ID，也不需要额外发送绑定指令。为了避免误开放，首次群聊消息不会自动认领。
 
 如果使用已有飞书机器人，可以先生成手工配置骨架：
 
@@ -103,7 +103,15 @@ codex-feishu-bridge setup
 codex-feishu-bridge init
 ```
 
-然后编辑 `~/.codex-feishu-bridge/.env`，填写已有的 `LARK_APP_ID` 和 `LARK_APP_SECRET`。
+然后编辑 `~/.codex-feishu-bridge/config.json`，填写已有机器人的 `lark.appId` 和 `lark.appSecret`。
+
+升级旧安装时，通常无需手工迁移：启动、`doctor`、`status` 或 `config migrate` 发现 `config.json` 不存在时，会先从旧 `.env` 自动生成 `config.json`。如果要立即物化旧单机器人为 `lark-bots.json` 并升级已有绑定，可以执行：
+
+```bash
+codex-feishu-bridge config migrate
+```
+
+迁移会生成或更新 `~/.codex-feishu-bridge/lark-bots.json`，并把已有聊天绑定升级为 `appId + tenantKey + chatId` 格式。旧 `.env` 不再作为 fallback；如果目录里还残留该文件，Bridge 会在加载 `config.json` 后清理它。
 
 需要重新绑定机器人时：
 
@@ -113,48 +121,44 @@ codex-feishu-bridge rebind
 codex-feishu-bridge setup --rebind
 ```
 
-```dotenv
-LARK_APP_ID=cli_0123456789abcdef
-LARK_APP_SECRET=replace_me
-LARK_TENANT_KEY=
-ALLOWED_CHATS=
-AUTHORIZED_USERS=
-ALLOWED_APPROVERS=
-ALLOW_GROUP_USER_MENTIONS=true
-# 外部群成员 @ 机器人发起普通任务的默认值；群绑定后可用 /external off/on 按群调整。
-ALLOW_EXTERNAL_GROUP_USER_MENTIONS=true
-# 群内其他机器人 @ 当前机器人时是否允许发起普通任务。
-# MVP 默认允许；显式改为 false 时当前机器人不会响应其他机器人的 @。
-ALLOW_GROUP_BOT_MENTIONS=true
-# 是否按任务汇总审批卡：0 = 默认，每项审批各发一张卡；1 = 同一任务的全部审批汇总为一张卡。
-APPROVAL_SUMMARY_MODE=0
-
-# owned_stdio 由 Bridge 启动 CODEX_BIN；managed_proxy 需要操作员另行钉住远端 daemon。
-APP_SERVER_MODE=owned_stdio
-# 仅 managed_proxy 按需设置。
-# APP_SERVER_SOCKET_PATH=/absolute/path/to/app-server.sock
-
-CODEX_BIN=/absolute/path/to/codex
-# 可省略；默认使用 ~/.codex-feishu-bridge
-CODEX_CWD=/absolute/path/to/default/directory
-
-# 旧配置键继续保留
-RATE_LIMIT_QUERY_INTERVAL_MS=300000
-LOG_TO_FILE=false
-LOG_FILE_PATH=bridge.log
-ENABLE_AUTO_FILE_UPLOAD=false
-ALLOWED_SHELL_COMMANDS=ls,pwd,git,find,cd
+```json
+{
+  "schemaVersion": 1,
+  "lark": {
+    "appId": "cli_0123456789abcdef",
+    "appSecret": "replace_me",
+    "tenantKey": "",
+    "allowedChats": [],
+    "authorizedUsers": [],
+    "allowedApprovers": [],
+    "allowGroupUserMentions": true,
+    "allowExternalGroupUserMentions": true,
+    "allowGroupBotMentions": true
+  },
+  "approval": { "summaryMode": false },
+  "appServer": { "mode": "owned_stdio", "socketPath": null },
+  "codex": {
+    "bin": "/absolute/path/to/codex",
+    "cwd": "/absolute/path/to/default/directory",
+    "allowedShellCommands": ["ls", "pwd", "git", "find", "cd"]
+  },
+  "card": { "maxTextLength": 10000, "updateIntervalMs": 1500 },
+  "queue": { "maxQueuedTasks": 100 },
+  "usage": { "rateLimitQueryIntervalMs": 300000 },
+  "logging": { "toFile": false, "filePath": "bridge.log" },
+  "files": { "enableAutoFileUpload": false }
+}
 ```
 
-`CODEX_CWD` 只决定未单独绑定目录时的默认启动目录；省略时使用 `BRIDGE_CONFIG_HOME`（通常是 `~/.codex-feishu-bridge`）。每个 Codex 任务以 `dangerFullAccess` 启动，可以读取和修改本机任意路径，不再使用 `ALLOWED_WORKSPACE_ROOTS` 白名单。
+`codex.cwd` 只决定未单独绑定目录时的默认启动目录；省略时使用 `BRIDGE_CONFIG_HOME`（通常是 `~/.codex-feishu-bridge`）。每个 Codex 任务以 `dangerFullAccess` 启动，可以读取和修改本机任意路径，不再使用旧的 workspace 白名单。
 
-`APPROVAL_SUMMARY_MODE=0`（或留空）时，保持原应用的审批投递方式：每次审批都会发出一张独立审批卡。设为 `1` 时，同一个任务只保留一张审批汇总卡；后续审批会更新到该卡中，每个审批区块仍独立显示命令、原因和三个操作按钮。无论哪种模式，任一审批作出选择后，该审批区块的全部按钮都会禁用。
+`approval.summaryMode=false` 时，保持原应用的审批投递方式：每次审批都会发出一张独立审批卡。设为 `true` 时，同一个任务只保留一张审批汇总卡；后续审批会更新到该卡中，每个审批区块仍独立显示命令、原因和三个操作按钮。无论哪种模式，任一审批作出选择后，该审批区块的全部按钮都会禁用。
 
-`LOG_TO_FILE` 是全部运行日志的总开关。设为 `false` 时，INFO、WARN、ERROR 以及飞书 SDK 运行日志均不写文件、也不输出到标准输出；设为 `true` 时，Bridge 将脱敏日志写入轮转文件。相对 `LOG_FILE_PATH` 位于 config-home 的 `logs/`，绝对路径按用户显式配置处理。日志不会记录 prompt、回复或 CardKit payload。CLI 命令结果（例如 `status`、`doctor`）属于用户请求的输出，不受日志开关影响。`ENABLE_AUTO_FILE_UPLOAD=true` 时，最终回复中指向绝对本地路径的非图片 Markdown 文件会作为同一飞书话题的文件回复上传；文件数量、类型和大小校验仍然保留，该信息不会保存到 Bridge 文件。
+`logging.toFile` 是全部运行日志的总开关。设为 `false` 时，INFO、WARN、ERROR 以及飞书 SDK 运行日志均不写文件、也不输出到标准输出；设为 `true` 时，Bridge 将脱敏日志写入轮转文件。相对 `logging.filePath` 位于 config-home 的 `logs/`，绝对路径按用户显式配置处理。日志不会记录 prompt、回复或 CardKit payload。CLI 命令结果（例如 `status`、`doctor`）属于用户请求的输出，不受日志开关影响。`files.enableAutoFileUpload=true` 时，最终回复中指向绝对本地路径的非图片 Markdown 文件会作为同一飞书话题的文件回复上传；文件数量、类型和大小校验仍然保留，该信息不会保存到 Bridge 文件。
 
 飞书可发送 JPG、PNG 或 WebP 图片给已绑定会话，也支持一条 `post` 富文本中的文字和多张图片。单独发送图片时，Bridge 只在内存中暂存消息资源引用，允许继续发送图片；下一条普通文字会作为任务描述，与当前批次一次性提交。图片回执卡片提供“提交图片”和“取消”按钮，不使用短时间窗口；`/image-run` 与 `/image-cancel` 仅作为兼容入口保留。一个任务最多 8 张图片，每张不超过 20 MB；提交时才下载并校验真实文件头，然后以 `localImage` 输入交给 ChatGPT Desktop。Bridge 同时最多下载 2 张图片，进程内图片临时文件总量最多 256 MB。任务结束、Desktop 断开或 Bridge 停止时会删除进程专用临时文件及未提交批次。使用已有机器人时，需要为应用开通读取消息资源所需的 `im:message:readonly` 权限。
 
-持久业务数据只有 `.env` 和 `bindings.json`。Bridge 不创建 SQLite、WAL、任务历史或恢复队列。后台模式还会生成 `bridge.pid`、`runtime-health.json` 和 `logs/`；健康快照只记录连接状态、协议标识和任务计数，不保存 prompt、模型回复、推理、工具输出或卡片 payload。Bridge 崩溃/重启、Desktop 断开或网络结果未知时，当前进程内任务直接停止跟踪且绝不自动重放，用户可在 ChatGPT Desktop 继续处理或重新从飞书发送。
+持久业务数据只有 `config.json`、`lark-bots.json`、`bindings.json` 和 `external-bots.json`。Bridge 不创建 SQLite、WAL、任务历史或恢复队列。后台模式还会生成 `bridge.pid`、`runtime-health.json` 和 `logs/`；健康快照只记录连接状态、协议标识和任务计数，不保存 prompt、模型回复、推理、工具输出或卡片 payload。Bridge 崩溃/重启、Desktop 断开或网络结果未知时，当前进程内任务直接停止跟踪且绝不自动重放，用户可在 ChatGPT Desktop 继续处理或重新从飞书发送。
 
 ## 启动方式
 
@@ -181,7 +185,7 @@ codex-feishu-bridge start
 
 - PID：`~/.codex-feishu-bridge/bridge.pid`
 
-仅当 `LOG_TO_FILE=true` 时，后台进程才创建并追加：
+仅当 `logging.toFile=true` 时，后台进程才创建并追加：
 
 - 标准日志：`~/.codex-feishu-bridge/logs/bridge_stdout.log`
 - 错误日志：`~/.codex-feishu-bridge/logs/bridge_stderr.log`
@@ -240,7 +244,7 @@ initialize identity 核对实际 App Server 版本。`managed_proxy` 的 assuran
 而不是远端 schema 证明。当前 Desktop-attached 执行只声明 macOS 支持；Windows 在 native named-pipe probe
 和 owner/session attestation 完成前会保持 not ready。
 
-`LOG_TO_FILE=true` 时可实时查看后台输出日志：
+`logging.toFile=true` 时可实时查看后台输出日志：
 
 ```bash
 tail -f ~/.codex-feishu-bridge/logs/bridge_stdout.log
@@ -253,14 +257,14 @@ tail -f ~/.codex-feishu-bridge/logs/bridge_stderr.log
 # 只查看将保留/删除什么，不写文件
 codex-feishu-bridge config reset
 
-# 仅在旧目录时执行：保留 .env 的注释、顺序、未知键，清空 bindings
+# 仅在旧目录时执行：把旧配置迁移为 config.json，清空 bindings
 codex-feishu-bridge config reset --confirm
 
 # 当前已经是新结构时，只有明确 destructive 才会清空已有 bindings
 codex-feishu-bridge config reset --confirm --destructive
 ```
 
-重置会将 `.env` 中的 `BRIDGE_CONFIG_VERSION` 升级为 `2`，删除所有旧运行文件，并要求用户重新 `/bind`。
+重置会生成当前结构的 `config.json`，删除旧运行文件，并要求用户重新 `/bind`。
 
 ## 飞书完整指令
 
@@ -279,7 +283,7 @@ codex-feishu-bridge config reset --confirm --destructive
 | `/new [名称]`、`/create [名称]` | 创建、命名、绑定并打开新会话；名称省略时自动生成 |
 | `/fork [名称]`、`/branch [名称]` | 从当前会话派生、命名、绑定并打开新会话 |
 | `/delete`、`/archive` | 归档当前 ChatGPT 会话并解除绑定 |
-| `/cwd [路径]`、`/workspace [路径]` | 查询或修改当前绑定会话的工作目录；路径必须位于授权 workspace 内 |
+| `/cwd [路径]`、`/workspace [路径]` | 查询或修改当前绑定会话的工作目录；路径必须是本机绝对路径 |
 | `/cmd [命令]`、`/run [命令]`、`/shell [命令]` | 在当前工作目录执行白名单命令 |
 | `/goal [目标]` | 设置长期目标并立即启动执行 |
 | `/goal` | 显示当前目标、状态、Token 和执行时长 |
@@ -297,13 +301,13 @@ codex-feishu-bridge config reset --confirm --destructive
 | `/image-run` | 不再等待任务描述，立即提交当前待处理图片 |
 | `/image-cancel` | 清除当前会话中尚未提交的图片批次 |
 | `/cancel`、`/stop` | 停止当前运行任务；任务卡“停止任务”按钮行为相同 |
-| `/<白名单命令> [参数]` | 保留原 router 的未知 slash fallback，例如 `/pwd`；首命令仍必须在 `ALLOWED_SHELL_COMMANDS` 中 |
+| `/<白名单命令> [参数]` | 保留原 router 的未知 slash fallback，例如 `/pwd`；首命令仍必须在 `codex.allowedShellCommands` 中 |
 
 `/bind`、会话选择、模型选择、技能选择和打开按钮都限制 tenant/chat、授权用户、binding revision 和 10 分钟 TTL；过期卡片不能改变当前绑定。
 
 飞书消息必须先显式绑定既有会话。普通任务通过 Desktop follower IPC 进入这个精确 thread：新 root 走 start，同 root 运行期间的补充消息走 steer，不同 root 排队。`@技能名称` 文本会原样保留并进入 Desktop runtime；当前 Desktop follower 协议没有独立的结构化 skill 字段，Bridge 不会猜测或重写技能内容。
 
-会话可见性由 `ALLOWED_CHATS` 决定。首次安装时这些飞书内部 ID 都可以为空：第一个私聊机器人的用户会自动成为 owner，并绑定当前单聊。绑定后卡片会作为发起消息的 reply，始终留在原会话/原话题，而不是临时会话。群聊需要先由 owner 在群里 `@机器人 /bind` 绑定会话；绑定后普通群成员显式 `@` 当前机器人即可发起普通任务。外部群成员默认允许发起普通任务，Bridge 不校验其 sender tenant 或 `ALLOWED_CHATS`；需要关闭时由 owner 在对应群里发送 `@机器人 /external off`，恢复时发送 `@机器人 /external on`。
+会话可见性由 `lark.allowedChats` 决定。首次安装时这些飞书内部 ID 都可以为空：第一个私聊机器人的用户会自动成为 owner，并绑定当前单聊。绑定后卡片会作为发起消息的 reply，始终留在原会话/原话题，而不是临时会话。群聊需要先由 owner 在群里 `@机器人 /bind` 绑定会话；绑定后普通群成员显式 `@` 当前机器人即可发起普通任务。外部群成员默认允许发起普通任务，Bridge 不校验其 sender tenant 或 `lark.allowedChats`；需要关闭时由 owner 在对应群里发送 `@机器人 /external off`，恢复时发送 `@机器人 /external on`。
 
 多个机器人在同一群协作时，不要求这些机器人由同一个 owner 管理，也不要求由同一个群成员邀请进群；飞书群内的普通成员可以按群权限邀请一个或多个机器人。Bridge 不把“谁拉进群”作为授权条件，每个机器人仍由它自己的 owner/admin 管理，并且每个机器人都必须先在该群绑定会话，确认机器人 @ 响应开关为 on。MVP 默认开放：
 人可以 @ 机器人，机器人可以 @ 机器人，机器人也可以 @ 人；Bridge 不校验 tenant_key、成员白名单、bot sender
@@ -315,7 +319,7 @@ codex-feishu-bridge config reset --confirm --destructive
 runner 当前以 macOS Desktop-attached 为已验证路径，跨平台群协作应优先使用 App Server stable 路由，
 Windows Desktop-attached 在 native probe 完成前保持不可用。
 
-外部 owner 或外部 Bridge 实例管理的机器人不需要导入本机 `lark-bots.json`。Bridge 会在群消息、机器人进群事件、群绑定成功和新版本群绑定启动回填后尝试调用飞书群内机器人列表接口，按 `sourceBotKey + tenantKey + chatId` 记录外部机器人的 open ID 和名称到 `~/.codex-feishu-bridge/external-bots.json`，供后续真实 `@外部机器人` 使用。该能力需要 `im:chat.members:read` 权限；旧版本历史绑定没有 `chatType` 时，在群里重新 `@当前机器人` 或重新 `/bind` 一次即可补齐发现目录。发现目录只提供可 @ 身份，不保证外部 bot 已绑定、已运行或会响应。
+外部 owner 或外部 Bridge 实例管理的机器人不需要导入本机 `lark-bots.json`。Bridge 会在群消息、机器人进群事件、群绑定成功和新版本群绑定启动回填后尝试调用飞书群内机器人列表接口，按 `sourceAppId + tenantKey + chatId` 记录外部机器人的 open ID 和名称到 `~/.codex-feishu-bridge/external-bots.json`，供后续真实 `@外部机器人` 使用。该能力需要 `im:chat.members:read` 权限；旧版本历史绑定没有 `chatType` 时，在群里重新 `@当前机器人` 或重新 `/bind` 一次即可补齐发现目录。发现目录只提供可 @ 身份，不保证外部 bot 已绑定、已运行或会响应。
 
 ## 卡片和审批
 

@@ -37,7 +37,6 @@ export interface DoctorReport {
 }
 
 export interface DoctorBotReport {
-  readonly botKey: string;
   readonly appId: string;
   readonly enabled: boolean;
   readonly tenantKeyConfigured: boolean;
@@ -67,10 +66,13 @@ export async function runDoctor(
 ): Promise<DoctorReport> {
   const effectiveEnv = loadBridgeEnvironment(env);
   const preflight = runPreflight(parseEnvironment(effectiveEnv), { nodeVersion: dependencies.nodeVersion });
-  const store = new BindingStore(preflight.configHome);
-  store.load();
   const botStore = new BotConfigStore(preflight.configHome);
   botStore.load(preflight.config);
+  const store = new BindingStore(preflight.configHome);
+  store.load({
+    legacyBotKeyMap: botStore.identifierAliases(),
+    legacyDefaultBotIdentifier: preflight.config.larkAppId,
+  });
   const contract = await (dependencies.verifyRuntimeContract ?? verifyCodexRuntimeContract)(
     preflight.config,
     effectiveEnv,
@@ -99,9 +101,8 @@ export async function runDoctor(
     botCount: botStore.list().length,
     enabledBotCount: botStore.activeBots().length,
     bots: Object.freeze(botStore.list().map((bot) => {
-      const botBindings = store.list().filter((binding) => (binding.botKey ?? 'default') === bot.botKey);
+      const botBindings = store.list().filter((binding) => (binding.larkAppId ?? binding.botKey) === bot.appId);
       return Object.freeze({
-        botKey: bot.botKey,
         appId: bot.appId,
         enabled: bot.enabled,
         tenantKeyConfigured: bot.tenantKey.length > 0,

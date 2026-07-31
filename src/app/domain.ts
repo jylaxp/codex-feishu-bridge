@@ -71,7 +71,7 @@ export interface CardProjectionPayload {
 }
 
 export interface BridgeConfig {
-  /** Internal non-secret robot routing key. Legacy single-bot installs use `default`. */
+  /** Deprecated runtime alias for the Feishu appId. Legacy files may still contain generated bot keys. */
   readonly botKey?: string;
   readonly larkAppId: string;
   readonly larkAppSecret: string;
@@ -93,7 +93,7 @@ export interface BridgeConfig {
   readonly codexBin: string;
   /** Default working directory. Task execution itself uses full-machine access. */
   readonly codexCwd: string;
-  /** Current runtime home; only .env and bindings.json are persistent state. */
+  /** Current runtime home; config.json and binding/bot JSON files are persistent state. */
   readonly configHome?: string;
   readonly maxTextLength: number;
   readonly cardUpdateIntervalMs: number;

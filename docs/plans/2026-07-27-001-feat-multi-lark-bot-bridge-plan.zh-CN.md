@@ -11,6 +11,26 @@ date: 2026-07-27
 
 在一个 Bridge 进程内引入正式的多机器人支持：多个飞书应用机器人可以接收事件，拥有各自的聊天权限和 CardKit 投递身份，并把各自的聊天绑定到不同的 ChatGPT 会话，或绑定到同一个 ChatGPT 会话。所有机器人共享一个 Desktop 执行面和一个按 thread 串行的调度器，因此一个 ChatGPT thread 在任意时刻仍然只能有一个活跃的可写 turn。
 
+## 2026-07-31 设计修订：使用 AppID 作为机器人标识
+
+本修订覆盖本文早期关于 `botKey` 和 `default` 机器人的设计。正式配置模型改为：一个 bot 配置项就是一个飞书应用机器人，`appId` 是该配置项的唯一标识。`botOpenId` 只用于飞书消息里的真实 `@` 和事件识别，机器人名称只用于展示。
+
+- 新 `lark-bots.json` 不再写入生成的 `botKey`，每条记录以 `appId` 表示一个机器人。
+- 新 `bindings.json` 写入 `larkAppId + tenantKey + chatId`，不再把 `default` 或 `bot_xxx` 作为绑定主键。
+- 旧 `.env` 单机器人安装通过 `cfb config migrate` 一键迁移：读取 `LARK_APP_ID`/`LARK_APP_SECRET`，调用 `/open-apis/bot/v3/info` 获取机器人 open ID、名称和启用状态，生成 `lark-bots.json`，并把旧 bindings 物化为新 schema。
+- `bot add` 和 `bot import` 添加的是新的飞书应用机器人。如果扫码/导入得到另一个 `appId`，就是新机器人，不会修改已有机器人配置。
+- `bot enable`、`bot disable`、`bot remove` 和同类管理命令使用 `--app-id` 选择机器人；公开 CLI 不再接受 `--bot-key`。
+
+## 2026-07-31 设计修订：使用 `config.json` 替换 `.env`
+
+本修订覆盖本文早期关于 `.env` fallback 和只读 legacy 启动的设计。正式运行配置文件改为 `config.json`；legacy `.env` 只作为一次性迁移来源。
+
+- `~/.codex-feishu-bridge/config.json` 是当前配置标志。只要它存在，Bridge 就加载它，并忽略残留的 `.env`。
+- 如果 `config.json` 不存在但 legacy `.env` 存在，Bridge 会在解析运行配置前自动物化 `config.json`，随后删除旧 `.env`。
+- 新的 setup/init 流程写入 `config.json`，不再写 `.env`。
+- `cfb config migrate` 仍可显式执行，用于把 legacy 单机器人 hydrate 到 `lark-bots.json` 并物化旧 bindings；启动时如果 `lark-bots.json` 不存在，也会物化当前 `appId` 机器人。
+- 当前群聊开发分支尚未发布多机器人/群聊配置格式，因此允许破坏性迁移。
+
 ---
 
 ## 问题背景
@@ -232,11 +252,11 @@ date: 2026-07-27
 - 两个 bot 能否绑定到同一个 ChatGPT thread？可以，但所有写入该 thread 的操作都通过同一个 `ThreadTaskScheduler` 串行。
 - bot 级 CardKit 投递是否共享一个 Lark client？不共享。投递必须使用发起机器人的 credential。
 - Desktop-originated turns 是否 fan out？不 fan out。没有发起 bot/chat/root task 时，安全行为是不投影。
-- 多个 bot 如何 QR 注册？`bot add` 每次注册一个新 bot 并生成内部 `botKey`；`bot rebind` 先选择一个现有 bot 再 QR 注册；`setup` 保留为向后兼容的 default-bot 流程。
+- 多个 bot 如何 QR 注册？`bot add` 每次注册一个新 bot 并按 `appId` 存储；`bot rebind --app-id` 只在扫码返回同一个 `appId` 时刷新该 bot 凭证；`setup` 保留为当前单 bot 的 setup 流程。
 
 ### 延后到实现
 
-- `lark-bots.json` 的精确字段名和迁移机制在实现期间最终确定，但来源拆分已经确定：`.env` 用于 global 和 legacy default-bot values，`lark-bots.json` 用于 named multi-bot credentials。
+- `lark-bots.json` 的精确字段名和迁移机制在实现期间最终确定，但来源拆分已经确定：`config.json` 用于当前进程级配置和一次性 legacy `.env` 导入，`lark-bots.json` 用于 appId 作用域的 bot credentials。
 
 ---
 
@@ -296,19 +316,18 @@ sequenceDiagram
 - 修改：`src/app/config.ts`
 - 修改：`src/app/config-file.ts`
 - 修改：`src/app/setup.ts`
-- 修改：`.env.example`
+- 修改：`config.example.json`
 - 测试：`test/app/config-reset.test.ts`
 - 测试：`test/app/doctor.test.ts`
 
 **方法：**
-- 增加 `LarkBotConfig` 概念，包含 `botKey`、`appId`、`appSecret`、tenant/chat/user/approver policy，以及可选的 resolved bot open ID。
-- 保留现有单 bot `.env` keys 作为 default bot 的向后兼容来源。
-- 保留 `default` bot key 用于 legacy 单 bot installs，并拒绝生成或导入重复使用该 key。
+- 增加 `LarkBotConfig` 概念，包含 `appId`、`appSecret`、tenant/chat/user/approver policy，以及可选的 resolved bot open ID。
+- 将现有单 bot `.env` keys 迁移到 `config.json`，再物化为一个 appId 作用域的 bot record。
+- 旧 `default` / generated `botKey` 只作为升级别名保留；新记录不再持久化这些 key。
 - 在 config home 下引入 `lark-bots.json` 作为 named multi-bot credential source。
-- 如果 `lark-bots.json` 不存在，则在 runtime 从 legacy `.env` values 合成 default bot，不重写文件。
-- QR 注册的额外 bot 以生成的 `botKey` entries 存储，而不是改写 legacy default app credentials。
-- 在 `bot add` 和 `bot import` 中内部生成 `botKey`；正常 operator 不需要提供或记住它。
-- 生成的 `botKey` 实现为 `bot_${base32url(sha256("lark-app:" + lowerAppId)).slice(0, 12)}`，并包含 collision extension 和 reserved-key rejection。
+- 如果 `lark-bots.json` 不存在，则把当前 `config.json` app credentials 物化为一个 appId 作用域的 bot record。
+- QR 注册的额外 bot 以 appId 作用域 entries 存储，而不是改写当前 bot credentials。
+- operator 不需要提供或记住 generated bot key；正常管理使用 `--app-id`。
 - 在凭证可用后，从 Lark bot/app identity 获取并持久化机器人 display name。手工名称只作为 alias。
 - 将 bot credential status、owner claim status 和 group binding status 分开建模。
 - 确保 secrets 永远不出现在 logs、health snapshots、doctor JSON 或 setup output 中。
@@ -573,23 +592,23 @@ sequenceDiagram
 - 修改：`src/app/doctor.ts`
 - 修改：`src/app/runtime-health.ts`
 - 修改：`README.md`
-- 修改：`.env.example`
+- 修改：`config.example.json`
 - 测试：`test/app/config-reset.test.ts`
 - 测试：`test/app/doctor.test.ts`
 - 测试：`test/app/runtime-health.test.ts`
 
 **方法：**
 - 保留单 bot `setup` 行为。
-- 保留 legacy single-bot runtime 行为：现有已扫码凭证和 v1 bindings 作为保留的 `default` bot 运行，不要求重新扫码或重新绑定。
+- 通过自动 `.env -> config.json` 迁移和 appId 作用域 binding 物化，保留 legacy single-bot runtime 行为，不要求重新扫码或重新绑定。
 - 增加通过 QR registration 或 existing app import 配置额外 bots 的明确文档和 CLI help。
-- 增加 `bot add`、`bot import`、`bot migrate-default`、`bot rebind`、`bot disable`、`bot remove`、`bot list` 和 `bot doctor` command design。`bot add` 和 `bot import` 自动生成 `botKey`；`bot migrate-default` 使用保留的 `default` key；针对 existing bot 的命令使用 interactive selector 或高级 explicit ID。
-- 为 `bot add`、`bot import` 和 `bot migrate-default` 通过 `GET /open-apis/bot/v3/info` 实现 identity hydration，持久化机器人 open ID、display name、avatar metadata 和 activation status，且不记录 secrets。
+- 增加 `bot add`、`bot import`、`config migrate`、`bot rebind`、`bot disable`、`bot remove`、`bot list` 和 `bot doctor` command design。Bot add/import/migration 存储 appId 作用域记录；针对 existing bot 的命令使用 `--app-id`。
+- 为 `bot add`、`bot import` 和 `config migrate` 通过 `GET /open-apis/bot/v3/info` 实现 identity hydration，持久化机器人 open ID、display name、avatar metadata 和 activation status，且不记录 secrets。
 - 报告 per-bot readiness：configured、identity resolved、WebSocket ready、allowed chat count、authorized user count、degraded reason。
 - 明确报告 disabled 和 removed-local states。Disabled bots 只有在 Bridge 仍收到其事件时才能回复 unavailable reason；removed-local bots 不能通过 Bridge 接收或回复。
 - Reset 必须按现有 reset semantics 保留 bot configuration，同时只清理 runtime/non-current files。
 - 记录群聊权限：优先 `im:message.group_at_msg` / readonly equivalent；除非单独论证，避免 sensitive all-group-message scope。
 - 清楚记录 local-only removal semantics：Bridge 可以移除本地 credentials/bindings，但除非单独实现并验证 Feishu API flow，不保证删除 Feishu app 或物理移出飞书群。
-- 记录升级兼容性：旧 `.env` Lark keys 对 `default` 仍然有效，v1 `bindings.json` 作为 default-bot bindings 加载，持久迁移是 write-through 或显式执行。
+- 记录升级兼容性：旧 `.env` Lark keys 一次性导入 `config.json`，v1 `bindings.json` 作为 appId 作用域 bindings 加载，持久迁移自动发生或通过 `config migrate` 显式执行。
 
 **遵循模式：**
 - 现有 content-free runtime health 和 redacted logging。

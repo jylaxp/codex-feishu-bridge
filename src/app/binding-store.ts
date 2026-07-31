@@ -14,11 +14,10 @@ import { dirname, join } from 'node:path';
 
 import { DEFAULT_BOT_KEY } from './bot-config-store';
 
-const BINDINGS_SCHEMA_VERSION = 4;
+const BINDINGS_SCHEMA_VERSION = 5;
 const MAX_BINDINGS_FILE_BYTES = 1024 * 1024;
 const MAX_BINDING_COUNT = 10_000;
 const MAX_IDENTIFIER_LENGTH = 512;
-const MAX_BOT_KEY_LENGTH = 64;
 
 export interface BindingSettings {
   readonly model?: string;
@@ -31,6 +30,8 @@ export interface BindingSettings {
 }
 
 export interface ChatThreadBinding extends BindingSettings {
+  readonly larkAppId?: string;
+  /** Deprecated runtime alias. New persisted bindings write larkAppId only. */
   readonly botKey?: string;
   readonly tenantKey: string;
   readonly chatId: string;
@@ -48,8 +49,8 @@ export interface ChatThreadBinding extends BindingSettings {
 }
 
 export type ChatThreadBindingInput =
-  Omit<ChatThreadBinding, 'botKey' | 'revision' | 'updatedAtMs'>
-  & { readonly botKey?: string };
+  Omit<ChatThreadBinding, 'larkAppId' | 'botKey' | 'revision' | 'updatedAtMs'>
+  & { readonly larkAppId?: string; readonly botKey?: string };
 
 interface BindingDocument {
   readonly schemaVersion: number;
@@ -66,6 +67,11 @@ export class BindingStoreError extends Error {
 export interface BindingStoreOptions {
   readonly now?: () => number;
   readonly bindingsFileName?: string;
+}
+
+export interface BindingLoadOptions {
+  readonly legacyBotKeyMap?: ReadonlyMap<string, string>;
+  readonly legacyDefaultBotIdentifier?: string;
 }
 
 /**
@@ -90,7 +96,7 @@ export class BindingStore {
   }
 
   /** Loads and validates the whole document once at Bridge startup. */
-  public load(): void {
+  public load(options: BindingLoadOptions = {}): void {
     this.bindings.clear();
     if (!existsSync(this.bindingsPath)) {
       return;
@@ -110,11 +116,11 @@ export class BindingStore {
     } catch (error) {
       throw new BindingStoreError('bindings.json is not valid JSON', { cause: error });
     }
-    const parsed = parseDocument(document);
+    const parsed = parseDocument(document, options);
     for (const binding of parsed.bindings) {
-      const key = bindingKey(binding.botKey ?? DEFAULT_BOT_KEY, binding.tenantKey, binding.chatId);
+      const key = bindingKey(binding.larkAppId ?? binding.botKey ?? DEFAULT_BOT_KEY, binding.tenantKey, binding.chatId);
       if (this.bindings.has(key)) {
-        throw new BindingStoreError('bindings.json contains a duplicate bot/tenant/chat binding');
+        throw new BindingStoreError('bindings.json contains a duplicate app/tenant/chat binding');
       }
       this.bindings.set(key, binding);
     }
@@ -154,7 +160,7 @@ export class BindingStore {
   /** Persists one replacement binding using same-directory atomic replacement. */
   public bind(input: ChatThreadBindingInput): ChatThreadBinding {
     const normalized = normalizeBindingInput(input);
-    const key = bindingKey(normalized.botKey ?? DEFAULT_BOT_KEY, normalized.tenantKey, normalized.chatId);
+    const key = bindingKey(normalized.larkAppId ?? normalized.botKey ?? DEFAULT_BOT_KEY, normalized.tenantKey, normalized.chatId);
     const previous = this.bindings.get(key);
     const binding = Object.freeze({
       ...normalized,
@@ -225,10 +231,10 @@ export class BindingStore {
   }
 
   public removeBotBindings(botKey: string): number {
-    const normalizedBotKey = requiredBotKey(botKey);
+    const normalizedBotKey = requiredBotIdentifier(botKey, 'bot identifier');
     const removed: [string, ChatThreadBinding][] = [];
     for (const [key, binding] of this.bindings.entries()) {
-      if (binding.botKey === normalizedBotKey) {
+      if (binding.larkAppId === normalizedBotKey || binding.botKey === normalizedBotKey) {
         removed.push([key, binding]);
       }
     }
@@ -249,12 +255,17 @@ export class BindingStore {
     }
   }
 
+  /** Rewrites the loaded bindings using the current schema and serializer. */
+  public materialize(): void {
+    this.persist();
+  }
+
   private persist(): void {
     const directory = dirname(this.bindingsPath);
     mkdirSync(directory, { recursive: true });
     const document: BindingDocument = Object.freeze({
       schemaVersion: BINDINGS_SCHEMA_VERSION,
-      bindings: Object.freeze([...this.bindings.values()]),
+      bindings: Object.freeze([...this.bindings.values()].map(serializeBinding)),
     });
     const serialized = `${JSON.stringify(document, null, 2)}\n`;
     if (Buffer.byteLength(serialized, 'utf8') > MAX_BINDINGS_FILE_BYTES) {
@@ -284,7 +295,7 @@ export class BindingStore {
   }
 }
 
-function parseDocument(value: unknown): BindingDocument {
+function parseDocument(value: unknown, options: BindingLoadOptions): BindingDocument {
   if (!isRecord(value) || hasUnknownKeys(value, ['schemaVersion', 'bindings'])) {
     throw new BindingStoreError('bindings.json has an invalid document shape');
   }
@@ -296,12 +307,13 @@ function parseDocument(value: unknown): BindingDocument {
   }
   return Object.freeze({
     schemaVersion: BINDINGS_SCHEMA_VERSION,
-    bindings: Object.freeze(value.bindings.map((binding) => parseBinding(binding, value.schemaVersion))),
+    bindings: Object.freeze(value.bindings.map((binding) => parseBinding(binding, value.schemaVersion, options))),
   });
 }
 
-function parseBinding(value: unknown, schemaVersion: unknown): ChatThreadBinding {
+function parseBinding(value: unknown, schemaVersion: unknown, options: BindingLoadOptions): ChatThreadBinding {
   if (!isRecord(value) || hasUnknownKeys(value, [
+    'larkAppId',
     'botKey',
     'tenantKey',
     'chatId',
@@ -338,9 +350,7 @@ function parseBinding(value: unknown, schemaVersion: unknown): ChatThreadBinding
     throw new BindingStoreError('binding allowBotSenderMentions must be a boolean when present');
   }
   const normalized = normalizeBindingInput({
-    botKey: schemaVersion === 1
-      ? DEFAULT_BOT_KEY
-      : requiredBotKey(value.botKey),
+    larkAppId: resolveBindingBotIdentifier(value, schemaVersion, options),
     tenantKey: requiredText(value.tenantKey, 'tenantKey'),
     chatId: requiredText(value.chatId, 'chatId'),
     ...(chatTypeValue(value.chatType) ? { chatType: chatTypeValue(value.chatType) } : {}),
@@ -388,8 +398,10 @@ function parseBinding(value: unknown, schemaVersion: unknown): ChatThreadBinding
 function normalizeBindingInput(
   input: ChatThreadBindingInput,
 ): Omit<ChatThreadBinding, 'revision' | 'updatedAtMs'> {
+  const larkAppId = requiredBotIdentifier(input.larkAppId ?? input.botKey, 'larkAppId');
   return Object.freeze({
-    botKey: requiredBotKey(input.botKey),
+    larkAppId,
+    botKey: larkAppId,
     tenantKey: requiredText(input.tenantKey, 'tenantKey'),
     chatId: requiredText(input.chatId, 'chatId'),
     ...(chatTypeValue(input.chatType) ? { chatType: chatTypeValue(input.chatType) } : {}),
@@ -424,16 +436,37 @@ function normalizeBindingInput(
   });
 }
 
-function requiredBotKey(value: unknown): string {
-  const key = value === undefined ? DEFAULT_BOT_KEY : requiredText(value, 'botKey');
-  if (key.length > MAX_BOT_KEY_LENGTH || !/^(?:default|bot_[a-z2-7][a-z2-7]{11,59})$/.test(key)) {
-    throw new BindingStoreError('botKey is invalid');
+function resolveBindingBotIdentifier(
+  value: Record<string, unknown>,
+  schemaVersion: unknown,
+  options: BindingLoadOptions,
+): string {
+  const directAppId = optionalText(value.larkAppId, 'larkAppId');
+  if (directAppId) {
+    return requiredBotIdentifier(directAppId, 'larkAppId');
+  }
+  const legacyIdentifier = schemaVersion === 1
+    ? (options.legacyDefaultBotIdentifier ?? DEFAULT_BOT_KEY)
+    : optionalText(value.botKey, 'botKey') ?? DEFAULT_BOT_KEY;
+  const mapped = options.legacyBotKeyMap?.get(legacyIdentifier);
+  return requiredBotIdentifier(mapped ?? legacyIdentifier, 'bot identifier');
+}
+
+function requiredBotIdentifier(value: unknown, label: string): string {
+  const key = requiredText(value, label);
+  if (!isBotIdentifier(key)) {
+    throw new BindingStoreError(`${label} is invalid`);
   }
   return key;
 }
 
+function isBotIdentifier(value: string): boolean {
+  return /^cli_[0-9a-fA-F]{16}$/.test(value)
+    || /^(?:default|bot_[a-z2-7][a-z2-7]{11,59})$/.test(value);
+}
+
 function isSupportedSchemaVersion(value: unknown): boolean {
-  return value === 1 || value === 2 || value === 3 || value === BINDINGS_SCHEMA_VERSION;
+  return value === 1 || value === 2 || value === 3 || value === 4 || value === BINDINGS_SCHEMA_VERSION;
 }
 
 function chatTypeValue(value: unknown): ChatThreadBinding['chatType'] | undefined {
@@ -488,7 +521,7 @@ function botKeyArray(value: unknown, label: string): readonly string[] {
   if (!Array.isArray(value)) {
     throw new BindingStoreError(`${label} must be an array when present`);
   }
-  return Object.freeze([...new Set(value.map((item) => requiredBotKey(item)))]);
+  return Object.freeze([...new Set(value.map((item) => requiredBotIdentifier(item, label)))]);
 }
 
 function uniqueStrings(values: readonly unknown[], label: string): readonly string[] {
@@ -517,7 +550,7 @@ function nonEmptyStringArray(
 
 function bindingKey(botKey: string, tenantKey: string, chatId: string): string {
   return JSON.stringify([
-    requiredBotKey(botKey),
+    requiredBotIdentifier(botKey, 'bot identifier'),
     requiredText(tenantKey, 'tenantKey'),
     requiredText(chatId, 'chatId'),
   ]);
@@ -560,4 +593,16 @@ function safelyUnlink(filePath: string): void {
   } catch {
     // The original write/replace failure is more useful to callers.
   }
+}
+
+function serializeBinding(binding: ChatThreadBinding): ChatThreadBinding {
+  const {
+    botKey: _botKey,
+    larkAppId,
+    ...serialized
+  } = binding;
+  return Object.freeze({
+    ...serialized,
+    larkAppId: larkAppId ?? binding.botKey ?? DEFAULT_BOT_KEY,
+  });
 }

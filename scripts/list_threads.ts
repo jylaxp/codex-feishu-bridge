@@ -1,8 +1,7 @@
 import { LocalAppServerAdapter } from '../src/adapter';
-import dotenv from 'dotenv';
-import path from 'path';
+import { loadBridgeEnvironment } from '../src/app/config-file';
 
-dotenv.config({ path: path.join(__dirname, '../.env') });
+Object.assign(process.env, loadBridgeEnvironment(process.env));
 
 const adapter = new LocalAppServerAdapter();
 

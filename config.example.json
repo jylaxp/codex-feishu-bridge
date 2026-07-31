@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "lark": {
+    "appId": "cli_0123456789abcdef",
+    "appSecret": "replace_me",
+    "tenantKey": "",
+    "allowedChats": [],
+    "authorizedUsers": [],
+    "allowedApprovers": [],
+    "allowGroupUserMentions": true,
+    "allowExternalGroupUserMentions": true,
+    "allowGroupBotMentions": true
+  },
+  "approval": {
+    "summaryMode": false
+  },
+  "appServer": {
+    "mode": "owned_stdio",
+    "socketPath": null
+  },
+  "codex": {
+    "bin": "/absolute/path/to/codex",
+    "cwd": "/absolute/path/to/resolved/config-home",
+    "allowedShellCommands": ["ls", "pwd", "git", "find", "cd"]
+  },
+  "card": {
+    "maxTextLength": 10000,
+    "updateIntervalMs": 1500
+  },
+  "queue": {
+    "maxQueuedTasks": 100
+  },
+  "usage": {
+    "rateLimitQueryIntervalMs": 300000
+  },
+  "logging": {
+    "toFile": false,
+    "filePath": "bridge.log"
+  },
+  "files": {
+    "enableAutoFileUpload": false
+  }
+}
