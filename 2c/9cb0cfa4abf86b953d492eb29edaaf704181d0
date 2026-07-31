@@ -1,0 +1,163 @@
+src/app/external-bot-directory.ts
+  s_7aa13d4c94b804::t_760f7a91763fcd 16,84-86
+  s_7aa13d4c94b804::t_309a17fcb2a688 27,290,316,318-319,346
+  s_7aa13d4c94b804::t_51a9bb6c459000 253
+src/app/config-reset.ts
+  s_7aa13d4c94b804::t_aca1bb34adeac4 14,137,201
+  s_7aa13d4c94b804::t_46d6966836a44c 75
+test/app/external-bot-directory.test.ts
+  s_7aa13d4c94b804::t_a7717833ae459b 2,45-48,63-79
+  s_7aa13d4c94b804::t_84c25f0f218f5f 15,27,39,41,53,93,102,106
+  s_7aa13d4c94b804::t_1940949ca01fd7 61-62,80-82
+  s_7aa13d4c94b804::t_21682d0b09fe1c 83-87
+docs/plans/2026-07-27-001-feat-multi-lark-bot-bridge-plan.zh-CN.md
+  s_7aa13d4c94b804::t_68a5d614edab8f 19
+  s_7aa13d4c94b804::t_958ca09b4fe240 28,331
+  s_7aa13d4c94b804::t_8d015e4b8cf156 16,18,164,172,174,195,223,229,277,297,301,336,443,475-477,563,582,659
+  s_7aa13d4c94b804::t_48663d3755f349 29,31,34-41,43-44
+  s_7aa13d4c94b804::t_e32b0c8e3ad7a1 69-70,125,127,130,134,138,155-156,168-170,173,175,177
+  s_7aa13d4c94b804::t_e5d3f1accb2877 20
+  s_7aa13d4c94b804::t_c2a6388eecb64d 392,450
+  s_7aa13d4c94b804::t_1cebe2f5c829fa 126,145,153,157,166,182-190,200-201,204,211,332,346-351,416,418-420,428-430,436,621-624,663
+  s_7aa13d4c94b804::t_24ccdb35cf9297 42
+  s_7aa13d4c94b804::t_75ddd95bbf9c58 176,265,333-334,605,614
+  s_7aa13d4c94b804::t_f7f57762a3aba1 26,30
+  s_7aa13d4c94b804::t_4d41411db1ff02 45
+  s_7aa13d4c94b804::t_e63b4f991b25e9 171
+src/app/channel-paths.ts
+  s_7aa13d4c94b804::t_30265e5931da29 1-14
+docs/plans/2026-07-28-003-feat-channel-neutral-message-renderer-plan.md
+  s_7aa13d4c94b804::t_fec16a6d0244bc 47,56-57,67
+  s_7aa13d4c94b804::t_bb588b752faf56 80,117
+test/app/lark-handoff-message-emitter.test.ts
+  s_7aa13d4c94b804::t_84c25f0f218f5f 16,64,131,134
+docs/plans/2026-07-28-004-feat-channel-adapter-abstraction-plan.zh-CN.md
+  s_7aa13d4c94b804::t_e061668df71093 33,118,138-139
+src/app/bot-command.ts
+  s_7aa13d4c94b804::t_8f36653b439245 180
+  s_7aa13d4c94b804::t_b2ab941fadaacb 264
+src/app/setup.ts
+  s_7aa13d4c94b804::t_fe62a43ed19017 7,210
+test/app/config-file.test.ts
+  s_7aa13d4c94b804::t_8d89ee8019b84d 28,34-35
+README.md
+  s_7aa13d4c94b804::t_c57bbd732c00bf 114,167
+  s_7aa13d4c94b804::t_edfb82167d9180 328-330
+  s_7aa13d4c94b804::t_b3676ea593b4d6 5,14,17,96,106,108,126
+  s_7aa13d4c94b804::t_99dae307e4bd13 80
+test/app/bot-config-store.test.ts
+  s_7aa13d4c94b804::t_7c7da0893e9422 69
+  s_7aa13d4c94b804::t_edb57d56c79d35 2,109-110,146-150
+  s_7aa13d4c94b804::t_84c25f0f218f5f 40,88,129
+test/app/handoff-coordinator.test.ts
+  s_7aa13d4c94b804::t_84c25f0f218f5f 16,41,64,87,129,167,177,186-187,190
+test/app/lark-event-server.test.ts
+  s_7aa13d4c94b804::t_5e715a8525374d 150-151
+  s_7aa13d4c94b804::t_e41e72f7b2a7e7 135,143,194
+  s_7aa13d4c94b804::t_80452844138737 16-17,64
+docs/plans/2026-07-28-002-feat-bot-to-bot-collaboration-plan.md
+  s_7aa13d4c94b804::t_68a5d614edab8f 270
+  s_7aa13d4c94b804::t_bb588b752faf56 82,151,155,193
+  s_7aa13d4c94b804::t_b0588ff0e4ee2a 265
+  s_7aa13d4c94b804::t_b80e999fd335b4 266
+  s_7aa13d4c94b804::t_c2a6388eecb64d 308,388
+config.example.toml
+  s_7aa13d4c94b804::t_1d2310b35d1ad2 2
+src/app/binding-store.ts
+  s_7aa13d4c94b804::t_405b56fb3d9ccd 244-248,250-251,253-275,503-504
+  s_7aa13d4c94b804::t_8b2ada1fcd7e45 125,482-483
+  s_7aa13d4c94b804::t_f94f1040f2886b 120,169,462-465,478,588
+  s_7aa13d4c94b804::t_e8e21c8abf06d2 16,18,50-51,118-119,121-123,135,137,144-149,167-168,170-172,198,200,220,222,249,252
+  s_7aa13d4c94b804::t_b31b8ad3284106 486-490
+  s_7aa13d4c94b804::t_8b278c5128a83b 34,532
+  s_7aa13d4c94b804::t_4a114913450a5f 359,386,430,534
+  s_7aa13d4c94b804::t_29c25f3ef09a26 484-485
+  s_7aa13d4c94b804::t_3682c39a51a9d6 505-506
+src/app/cli.ts
+  s_7aa13d4c94b804::t_ac7bc5be3018fd 555,559
+  s_7aa13d4c94b804::t_4ef4d304fa5681 551
+docs/plans/2026-07-28-002-feat-bot-to-bot-collaboration-plan.zh-CN.md
+  s_7aa13d4c94b804::t_bb588b752faf56 82,151,155,193
+  s_7aa13d4c94b804::t_ce3e9c8d4c5c54 265
+  s_7aa13d4c94b804::t_68a5d614edab8f 270
+  s_7aa13d4c94b804::t_c2a6388eecb64d 308,388
+  s_7aa13d4c94b804::t_7517036d43b16e 266
+src/app/bot-config-store.ts
+  s_7aa13d4c94b804::t_c09c78d53c2f25 119,125,128,134,239,253,275,425,428,431,460
+  s_7aa13d4c94b804::t_5cc93efbc09e59 16,22,99-101
+  s_7aa13d4c94b804::t_2a44139e8efa88 29,32,73,152,186,427,463,662,719,721
+test/app/binding-store.test.ts
+  s_7aa13d4c94b804::t_63ea0e90da957f 82-86,88-89,222,242-245
+  s_7aa13d4c94b804::t_75e08bfc3eedc2 123-128,130-135,137-143,145-152,156-165
+  s_7aa13d4c94b804::t_84c25f0f218f5f 62,69,76-77,91-92,105,117,129,136,144,153-155,166-168,180,193,208,227,234
+  s_7aa13d4c94b804::t_704d4f471dbf33 118-122
+docs/user-manual.zh-CN.md
+  s_7aa13d4c94b804::t_ad6b16d3e536dc 21,23,78,81,91
+  s_7aa13d4c94b804::t_2a0d5f92c4e1f5 95
+  s_7aa13d4c94b804::t_d5499839f3b225 101
+  s_7aa13d4c94b804::t_be4f4e511d287c 338,359-372,392,415,542,566
+  s_7aa13d4c94b804::t_367923a7c082a4 379,413
+  s_7aa13d4c94b804::t_c1e08568816ef9 387
+  s_7aa13d4c94b804::t_ea579faf76ab70 567
+src/app/collaboration/collaboration-context.ts
+  s_7aa13d4c94b804::t_80452844138737 47,66
+test/app/collaboration-context.test.ts
+  s_7aa13d4c94b804::t_84c25f0f218f5f 38,54,64,74,83-85
+docs/plans/2026-07-28-003-feat-channel-neutral-message-renderer-plan.zh-CN.md
+  s_7aa13d4c94b804::t_815b95bfe6bc62 47,56-57,67
+  s_7aa13d4c94b804::t_bb588b752faf56 80,117
+src/app/config-file.ts
+  s_7aa13d4c94b804::t_b7508648df5722 87
+  s_7aa13d4c94b804::t_e2279036545ce7 244
+src/app/domain.ts
+  s_7aa13d4c94b804::t_80452844138737 74
+test/app/conversation-binding-service-v3.test.ts
+  s_7aa13d4c94b804::t_5fff64f4693470 657,712
+  s_7aa13d4c94b804::t_84c25f0f218f5f 562,569,591,604,622,652,656,667
+docs/plans/2026-07-27-001-feat-multi-lark-bot-bridge-plan.md
+  s_7aa13d4c94b804::t_08fefbbe4092fe 28,331
+  s_7aa13d4c94b804::t_75ddd95bbf9c58 176,265,333-334,605,614
+  s_7aa13d4c94b804::t_c2a6388eecb64d 392,450
+  s_7aa13d4c94b804::t_e32b0c8e3ad7a1 69-70,125,127,130,134,138,155-156,168-170,173,175,177
+  s_7aa13d4c94b804::t_c0d315c32cb342 126,145,153,157,166,182-190,200-201,204,211,332,346-351,416,418-420,428-430,436,621-624,663
+  s_7aa13d4c94b804::t_24ccdb35cf9297 42
+  s_7aa13d4c94b804::t_cb10e7c111e677 20
+  s_7aa13d4c94b804::t_2529b3353bbebc 16,18,164,172,174,195,223,229,277,297,301,336,443,475-477,563,582,659
+  s_7aa13d4c94b804::t_68a5d614edab8f 19
+  s_7aa13d4c94b804::t_5e8e28a960e667 26,30
+  s_7aa13d4c94b804::t_ffe89949b35af7 29,31,34-41,43-44
+  s_7aa13d4c94b804::t_9dc3988c68af1f 45
+  s_7aa13d4c94b804::t_50ee90dd761c21 171
+test/app/group-bot-discovery.test.ts
+  s_7aa13d4c94b804::t_84c25f0f218f5f 45,90
+test/app/group-access-policy.test.ts
+  s_7aa13d4c94b804::t_84c25f0f218f5f 89,103
+src/app/main.ts
+  s_7aa13d4c94b804::t_afda5345756468 16,562-567,619-621
+  s_7aa13d4c94b804::t_ce90adedb539c7 774-808,866,875
+docs/plans/2026-07-28-004-feat-channel-adapter-abstraction-plan.md
+  s_7aa13d4c94b804::t_080491be115508 33,118,138-139
+test/app/lark-image-input.test.ts
+  s_7aa13d4c94b804::t_80452844138737 128,134
+  s_7aa13d4c94b804::t_5e715a8525374d 299,302,333,352
+test/app/handoff-chain-store.test.ts
+  s_7aa13d4c94b804::t_84c25f0f218f5f 12-13,18,28-29,33,43,45,52,55,65,68
+test/app/config-reset.test.ts
+  s_7aa13d4c94b804::t_0384d1b43a1651 55-58,98
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.19",
+  "base_commit_sha": "2c9cb0cfa4abf86b953d492eb29edaaf704181d0",
+  "prompts": {},
+  "sessions": {
+    "s_7aa13d4c94b804": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fa36d-4ecc-7211-aef0-9010548d16a1",
+        "model": "gpt-5.5"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    }
+  }
+}
