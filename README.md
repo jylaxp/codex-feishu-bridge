@@ -79,7 +79,7 @@ npm install -g ./codex-feishu-bridge-2.1.0.tgz
 
 默认配置为 `~/.codex-feishu-bridge/config.json`。`BRIDGE_CONFIG_HOME` 可改为当前机器的绝对路径；显式进程环境优先于 `config.json`。旧版本 `.env` 只作为一次性自动迁移来源：如果 `config.json` 不存在但 `.env` 存在，Bridge 会先从 `.env` 生成 `config.json`，随后删除旧 `.env`；一旦 `config.json` 存在，`.env` 就不再参与运行。
 
-新用户可以直接运行前台或后台启动命令。若 Bridge 检测到飞书应用凭证为空或仍是占位值，会自动进入扫码注册流程：
+新用户可以直接运行前台或后台启动命令。若 Bridge 检测到还没有任何飞书机器人配置，会自动进入扫码注册流程：
 
 ```bash
 codex-feishu-bridge run
@@ -93,17 +93,17 @@ codex-feishu-bridge start
 codex-feishu-bridge setup
 ```
 
-终端会显示飞书授权链接和二维码。用飞书扫码确认后，Bridge 自动创建自建应用、取得飞书 `appId` 和 `appSecret`，并写入 `~/.codex-feishu-bridge/config.json`。
+终端会显示飞书授权链接和二维码。用飞书扫码确认后，Bridge 自动创建自建应用、取得飞书 `appId` 和 `appSecret`，并写入 `~/.codex-feishu-bridge/lark-bots.json`。`config.json` 只保存 Bridge 进程级配置，不保存飞书机器人凭证。
 
-`lark.tenantKey`、`lark.allowedChats`、`lark.authorizedUsers`、`lark.allowedApprovers` 默认都可以为空。机器人收到第一条单聊消息时，会自动把该租户、当前单聊和发送者保存为 owner/审批人，不需要用户先查询 Open ID，也不需要额外发送绑定指令。为了避免误开放，首次群聊消息不会自动认领。
+机器人记录里的 `tenantKey`、`allowedChats`、`authorizedUsers`、`allowedApprovers` 默认都可以为空。机器人收到第一条单聊消息时，会自动把该租户、当前单聊和发送者保存为 owner/审批人，不需要用户先查询 Open ID，也不需要额外发送绑定指令。为了避免误开放，首次群聊消息不会自动认领。
 
-如果使用已有飞书机器人，可以先生成手工配置骨架：
+如果使用已有飞书机器人，可以导入已有应用凭证：
 
 ```bash
-codex-feishu-bridge init
+codex-feishu-bridge bot import --app-id cli_xxx --app-secret SECRET
 ```
 
-然后编辑 `~/.codex-feishu-bridge/config.json`，填写已有机器人的 `lark.appId` 和 `lark.appSecret`。
+导入后凭证同样写入 `lark-bots.json`。可以用 `codex-feishu-bridge init` 生成 `config.json` 的进程级配置骨架，但不要把飞书凭证写入 `config.json`。
 
 升级旧安装时，通常无需手工迁移：启动、`doctor`、`status` 或 `config migrate` 发现 `config.json` 不存在时，会先从旧 `.env` 自动生成 `config.json`。如果要立即物化旧单机器人为 `lark-bots.json` 并升级已有绑定，可以执行：
 
@@ -124,17 +124,6 @@ codex-feishu-bridge setup --rebind
 ```json
 {
   "schemaVersion": 1,
-  "lark": {
-    "appId": "cli_0123456789abcdef",
-    "appSecret": "replace_me",
-    "tenantKey": "",
-    "allowedChats": [],
-    "authorizedUsers": [],
-    "allowedApprovers": [],
-    "allowGroupUserMentions": true,
-    "allowExternalGroupUserMentions": true,
-    "allowGroupBotMentions": true
-  },
   "approval": { "summaryMode": false },
   "appServer": { "mode": "owned_stdio", "socketPath": null },
   "codex": {
@@ -307,7 +296,7 @@ codex-feishu-bridge config reset --confirm --destructive
 
 飞书消息必须先显式绑定既有会话。普通任务通过 Desktop follower IPC 进入这个精确 thread：新 root 走 start，同 root 运行期间的补充消息走 steer，不同 root 排队。`@技能名称` 文本会原样保留并进入 Desktop runtime；当前 Desktop follower 协议没有独立的结构化 skill 字段，Bridge 不会猜测或重写技能内容。
 
-会话可见性由 `lark.allowedChats` 决定。首次安装时这些飞书内部 ID 都可以为空：第一个私聊机器人的用户会自动成为 owner，并绑定当前单聊。绑定后卡片会作为发起消息的 reply，始终留在原会话/原话题，而不是临时会话。群聊需要先由 owner 在群里 `@机器人 /bind` 绑定会话；绑定后普通群成员显式 `@` 当前机器人即可发起普通任务。外部群成员默认允许发起普通任务，Bridge 不校验其 sender tenant 或 `lark.allowedChats`；需要关闭时由 owner 在对应群里发送 `@机器人 /external off`，恢复时发送 `@机器人 /external on`。
+会话可见性由机器人记录里的 `allowedChats` 决定。首次安装时这些飞书内部 ID 都可以为空：第一个私聊机器人的用户会自动成为 owner，并绑定当前单聊。绑定后卡片会作为发起消息的 reply，始终留在原会话/原话题，而不是临时会话。群聊需要先由 owner 在群里 `@机器人 /bind` 绑定会话；绑定后普通群成员显式 `@` 当前机器人即可发起普通任务。外部群成员默认允许发起普通任务，Bridge 不校验其 sender tenant 或 `allowedChats`；需要关闭时由 owner 在对应群里发送 `@机器人 /external off`，恢复时发送 `@机器人 /external on`。
 
 多个机器人在同一群协作时，不要求这些机器人由同一个 owner 管理，也不要求由同一个群成员邀请进群；飞书群内的普通成员可以按群权限邀请一个或多个机器人。Bridge 不把“谁拉进群”作为授权条件，每个机器人仍由它自己的 owner/admin 管理，并且每个机器人都必须先在该群绑定会话，确认机器人 @ 响应开关为 on。MVP 默认开放：
 人可以 @ 机器人，机器人可以 @ 机器人，机器人也可以 @ 人；Bridge 不校验 tenant_key、成员白名单、bot sender

@@ -5,6 +5,7 @@ import * as Lark from '@larksuiteoapi/node-sdk';
 import { BindingStore, type ChatThreadBinding } from './binding-store';
 import {
   BotConfigStore,
+  hasLegacyLarkBotConfig,
   type LarkBotConfig,
   hydrateBotIdentity,
   materializeDefaultBot,
@@ -175,6 +176,9 @@ async function migrateDefaultBot(
   baseConfig: ReturnType<typeof parseEnvironment>,
   configHome: string,
 ): Promise<BotCommandPartialReport> {
+  if (!hasLegacyLarkBotConfig(baseConfig)) {
+    return report('migrate-default', store, false, '未发现旧机器人配置；当前机器人配置已在 lark-bots.json 中维护');
+  }
   const existing = store.findByAppId(baseConfig.larkAppId);
   const identity = await hydrateBotIdentity(baseConfig.larkAppId, baseConfig.larkAppSecret);
   const materialized = materializeDefaultBot(baseConfig, identity);

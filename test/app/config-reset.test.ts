@@ -24,7 +24,7 @@ test('config reset classifies a malformed protocol catalog as reset required', (
   try {
     writeFileSync(
       join(configHome, '.env'),
-      'LARK_APP_ID=cli_0123456789abcdef\nBRIDGE_CONFIG_VERSION=2\n',
+      'LARK_APP_ID=cli_1111111111111111\nLARK_APP_SECRET=secret\nBRIDGE_CONFIG_VERSION=2\n',
       { mode: 0o600 },
     );
     writeFileSync(
@@ -51,7 +51,8 @@ test('config reset classifies a malformed protocol catalog as reset required', (
     assert.equal(reset.action, 'already_current');
     assert.equal(existsSync(join(configHome, 'protocol-versions.json')), false);
     assert.equal(existsSync(join(configHome, '.env')), false);
-    assert.match(readFileSync(join(configHome, 'config.json'), 'utf8'), /cli_0123456789abcdef/);
+    assert.doesNotMatch(readFileSync(join(configHome, 'config.json'), 'utf8'), /cli_1111111111111111/);
+    assert.match(readFileSync(join(configHome, 'lark-bots.json'), 'utf8'), /cli_1111111111111111/);
   } finally {
     rmSync(configHome, { recursive: true, force: true });
   }

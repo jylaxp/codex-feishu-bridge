@@ -75,53 +75,20 @@ cfb setup
 扫码后 Bridge 会把飞书应用凭证写入：
 
 ```text
-~/.codex-feishu-bridge/config.json
+~/.codex-feishu-bridge/lark-bots.json
 ```
+
+`config.json` 只保存 Bridge 进程级配置，不保存飞书机器人凭证。
 
 ### 4.2 使用已有机器人
 
-生成配置骨架：
+导入已有应用凭证：
 
 ```bash
-cfb init
+cfb bot import --app-id cli_xxx --app-secret SECRET
 ```
 
-编辑：
-
-```text
-~/.codex-feishu-bridge/config.json
-```
-
-至少填写：
-
-```json
-{
-  "schemaVersion": 1,
-  "lark": {
-    "appId": "cli_xxx",
-    "appSecret": "replace_me",
-    "tenantKey": "",
-    "allowedChats": [],
-    "authorizedUsers": [],
-    "allowedApprovers": [],
-    "allowGroupUserMentions": true,
-    "allowExternalGroupUserMentions": true,
-    "allowGroupBotMentions": true
-  },
-  "approval": { "summaryMode": false },
-  "appServer": { "mode": "owned_stdio", "socketPath": null },
-  "codex": {
-    "bin": "/absolute/path/to/codex",
-    "cwd": "/absolute/path/to/default/directory",
-    "allowedShellCommands": ["ls", "pwd", "git", "find", "cd"]
-  },
-  "card": { "maxTextLength": 10000, "updateIntervalMs": 1500 },
-  "queue": { "maxQueuedTasks": 100 },
-  "usage": { "rateLimitQueryIntervalMs": 300000 },
-  "logging": { "toFile": false, "filePath": "bridge.log" },
-  "files": { "enableAutoFileUpload": false }
-}
-```
+凭证会写入 `~/.codex-feishu-bridge/lark-bots.json`。`cfb init` 只用于生成 `config.json` 进程级配置骨架；不要把飞书 `appId`、`appSecret` 手工写入 `config.json`。
 
 ### 4.3 迁移已有单聊机器人
 
@@ -360,13 +327,11 @@ MVP 目标很简单：
 - Bridge 侧不增加复杂权限模型。
 - 唯一响应控制是目标机器人是否存在、启用、已绑定当前群，并且群机器人 @ 响应开关为 on。
 
-全局默认：
+机器人记录默认：
 
 ```json
 {
-  "lark": {
-    "allowGroupBotMentions": true
-  }
+  "allowGroupBotMentions": true
 }
 ```
 

@@ -7,6 +7,7 @@ import {
   BotConfigStore,
   botConfigToBridgeConfig,
   DEFAULT_BOT_KEY,
+  hasLegacyLarkBotConfig,
   materializeDefaultBot,
   type LarkBotConfig,
 } from './bot-config-store';
@@ -160,13 +161,13 @@ export async function startBridge(
   let protocolAdapter: ReturnType<typeof adapterForAppServerProfile>;
   try {
     botStore.load(config);
-    const materializeDefault = !botStore.hasMaterializedFile();
+    const materializeDefault = !botStore.hasMaterializedFile() && hasLegacyLarkBotConfig(config);
     if (materializeDefault) {
       botStore.save(materializeDefaultBot(config));
     }
     bindings.load({
       legacyBotKeyMap: botStore.identifierAliases(),
-      legacyDefaultBotIdentifier: config.larkAppId,
+      legacyDefaultBotIdentifier: config.larkAppId || undefined,
     });
     if (materializeDefault) {
       materializeDefaultBotScope(botStore, bindings.list(), config);
@@ -1332,6 +1333,9 @@ function materializeDefaultBotScope(
   bindings: readonly ChatThreadBinding[],
   baseConfig: BridgeConfig,
 ): void {
+  if (!baseConfig.larkAppId) {
+    return;
+  }
   const bot = botStore.get(baseConfig.larkAppId);
   if (!bot) {
     return;
@@ -1361,7 +1365,7 @@ function persistBotScope(
     authorizedUsers: splitScopeList(scope.authorizedUsers ?? ''),
     allowedApprovers: splitScopeList(scope.allowedApprovers ?? ''),
   });
-  Object.assign(baseConfig, resolvedBotId === baseConfig.larkAppId ? {
+  Object.assign(baseConfig, baseConfig.larkAppId && resolvedBotId === baseConfig.larkAppId ? {
     larkTenantKey: next.tenantKey,
     allowedChats: next.allowedChats,
     authorizedUsers: next.authorizedUsers,

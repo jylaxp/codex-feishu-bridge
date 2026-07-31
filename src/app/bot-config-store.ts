@@ -112,7 +112,9 @@ export class BotConfigStore {
     this.aliases.clear();
     this.materialized = existsSync(this.botsPath);
     if (!this.materialized) {
-      this.addLoadedBot(synthesizeDefaultBot(baseConfig, this.now()));
+      if (hasLegacyLarkBotConfig(baseConfig)) {
+        this.addLoadedBot(synthesizeDefaultBot(baseConfig, this.now()));
+      }
       return;
     }
     const stat = lstatSync(this.botsPath);
@@ -373,6 +375,41 @@ export function materializeDefaultBot(baseConfig: BridgeConfig, identity: BotIde
   });
 }
 
+export function hasLegacyLarkBotConfig(baseConfig: BridgeConfig): boolean {
+  return isAppId(baseConfig.larkAppId) && baseConfig.larkAppSecret.trim().length > 0;
+}
+
+export function materializeLegacyBotFromEnvironment(
+  configHome: string,
+  env: NodeJS.ProcessEnv,
+): boolean {
+  const legacy = legacyBotInputFromEnvironment(env);
+  if (!legacy) {
+    return false;
+  }
+  const store = new BotConfigStore(configHome);
+  if (existsSync(store.filePath)) {
+    store.load(legacyBridgeConfigFromEnvironment(env, legacy));
+  }
+  const existing = store.findByAppId(legacy.appId);
+  store.save({
+    ...legacy,
+    enabled: existing?.enabled ?? true,
+    tenantKey: existing?.tenantKey || legacy.tenantKey,
+    allowedChats: mergeUniqueStrings(existing?.allowedChats ?? [], legacy.allowedChats),
+    authorizedUsers: mergeUniqueStrings(existing?.authorizedUsers ?? [], legacy.authorizedUsers),
+    allowedApprovers: mergeUniqueStrings(existing?.allowedApprovers ?? [], legacy.allowedApprovers),
+    botOpenId: existing?.botOpenId,
+    displayName: existing?.displayName,
+    avatarUrl: existing?.avatarUrl,
+    activateStatus: existing?.activateStatus,
+    roleProfile: existing?.roleProfile,
+    source: existing?.source ?? 'legacy-env',
+    legacyBotKey: existing?.legacyBotKey ?? DEFAULT_BOT_KEY,
+  });
+  return true;
+}
+
 /**
  * Deprecated compatibility helper. New robot records are identified directly
  * by their Feishu appId.
@@ -528,6 +565,100 @@ function normalizeBotInput(
     source: input.source,
     ...(legacyBotKey ? { legacyBotKey } : {}),
   });
+}
+
+function legacyBotInputFromEnvironment(
+  env: NodeJS.ProcessEnv,
+): Omit<LarkBotConfig, 'createdAtMs' | 'updatedAtMs'> | undefined {
+  const appId = env.LARK_APP_ID?.trim() ?? '';
+  const appSecret = env.LARK_APP_SECRET?.trim() ?? '';
+  if (isPlaceholder(appId) || isPlaceholder(appSecret)) {
+    return undefined;
+  }
+  return normalizeBotInput({
+    botKey: requiredAppId(appId),
+    appId,
+    appSecret,
+    enabled: true,
+    tenantKey: optionalText(env.LARK_TENANT_KEY, 'tenantKey') ?? '',
+    allowedChats: envStringList(env.ALLOWED_CHATS),
+    authorizedUsers: envStringList(env.AUTHORIZED_USERS),
+    allowedApprovers: envStringList(env.ALLOWED_APPROVERS),
+    allowGroupUserMentions: envBoolean(env.ALLOW_GROUP_USER_MENTIONS, true),
+    allowExternalGroupUserMentions: envBoolean(env.ALLOW_EXTERNAL_GROUP_USER_MENTIONS, true),
+    allowGroupBotMentions: envBoolean(env.ALLOW_GROUP_BOT_MENTIONS, true),
+    source: 'legacy-env',
+    legacyBotKey: DEFAULT_BOT_KEY,
+  });
+}
+
+function legacyBridgeConfigFromEnvironment(
+  env: NodeJS.ProcessEnv,
+  legacy: Omit<LarkBotConfig, 'createdAtMs' | 'updatedAtMs'>,
+): BridgeConfig {
+  return Object.freeze({
+    botKey: legacy.botKey,
+    larkAppId: legacy.appId,
+    larkAppSecret: legacy.appSecret,
+    larkTenantKey: legacy.tenantKey,
+    allowedChats: legacy.allowedChats,
+    authorizedUsers: legacy.authorizedUsers,
+    allowedApprovers: legacy.allowedApprovers,
+    allowGroupUserMentions: legacy.allowGroupUserMentions,
+    allowExternalGroupUserMentions: legacy.allowExternalGroupUserMentions,
+    allowGroupBotMentions: legacy.allowGroupBotMentions,
+    approvalCardMode: env.APPROVAL_SUMMARY_MODE === '1' ? 'summary' : 'individual',
+    allowedShellCommands: [],
+    appServerMode: 'owned_stdio',
+    appServerSocketPath: null,
+    codexBin: env.CODEX_BIN?.trim() || '/absolute/path/to/codex',
+    codexCwd: env.CODEX_CWD?.trim() || '/',
+    maxTextLength: 10_000,
+    cardUpdateIntervalMs: 1_500,
+    maxQueuedTasks: 100,
+    rateLimitQueryIntervalMs: 300_000,
+    logToFile: false,
+    logFilePath: null,
+    enableAutoFileUpload: false,
+  });
+}
+
+function mergeUniqueStrings(
+  left: readonly string[],
+  right: readonly string[],
+): readonly string[] {
+  return Object.freeze(uniqueStrings([...left, ...right]));
+}
+
+function envStringList(value: string | undefined): readonly string[] {
+  const raw = value?.trim();
+  if (!raw) {
+    return Object.freeze([]);
+  }
+  return Object.freeze(uniqueStrings(raw.split(',')));
+}
+
+function envBoolean(value: string | undefined, fallback: boolean): boolean {
+  const normalized = value?.trim();
+  if (!normalized) {
+    return fallback;
+  }
+  if (normalized === 'true') {
+    return true;
+  }
+  if (normalized === 'false') {
+    return false;
+  }
+  throw new BotConfigStoreError('legacy bot boolean values must be true or false');
+}
+
+function isPlaceholder(value: string): boolean {
+  const normalized = value.trim();
+  return !normalized
+    || normalized === 'cli_0123456789abcdef'
+    || /^YOUR_/i.test(normalized)
+    || normalized.toLowerCase() === 'replace_me'
+    || normalized.toLowerCase().endsWith('_xxx');
 }
 
 function parseRoleProfile(value: unknown): LarkBotRoleProfile | undefined {

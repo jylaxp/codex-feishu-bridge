@@ -12,6 +12,7 @@ import { basename, dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 import { BindingStore } from './binding-store';
+import { materializeLegacyBotFromEnvironment } from './bot-config-store';
 import {
   PROTOCOL_VERSION_CONFIG_LOCK_FILE_NAME,
   ProtocolVersionConfigStore,
@@ -226,11 +227,15 @@ function isCurrentStructure(configHome: string, entries: readonly string[]): boo
 function migrateConfigIfPresent(oldHome: string, staging: string): void {
   const oldPaths = bridgeConfigPaths(oldHome);
   if (existsSync(oldPaths.configPath)) {
-    writeBridgeConfigFile(staging, readConfigFileEnvironment(oldPaths));
+    const env = readConfigFileEnvironment(oldPaths);
+    materializeLegacyBotFromEnvironment(staging, env);
+    writeBridgeConfigFile(staging, env);
     return;
   }
   if (existsSync(oldPaths.legacyEnvPath)) {
-    writeBridgeConfigFile(staging, readLegacyEnvironmentFile(oldPaths));
+    const env = readLegacyEnvironmentFile(oldPaths);
+    materializeLegacyBotFromEnvironment(staging, env);
+    writeBridgeConfigFile(staging, env);
     return;
   }
   writeBridgeConfigFile(staging, {});

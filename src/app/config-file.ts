@@ -14,6 +14,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 
+import { materializeLegacyBotFromEnvironment } from './bot-config-store';
 import { ConfigurationError, resolveConfigHome } from './config';
 
 export const CONFIG_FILE_NAME = 'config.json';
@@ -33,17 +34,6 @@ export interface BridgeConfigPaths {
 
 export interface BridgeConfigDocument {
   readonly schemaVersion: number;
-  readonly lark: {
-    readonly appId: string;
-    readonly appSecret: string;
-    readonly tenantKey: string;
-    readonly allowedChats: readonly string[];
-    readonly authorizedUsers: readonly string[];
-    readonly allowedApprovers: readonly string[];
-    readonly allowGroupUserMentions: boolean;
-    readonly allowExternalGroupUserMentions: boolean;
-    readonly allowGroupBotMentions: boolean;
-  };
   readonly approval: {
     readonly summaryMode: boolean;
   };
@@ -75,6 +65,22 @@ export interface BridgeConfigDocument {
   };
 }
 
+interface LegacyLarkConfigDocument {
+  readonly appId: string;
+  readonly appSecret: string;
+  readonly tenantKey: string;
+  readonly allowedChats: readonly string[];
+  readonly authorizedUsers: readonly string[];
+  readonly allowedApprovers: readonly string[];
+  readonly allowGroupUserMentions: boolean;
+  readonly allowExternalGroupUserMentions: boolean;
+  readonly allowGroupBotMentions: boolean;
+}
+
+type ParsedBridgeConfigDocument = BridgeConfigDocument & {
+  readonly legacyLark?: LegacyLarkConfigDocument;
+};
+
 /**
  * Loads `config.json` as the only current config format. A legacy `.env` is
  * read exactly once when `config.json` is missing, then materialized to JSON.
@@ -103,6 +109,8 @@ export function configFileExists(configHome: string): boolean {
 export function readOrMigratePersistedEnvironment(paths: BridgeConfigPaths): NodeJS.ProcessEnv {
   if (existsSync(paths.configPath)) {
     const env = readConfigFileEnvironment(paths);
+    materializeLegacyBotFromEnvironment(paths.configHome, env);
+    writeBridgeConfigFile(paths.configHome, env);
     removeLegacyEnvironmentFile(paths);
     return env;
   }
@@ -110,6 +118,7 @@ export function readOrMigratePersistedEnvironment(paths: BridgeConfigPaths): Nod
     return {};
   }
   const legacyEnv = readLegacyEnvironmentFile(paths);
+  materializeLegacyBotFromEnvironment(paths.configHome, legacyEnv);
   writeBridgeConfigFile(paths.configHome, legacyEnv);
   removeLegacyEnvironmentFile(paths);
   return legacyEnv;
@@ -193,17 +202,6 @@ export function parseEnvironmentSource(source: string, sourceName: string): Node
 export function environmentToConfigDocument(env: NodeJS.ProcessEnv): BridgeConfigDocument {
   return Object.freeze({
     schemaVersion: CONFIG_SCHEMA_VERSION,
-    lark: Object.freeze({
-      appId: stringValue(env.LARK_APP_ID, 'cli_0123456789abcdef'),
-      appSecret: stringValue(env.LARK_APP_SECRET, 'replace_me'),
-      tenantKey: stringValue(env.LARK_TENANT_KEY),
-      allowedChats: listValue(env.ALLOWED_CHATS),
-      authorizedUsers: listValue(env.AUTHORIZED_USERS),
-      allowedApprovers: listValue(env.ALLOWED_APPROVERS),
-      allowGroupUserMentions: booleanEnvValue(env.ALLOW_GROUP_USER_MENTIONS, true),
-      allowExternalGroupUserMentions: booleanEnvValue(env.ALLOW_EXTERNAL_GROUP_USER_MENTIONS, true),
-      allowGroupBotMentions: booleanEnvValue(env.ALLOW_GROUP_BOT_MENTIONS, true),
-    }),
     approval: Object.freeze({
       summaryMode: stringValue(env.APPROVAL_SUMMARY_MODE, '0') === '1',
     }),
@@ -236,7 +234,7 @@ export function environmentToConfigDocument(env: NodeJS.ProcessEnv): BridgeConfi
   });
 }
 
-function readConfigDocument(configPath: string): BridgeConfigDocument {
+function readConfigDocument(configPath: string): ParsedBridgeConfigDocument {
   const stat = lstatSync(configPath);
   if (stat.size > MAX_CONFIG_FILE_BYTES) {
     throw new ConfigurationError('config.json exceeds the maximum allowed size');
@@ -250,12 +248,11 @@ function readConfigDocument(configPath: string): BridgeConfigDocument {
   return parseConfigDocument(document);
 }
 
-function parseConfigDocument(value: unknown): BridgeConfigDocument {
+function parseConfigDocument(value: unknown): ParsedBridgeConfigDocument {
   const document = recordValue(value, 'config.json');
   if (document.schemaVersion !== CONFIG_SCHEMA_VERSION) {
     throw new ConfigurationError('config.json schema version is unsupported');
   }
-  const lark = recordValue(document.lark, 'config.json.lark');
   const approval = recordValue(document.approval, 'config.json.approval');
   const appServer = recordValue(document.appServer, 'config.json.appServer');
   const codex = recordValue(document.codex, 'config.json.codex');
@@ -264,22 +261,11 @@ function parseConfigDocument(value: unknown): BridgeConfigDocument {
   const usage = recordValue(document.usage, 'config.json.usage');
   const logging = recordValue(document.logging, 'config.json.logging');
   const files = recordValue(document.files, 'config.json.files');
+  const legacyLark = document.lark === undefined
+    ? undefined
+    : parseLegacyLarkConfig(recordValue(document.lark, 'config.json.lark'));
   return Object.freeze({
     schemaVersion: CONFIG_SCHEMA_VERSION,
-    lark: Object.freeze({
-      appId: requiredString(lark.appId, 'config.json.lark.appId'),
-      appSecret: requiredString(lark.appSecret, 'config.json.lark.appSecret'),
-      tenantKey: optionalJsonString(lark.tenantKey, 'config.json.lark.tenantKey') ?? '',
-      allowedChats: jsonStringArray(lark.allowedChats, 'config.json.lark.allowedChats'),
-      authorizedUsers: jsonStringArray(lark.authorizedUsers, 'config.json.lark.authorizedUsers'),
-      allowedApprovers: jsonStringArray(lark.allowedApprovers, 'config.json.lark.allowedApprovers'),
-      allowGroupUserMentions: jsonBoolean(lark.allowGroupUserMentions, 'config.json.lark.allowGroupUserMentions'),
-      allowExternalGroupUserMentions: jsonBoolean(
-        lark.allowExternalGroupUserMentions,
-        'config.json.lark.allowExternalGroupUserMentions',
-      ),
-      allowGroupBotMentions: jsonBoolean(lark.allowGroupBotMentions, 'config.json.lark.allowGroupBotMentions'),
-    }),
     approval: Object.freeze({
       summaryMode: jsonBoolean(approval.summaryMode, 'config.json.approval.summaryMode'),
     }),
@@ -312,20 +298,40 @@ function parseConfigDocument(value: unknown): BridgeConfigDocument {
     files: Object.freeze({
       enableAutoFileUpload: jsonBoolean(files.enableAutoFileUpload, 'config.json.files.enableAutoFileUpload'),
     }),
+    ...(legacyLark ? { legacyLark } : {}),
   });
 }
 
-function configDocumentToEnvironment(document: BridgeConfigDocument): NodeJS.ProcessEnv {
+function parseLegacyLarkConfig(lark: Record<string, unknown>): LegacyLarkConfigDocument {
+  return Object.freeze({
+    appId: requiredString(lark.appId, 'config.json.lark.appId'),
+    appSecret: requiredString(lark.appSecret, 'config.json.lark.appSecret'),
+    tenantKey: optionalJsonString(lark.tenantKey, 'config.json.lark.tenantKey') ?? '',
+    allowedChats: jsonStringArray(lark.allowedChats, 'config.json.lark.allowedChats'),
+    authorizedUsers: jsonStringArray(lark.authorizedUsers, 'config.json.lark.authorizedUsers'),
+    allowedApprovers: jsonStringArray(lark.allowedApprovers, 'config.json.lark.allowedApprovers'),
+    allowGroupUserMentions: jsonBoolean(lark.allowGroupUserMentions, 'config.json.lark.allowGroupUserMentions'),
+    allowExternalGroupUserMentions: jsonBoolean(
+      lark.allowExternalGroupUserMentions,
+      'config.json.lark.allowExternalGroupUserMentions',
+    ),
+    allowGroupBotMentions: jsonBoolean(lark.allowGroupBotMentions, 'config.json.lark.allowGroupBotMentions'),
+  });
+}
+
+function configDocumentToEnvironment(document: ParsedBridgeConfigDocument): NodeJS.ProcessEnv {
   return {
-    LARK_APP_ID: document.lark.appId,
-    LARK_APP_SECRET: document.lark.appSecret,
-    LARK_TENANT_KEY: document.lark.tenantKey,
-    ALLOWED_CHATS: document.lark.allowedChats.join(','),
-    AUTHORIZED_USERS: document.lark.authorizedUsers.join(','),
-    ALLOWED_APPROVERS: document.lark.allowedApprovers.join(','),
-    ALLOW_GROUP_USER_MENTIONS: `${document.lark.allowGroupUserMentions}`,
-    ALLOW_EXTERNAL_GROUP_USER_MENTIONS: `${document.lark.allowExternalGroupUserMentions}`,
-    ALLOW_GROUP_BOT_MENTIONS: `${document.lark.allowGroupBotMentions}`,
+    ...(document.legacyLark ? {
+      LARK_APP_ID: document.legacyLark.appId,
+      LARK_APP_SECRET: document.legacyLark.appSecret,
+      LARK_TENANT_KEY: document.legacyLark.tenantKey,
+      ALLOWED_CHATS: document.legacyLark.allowedChats.join(','),
+      AUTHORIZED_USERS: document.legacyLark.authorizedUsers.join(','),
+      ALLOWED_APPROVERS: document.legacyLark.allowedApprovers.join(','),
+      ALLOW_GROUP_USER_MENTIONS: `${document.legacyLark.allowGroupUserMentions}`,
+      ALLOW_EXTERNAL_GROUP_USER_MENTIONS: `${document.legacyLark.allowExternalGroupUserMentions}`,
+      ALLOW_GROUP_BOT_MENTIONS: `${document.legacyLark.allowGroupBotMentions}`,
+    } : {}),
     APPROVAL_SUMMARY_MODE: document.approval.summaryMode ? '1' : '0',
     APP_SERVER_MODE: document.appServer.mode,
     ...(document.appServer.socketPath ? { APP_SERVER_SOCKET_PATH: document.appServer.socketPath } : {}),

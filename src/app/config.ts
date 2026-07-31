@@ -67,8 +67,11 @@ export function resolveConfigHome(env: NodeJS.ProcessEnv, homeDirectory = os.hom
   return path.join(homeDirectory, '.codex-feishu-bridge');
 }
 
-function requireLarkAppId(env: NodeJS.ProcessEnv): string {
-  const appId = requireValue(env, 'LARK_APP_ID');
+function optionalLarkAppId(env: NodeJS.ProcessEnv): string {
+  const appId = optionalValue(env, 'LARK_APP_ID');
+  if (!appId) {
+    return '';
+  }
   if (!/^cli_[0-9a-fA-F]{16}$/.test(appId)) {
     throw new ConfigurationError('LARK_APP_ID must match cli_ followed by 16 hexadecimal characters');
   }
@@ -186,8 +189,8 @@ export function parseEnvironment(env: NodeJS.ProcessEnv): BridgeConfig {
     throw new ConfigurationError('CODEX_CWD must be an absolute path');
   }
   const config: BridgeConfig = {
-    larkAppId: requireLarkAppId(env),
-    larkAppSecret: requireValue(env, 'LARK_APP_SECRET'),
+    larkAppId: optionalLarkAppId(env),
+    larkAppSecret: optionalValue(env, 'LARK_APP_SECRET'),
     larkTenantKey: optionalValue(env, 'LARK_TENANT_KEY'),
     allowedChats: parseOptionalList(env, 'ALLOWED_CHATS'),
     authorizedUsers: parseOptionalList(env, 'AUTHORIZED_USERS'),

@@ -322,10 +322,10 @@ sequenceDiagram
 
 **Approach:**
 - Add a `LarkBotConfig` concept with `appId`, `appSecret`, tenant/chat/user/approver policy, and optional resolved bot open ID.
-- Migrate existing single-bot `.env` keys into `config.json`, then into one appId-scoped bot record.
+- Migrate existing single-bot `.env` keys directly into one appId-scoped bot record, while `config.json` receives only process-level settings.
 - Keep legacy `default`/generated `botKey` values only as upgrade aliases; do not persist them in new records.
 - Introduce `lark-bots.json` under config home as the named multi-bot credential source.
-- If `lark-bots.json` is absent, materialize the current `config.json` app credentials into one appId-scoped bot record.
+- If `lark-bots.json` is absent, materialize legacy `.env` or legacy `config.json.lark` credentials into one appId-scoped bot record, then remove the credentials from `config.json`.
 - Store QR-registered additional bots as appId-scoped entries instead of rewriting the current bot credentials.
 - Operators do not provide or remember generated bot keys; normal management uses `--app-id`.
 - Fetch and persist the robot display name from the Lark bot/app identity after credentials are available. Manual names are aliases only.
@@ -599,7 +599,7 @@ sequenceDiagram
 
 **Approach:**
 - Preserve single-bot `setup` behavior.
-- Preserve legacy single-bot runtime behavior through automatic `.env -> config.json` migration and appId-scoped binding materialization without re-scan or re-bind.
+- Preserve legacy single-bot runtime behavior through automatic `.env -> config.json + lark-bots.json` migration and appId-scoped binding materialization without re-scan or re-bind.
 - Add explicit documentation and CLI help for configuring additional bots through QR registration or existing app import.
 - Add `bot add`, `bot import`, `config migrate`, `bot rebind`, `bot disable`, `bot remove`, `bot list`, and `bot doctor` command design. Bot add/import/migration store appId-scoped records; commands targeting an existing bot use `--app-id`.
 - Implement identity hydration for `bot add`, `bot import`, and `config migrate` through `GET /open-apis/bot/v3/info`, persisting robot open ID, display name, avatar metadata, and activation status without logging secrets.
@@ -608,7 +608,7 @@ sequenceDiagram
 - Reset must preserve bot configuration while clearing only runtime/non-current files according to existing reset semantics.
 - Document group chat permissions: prefer `im:message.group_at_msg` / readonly equivalent; avoid sensitive all-group-message scope unless separately justified.
 - Document local-only removal semantics clearly: Bridge can remove local credentials/bindings, but does not guarantee deletion of the Feishu app or physical removal from Feishu groups unless a separately verified Feishu API flow is implemented.
-- Document upgrade compatibility: old `.env` Lark keys are imported once into `config.json`, v1 `bindings.json` loads as appId-scoped bindings, and persistent migration is automatic or explicit through `config migrate`.
+- Document upgrade compatibility: old `.env` Lark keys are imported once into `lark-bots.json`, v1 `bindings.json` loads as appId-scoped bindings, and persistent migration is automatic or explicit through `config migrate`.
 
 **Patterns to follow:**
 - Existing content-free runtime health and redacted logging.

@@ -5,15 +5,17 @@ import { existsSync, lstatSync, mkdirSync, writeFileSync } from 'node:fs';
 import { normalize } from 'node:path';
 
 import { BindingStore } from './binding-store';
-import { ConfigurationError, resolveConfigHome } from './config';
+import {
+  ConfigurationError,
+  parseEnvironment,
+  resolveConfigHome,
+} from './config';
+import { BotConfigStore } from './bot-config-store';
 import {
   bridgeConfigPaths,
   readOrMigratePersistedEnvironment,
   writeBridgeConfigFile,
 } from './config-file';
-
-const PLACEHOLDER_APP_ID = 'cli_0123456789abcdef';
-const PLACEHOLDER_SECRET = 'replace_me';
 
 type RegisterAppOptions = Parameters<typeof Lark.registerApp>[0];
 type RegisterAppResult = Awaited<ReturnType<typeof Lark.registerApp>>;
@@ -57,10 +59,13 @@ export function initializeSetupFiles(
   );
   writeBridgeConfigFile(configHome, configEnv);
   ensureBindingsFile(configHome);
+  const botStore = new BotConfigStore(configHome);
+  botStore.load(parseEnvironment(configEnv));
+  const firstBot = botStore.list()[0];
   return Object.freeze({
     configHome,
     configPath: paths.configPath,
-    appId: configEnv.LARK_APP_ID ?? '',
+    appId: firstBot?.appId ?? '',
     qrRegistered: false,
     missingRequiredValues: Object.freeze(requiredKeysWithPlaceholders(configEnv)),
   });
@@ -81,11 +86,15 @@ export async function runSetup(
   ensureConfigDirectory(configHome);
   const paths = bridgeConfigPaths(configHome);
   const configEnv = readConfigurationSeed(paths, baseEnv);
-  const currentAppId = configEnv.LARK_APP_ID ?? '';
-  const currentAppSecret = configEnv.LARK_APP_SECRET ?? '';
-  const shouldRegister = options.rebind === true
-    || isPlaceholder(currentAppId, PLACEHOLDER_APP_ID)
-    || isPlaceholder(currentAppSecret, PLACEHOLDER_SECRET);
+  const nextEnv = ensureDefaultEnvironment(configEnv, {
+    cwd: configHome,
+    codexBin: inferDefaultCodexBin(),
+  });
+  writeBridgeConfigFile(configHome, nextEnv);
+  const botStore = new BotConfigStore(configHome);
+  botStore.load(parseEnvironment(nextEnv));
+  const existingBot = botStore.list()[0];
+  const shouldRegister = options.rebind === true || !existingBot;
 
   if (shouldRegister) {
     const result = await registerFeishuApp({
@@ -93,21 +102,30 @@ export async function runSetup(
       registerApp: options.registerApp ?? Lark.registerApp,
       qrRenderer: options.qrRenderer ?? renderQrCode,
     });
-    configEnv.LARK_APP_ID = result.client_id.trim();
-    configEnv.LARK_APP_SECRET = result.client_secret.trim();
+    const appId = result.client_id.trim();
+    const appSecret = result.client_secret.trim();
+    botStore.save({
+      botKey: appId,
+      appId,
+      appSecret,
+      enabled: true,
+      tenantKey: '',
+      allowedChats: [],
+      authorizedUsers: [],
+      allowedApprovers: [],
+      allowGroupUserMentions: true,
+      allowExternalGroupUserMentions: true,
+      allowGroupBotMentions: true,
+      source: 'qr',
+    });
   }
-
-  const nextEnv = ensureDefaultEnvironment(configEnv, {
-    cwd: configHome,
-    codexBin: inferDefaultCodexBin(),
-  });
-  writeBridgeConfigFile(configHome, nextEnv);
   ensureBindingsFile(configHome);
 
   const missingRequiredValues = requiredKeysWithPlaceholders(nextEnv);
+  const currentBot = botStore.list()[0];
   output.write([
     '',
-    shouldRegister ? '✅ 飞书应用扫码绑定已完成。' : '✅ 飞书应用凭证已存在，跳过扫码绑定。',
+    shouldRegister ? '✅ 飞书机器人扫码绑定已完成。' : '✅ 飞书机器人配置已存在，跳过扫码绑定。',
     `配置文件: ${paths.configPath}`,
     missingRequiredValues.length > 0
       ? `仍需填写: ${missingRequiredValues.join(', ')}`
@@ -118,7 +136,7 @@ export async function runSetup(
   return Object.freeze({
     configHome,
     configPath: paths.configPath,
-    appId: nextEnv.LARK_APP_ID ?? '',
+    appId: currentBot?.appId ?? '',
     qrRegistered: shouldRegister,
     missingRequiredValues: Object.freeze(missingRequiredValues),
   });
@@ -147,15 +165,6 @@ function ensureDefaultEnvironment(
 ): NodeJS.ProcessEnv {
   const next = { ...env };
   const defaultValues: readonly [string, string][] = [
-    ['LARK_APP_ID', PLACEHOLDER_APP_ID],
-    ['LARK_APP_SECRET', PLACEHOLDER_SECRET],
-    ['LARK_TENANT_KEY', ''],
-    ['ALLOWED_CHATS', ''],
-    ['AUTHORIZED_USERS', ''],
-    ['ALLOWED_APPROVERS', ''],
-    ['ALLOW_GROUP_USER_MENTIONS', 'true'],
-    ['ALLOW_EXTERNAL_GROUP_USER_MENTIONS', 'true'],
-    ['ALLOW_GROUP_BOT_MENTIONS', 'true'],
     ['APPROVAL_SUMMARY_MODE', '0'],
     ['APP_SERVER_MODE', 'owned_stdio'],
     ['CODEX_BIN', defaults.codexBin],
@@ -179,15 +188,6 @@ function ensureDefaultEnvironment(
 
 function knownConfigKeys(): readonly string[] {
   return Object.freeze([
-    'LARK_APP_ID',
-    'LARK_APP_SECRET',
-    'LARK_TENANT_KEY',
-    'ALLOWED_CHATS',
-    'AUTHORIZED_USERS',
-    'ALLOWED_APPROVERS',
-    'ALLOW_GROUP_USER_MENTIONS',
-    'ALLOW_EXTERNAL_GROUP_USER_MENTIONS',
-    'ALLOW_GROUP_BOT_MENTIONS',
     'APPROVAL_SUMMARY_MODE',
     'APP_SERVER_MODE',
     'APP_SERVER_SOCKET_PATH',
@@ -253,8 +253,6 @@ function isPlaceholder(value: string, exactPlaceholder: string): boolean {
 
 function requiredKeysWithPlaceholders(env: NodeJS.ProcessEnv): readonly string[] {
   const required = [
-    ['LARK_APP_ID', PLACEHOLDER_APP_ID],
-    ['LARK_APP_SECRET', PLACEHOLDER_SECRET],
     ['CODEX_BIN', '/absolute/path/to/codex'],
   ] as const;
   return required

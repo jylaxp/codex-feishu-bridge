@@ -1,16 +1,5 @@
 {
   "schemaVersion": 1,
-  "lark": {
-    "appId": "cli_0123456789abcdef",
-    "appSecret": "replace_me",
-    "tenantKey": "",
-    "allowedChats": [],
-    "authorizedUsers": [],
-    "allowedApprovers": [],
-    "allowGroupUserMentions": true,
-    "allowExternalGroupUserMentions": true,
-    "allowGroupBotMentions": true
-  },
   "approval": {
     "summaryMode": false
   },

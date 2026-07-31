@@ -10,7 +10,7 @@ test('config loader migrates legacy .env to config.json when JSON config is miss
   const configHome = mkdtempSync(join(tmpdir(), 'bridge-config-json-migrate-'));
   try {
     writeFileSync(join(configHome, '.env'), [
-      'LARK_APP_ID=cli_0123456789abcdef',
+      'LARK_APP_ID=cli_1111111111111111',
       'LARK_APP_SECRET=secret',
       'LARK_TENANT_KEY=tenant',
       'ALLOWED_CHATS=chat-a,chat-b',
@@ -21,18 +21,29 @@ test('config loader migrates legacy .env to config.json when JSON config is miss
 
     const env = loadBridgeEnvironment({ BRIDGE_CONFIG_HOME: configHome });
 
-    assert.equal(env.LARK_APP_ID, 'cli_0123456789abcdef');
+    assert.equal(env.LARK_APP_ID, 'cli_1111111111111111');
     assert.equal(env.ALLOWED_CHATS, 'chat-a,chat-b');
     assert.equal(env.LOG_TO_FILE, 'true');
     assert.equal(existsSync(join(configHome, 'config.json')), true);
+    assert.equal(existsSync(join(configHome, 'lark-bots.json')), true);
     assert.equal(existsSync(join(configHome, '.env')), false);
 
     const document = JSON.parse(readFileSync(join(configHome, 'config.json'), 'utf8')) as {
-      readonly lark: { readonly allowedChats: readonly string[] };
+      readonly lark?: unknown;
       readonly logging: { readonly toFile: boolean };
     };
-    assert.deepEqual(document.lark.allowedChats, ['chat-a', 'chat-b']);
+    assert.equal(document.lark, undefined);
     assert.equal(document.logging.toFile, true);
+    const bots = JSON.parse(readFileSync(join(configHome, 'lark-bots.json'), 'utf8')) as {
+      readonly bots: readonly {
+        readonly appId: string;
+        readonly appSecret: string;
+        readonly allowedChats: readonly string[];
+      }[];
+    };
+    assert.equal(bots.bots[0]?.appId, 'cli_1111111111111111');
+    assert.equal(bots.bots[0]?.appSecret, 'secret');
+    assert.deepEqual(bots.bots[0]?.allowedChats, ['chat-a', 'chat-b']);
   } finally {
     rmSync(configHome, { recursive: true, force: true });
   }
@@ -42,7 +53,7 @@ test('config loader ignores legacy .env after config.json exists', () => {
   const configHome = mkdtempSync(join(tmpdir(), 'bridge-config-json-current-'));
   try {
     writeBridgeConfigFile(configHome, {
-      LARK_APP_ID: 'cli_0123456789abcdef',
+      LARK_APP_ID: 'cli_1111111111111111',
       LARK_APP_SECRET: 'secret-json',
       ALLOWED_CHATS: 'chat-json',
       CODEX_BIN: '/codex',
@@ -56,10 +67,69 @@ test('config loader ignores legacy .env after config.json exists', () => {
 
     const env = loadBridgeEnvironment({ BRIDGE_CONFIG_HOME: configHome });
 
-    assert.equal(env.LARK_APP_ID, 'cli_0123456789abcdef');
-    assert.equal(env.LARK_APP_SECRET, 'secret-json');
-    assert.equal(env.ALLOWED_CHATS, 'chat-json');
+    assert.equal(env.LARK_APP_ID, undefined);
+    assert.equal(env.LARK_APP_SECRET, undefined);
+    assert.equal(env.ALLOWED_CHATS, undefined);
     assert.equal(existsSync(join(configHome, '.env')), false);
+    const document = JSON.parse(readFileSync(join(configHome, 'config.json'), 'utf8')) as {
+      readonly lark?: unknown;
+    };
+    assert.equal(document.lark, undefined);
+  } finally {
+    rmSync(configHome, { recursive: true, force: true });
+  }
+});
+
+test('config loader moves legacy config lark credentials into lark-bots.json', () => {
+  const configHome = mkdtempSync(join(tmpdir(), 'bridge-config-json-legacy-lark-'));
+  try {
+    writeFileSync(join(configHome, 'config.json'), JSON.stringify({
+      schemaVersion: 1,
+      lark: {
+        appId: 'cli_2222222222222222',
+        appSecret: 'legacy-secret',
+        tenantKey: 'tenant',
+        allowedChats: ['chat-json'],
+        authorizedUsers: ['owner'],
+        allowedApprovers: ['approver'],
+        allowGroupUserMentions: true,
+        allowExternalGroupUserMentions: true,
+        allowGroupBotMentions: true,
+      },
+      approval: { summaryMode: false },
+      appServer: { mode: 'owned_stdio', socketPath: null },
+      codex: {
+        bin: '/codex',
+        cwd: '/workspace',
+        allowedShellCommands: ['ls', 'pwd'],
+      },
+      card: { maxTextLength: 10000, updateIntervalMs: 1500 },
+      queue: { maxQueuedTasks: 100 },
+      usage: { rateLimitQueryIntervalMs: 300000 },
+      logging: { toFile: false, filePath: 'bridge.log' },
+      files: { enableAutoFileUpload: false },
+    }, null, 2), { mode: 0o600 });
+
+    const env = loadBridgeEnvironment({ BRIDGE_CONFIG_HOME: configHome });
+
+    assert.equal(env.LARK_APP_ID, 'cli_2222222222222222');
+    assert.equal(env.LARK_APP_SECRET, 'legacy-secret');
+    const configDocument = JSON.parse(readFileSync(join(configHome, 'config.json'), 'utf8')) as {
+      readonly lark?: unknown;
+    };
+    assert.equal(configDocument.lark, undefined);
+    const botDocument = JSON.parse(readFileSync(join(configHome, 'lark-bots.json'), 'utf8')) as {
+      readonly bots: readonly {
+        readonly appId: string;
+        readonly appSecret: string;
+        readonly tenantKey: string;
+        readonly allowedChats: readonly string[];
+      }[];
+    };
+    assert.equal(botDocument.bots[0]?.appId, 'cli_2222222222222222');
+    assert.equal(botDocument.bots[0]?.appSecret, 'legacy-secret');
+    assert.equal(botDocument.bots[0]?.tenantKey, 'tenant');
+    assert.deepEqual(botDocument.bots[0]?.allowedChats, ['chat-json']);
   } finally {
     rmSync(configHome, { recursive: true, force: true });
   }
@@ -78,8 +148,8 @@ test('config loader materializes placeholders for blank legacy required values',
     loadBridgeEnvironment({ BRIDGE_CONFIG_HOME: configHome });
     const reloaded = loadBridgeEnvironment({ BRIDGE_CONFIG_HOME: configHome });
 
-    assert.equal(reloaded.LARK_APP_ID, 'cli_0123456789abcdef');
-    assert.equal(reloaded.LARK_APP_SECRET, 'replace_me');
+    assert.equal(reloaded.LARK_APP_ID, undefined);
+    assert.equal(reloaded.LARK_APP_SECRET, undefined);
     assert.equal(reloaded.CODEX_BIN, '/absolute/path/to/codex');
     assert.equal(existsSync(join(configHome, '.env')), false);
   } finally {
@@ -135,10 +205,9 @@ test('config example matches the runtime JSON schema', () => {
 
     const env = loadBridgeEnvironment({ BRIDGE_CONFIG_HOME: configHome });
 
-    assert.equal(env.LARK_APP_ID, 'cli_0123456789abcdef');
-    assert.equal(env.LARK_APP_SECRET, 'replace_me');
+    assert.equal(env.LARK_APP_ID, undefined);
+    assert.equal(env.LARK_APP_SECRET, undefined);
     assert.equal(env.CODEX_BIN, '/absolute/path/to/codex');
-    assert.equal(env.ALLOW_GROUP_BOT_MENTIONS, 'true');
   } finally {
     rmSync(configHome, { recursive: true, force: true });
   }

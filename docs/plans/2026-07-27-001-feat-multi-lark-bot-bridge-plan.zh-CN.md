@@ -325,7 +325,7 @@ sequenceDiagram
 - 将现有单 bot `.env` keys 迁移到 `config.json`，再物化为一个 appId 作用域的 bot record。
 - 旧 `default` / generated `botKey` 只作为升级别名保留；新记录不再持久化这些 key。
 - 在 config home 下引入 `lark-bots.json` 作为 named multi-bot credential source。
-- 如果 `lark-bots.json` 不存在，则把当前 `config.json` app credentials 物化为一个 appId 作用域的 bot record。
+- 如果 `lark-bots.json` 不存在，则把 legacy `.env` 或 legacy `config.json.lark` credentials 物化为一个 appId 作用域的 bot record，然后从 `config.json` 移除凭证。
 - QR 注册的额外 bot 以 appId 作用域 entries 存储，而不是改写当前 bot credentials。
 - operator 不需要提供或记住 generated bot key；正常管理使用 `--app-id`。
 - 在凭证可用后，从 Lark bot/app identity 获取并持久化机器人 display name。手工名称只作为 alias。
@@ -599,7 +599,7 @@ sequenceDiagram
 
 **方法：**
 - 保留单 bot `setup` 行为。
-- 通过自动 `.env -> config.json` 迁移和 appId 作用域 binding 物化，保留 legacy single-bot runtime 行为，不要求重新扫码或重新绑定。
+- 通过自动 `.env -> config.json + lark-bots.json` 迁移和 appId 作用域 binding 物化，保留 legacy single-bot runtime 行为，不要求重新扫码或重新绑定。
 - 增加通过 QR registration 或 existing app import 配置额外 bots 的明确文档和 CLI help。
 - 增加 `bot add`、`bot import`、`config migrate`、`bot rebind`、`bot disable`、`bot remove`、`bot list` 和 `bot doctor` command design。Bot add/import/migration 存储 appId 作用域记录；针对 existing bot 的命令使用 `--app-id`。
 - 为 `bot add`、`bot import` 和 `config migrate` 通过 `GET /open-apis/bot/v3/info` 实现 identity hydration，持久化机器人 open ID、display name、avatar metadata 和 activation status，且不记录 secrets。
@@ -608,7 +608,7 @@ sequenceDiagram
 - Reset 必须按现有 reset semantics 保留 bot configuration，同时只清理 runtime/non-current files。
 - 记录群聊权限：优先 `im:message.group_at_msg` / readonly equivalent；除非单独论证，避免 sensitive all-group-message scope。
 - 清楚记录 local-only removal semantics：Bridge 可以移除本地 credentials/bindings，但除非单独实现并验证 Feishu API flow，不保证删除 Feishu app 或物理移出飞书群。
-- 记录升级兼容性：旧 `.env` Lark keys 一次性导入 `config.json`，v1 `bindings.json` 作为 appId 作用域 bindings 加载，持久迁移自动发生或通过 `config migrate` 显式执行。
+- 记录升级兼容性：旧 `.env` Lark keys 一次性导入 `lark-bots.json`，v1 `bindings.json` 作为 appId 作用域 bindings 加载，持久迁移自动发生或通过 `config migrate` 显式执行。
 
 **遵循模式：**
 - 现有 content-free runtime health 和 redacted logging。
