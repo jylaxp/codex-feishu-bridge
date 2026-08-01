@@ -473,12 +473,22 @@ test('startup auto-supports a smoke-verified unknown schema digest', async () =>
     );
     const env = { PATH: process.env.PATH };
     let smokeCalls = 0;
+    const detectedTargets: Array<{
+      readonly codexVersion: string;
+      readonly schemaDigest: string;
+    }> = [];
 
     const report = await verifyCodexRuntimeContract(
       { ...minimalConfig(candidateBinary, codexCwd), configHome },
       env,
       temporaryRoot,
       {
+        onRuntimeDetected: (target) => {
+          detectedTargets.push({
+            codexVersion: target.codexVersion,
+            schemaDigest: target.schemaDigest,
+          });
+        },
         protocolSmokeRunner: async (options) => {
           smokeCalls += 1;
           assert.equal(options.target.codexBin, candidateBinary);
@@ -494,6 +504,10 @@ test('startup auto-supports a smoke-verified unknown schema digest', async () =>
       },
     );
 
+    assert.deepEqual(detectedTargets, [{
+      codexVersion: '0.146.0-alpha.9.2',
+      schemaDigest,
+    }]);
     assert.equal(smokeCalls, 1);
     assert.equal(report.codexVersion, 'codex-cli 0.146.0-alpha.9.2');
     assert.equal(report.schemaDigest, schemaDigest);

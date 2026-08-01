@@ -74,6 +74,7 @@ import type { LarkWebsocketConnectionSnapshot } from './lark/client';
 import {
   RuntimeCompatibilityNotifier,
   runtimeCompatibilityNotificationChatIds,
+  type RuntimeCompatibilityCheckTarget,
 } from './runtime-compatibility-notifier';
 
 export interface BridgeRuntime {
@@ -157,9 +158,11 @@ export async function startBridge(
     10_000,
     (card) => cardImages.render(card),
   );
+  let compatibilityNotifier: RuntimeCompatibilityNotifier | null = null;
+  let compatibilityTarget: RuntimeCompatibilityCheckTarget | null = null;
   try {
     bindings.load();
-    const compatibilityNotifier = new RuntimeCompatibilityNotifier({
+    const activeCompatibilityNotifier = new RuntimeCompatibilityNotifier({
       cards,
       chatIds: runtimeCompatibilityNotificationChatIds(
         config.allowedChats,
@@ -167,26 +170,51 @@ export async function startBridge(
       ),
       logger,
     });
+    compatibilityNotifier = activeCompatibilityNotifier;
+    let protocolSmokeResult: Awaited<ReturnType<typeof runAppServerProtocolSmoke>> | null = null;
     runtimeContract = await verifyCodexRuntimeContract(
       config,
       effectiveEnv,
       preflight.runtimeDirectory.temporaryDir,
       {
-        protocolSmokeRunner: async (options) => {
-          await compatibilityNotifier.started(options.target);
-          try {
-            const result = await runAppServerProtocolSmoke(options);
-            await compatibilityNotifier.succeeded(options.target, result);
-            return result;
-          } catch (error) {
-            await compatibilityNotifier.failed(options.target, error);
-            throw error;
-          }
+        onRuntimeDetected: async (target) => {
+          compatibilityTarget = target;
+          await activeCompatibilityNotifier.started(target);
         },
+        protocolSmokeRunner: async (options) => {
+          compatibilityTarget = options.target;
+          await activeCompatibilityNotifier.protocolSmokeStarted(options.target);
+          protocolSmokeResult = await runAppServerProtocolSmoke(options);
+          return protocolSmokeResult;
+        },
+      },
+    );
+    await activeCompatibilityNotifier.succeeded(
+      compatibilityTarget ?? {
+        codexBin: config.codexBin,
+        codexVersionOutput: runtimeContract.codexVersion,
+        schemaDigest: runtimeContract.schemaDigest,
+      },
+      protocolSmokeResult ?? {
+        adapterProfileId: runtimeContract.protocolProfile.id,
+        source: 'registered',
       },
     );
     protocolAdapter = adapterForAppServerProfile(runtimeContract.protocolProfile);
   } catch (error) {
+    // If runtime detection completed, the notifier already has the exact
+    // version/digest; otherwise it still reports the startup inspection failure.
+    if (compatibilityNotifier === null) {
+      compatibilityNotifier = new RuntimeCompatibilityNotifier({
+        cards,
+        chatIds: runtimeCompatibilityNotificationChatIds(
+          config.allowedChats,
+          bindings.list().map((binding) => binding.chatId),
+        ),
+        logger,
+      });
+    }
+    await compatibilityNotifier.failed(compatibilityTarget, error);
     processLock.release();
     throw error;
   }

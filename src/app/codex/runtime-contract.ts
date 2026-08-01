@@ -35,6 +35,7 @@ import {
   runAppServerProtocolSmoke,
   type AppServerProtocolSmokeResult,
   type AppServerProtocolSmokeRunner,
+  type AppServerProtocolSmokeTarget,
 } from './app-server-protocol-smoke';
 
 const execFileAsync = promisify(execFile);
@@ -72,6 +73,7 @@ export interface CodexCompatibilityOptions {
   readonly approve?: boolean;
   readonly autoProtocolSmoke?: boolean;
   readonly protocolSmokeRunner?: AppServerProtocolSmokeRunner;
+  readonly onRuntimeDetected?: (target: AppServerProtocolSmokeTarget) => Promise<void> | void;
   readonly now?: () => Date;
 }
 
@@ -89,7 +91,10 @@ export async function verifyCodexRuntimeContract(
   config: BridgeConfig,
   sourceEnv: NodeJS.ProcessEnv,
   temporaryRoot: string,
-  options: Pick<CodexCompatibilityOptions, 'now' | 'protocolSmokeRunner'> = {},
+  options: Pick<
+    CodexCompatibilityOptions,
+    'now' | 'onRuntimeDetected' | 'protocolSmokeRunner'
+  > = {},
 ): Promise<CodexRuntimeContractReport> {
   const configHome = config.configHome ?? temporaryRoot;
   const compatibility = await inspectCodexCompatibility(
@@ -114,6 +119,13 @@ export async function inspectCodexCompatibility(
   const store = new ProtocolVersionConfigStore(config.configHome);
   store.loadOrCreate();
   const inspection = await inspectCodexRuntime(config, sourceEnv, temporaryRoot);
+  const smokeTarget = Object.freeze({
+    codexBin: config.codexBin,
+    codexVersionOutput: inspection.codexVersionOutput,
+    codexVersion: inspection.codexVersion,
+    schemaDigest: inspection.schemaDigest,
+  });
+  await options.onRuntimeDetected?.(smokeTarget);
   let versionConfig = store.loadOrCreate();
   let assessment = assessProtocolCompatibility(
     versionConfig.supportedVersions,
@@ -133,12 +145,7 @@ export async function inspectCodexCompatibility(
   if (assessment.status !== 'supported' && options.autoProtocolSmoke) {
     try {
       protocolSmoke = await (options.protocolSmokeRunner ?? runAppServerProtocolSmoke)({
-        target: Object.freeze({
-          codexBin: config.codexBin,
-          codexVersionOutput: inspection.codexVersionOutput,
-          codexVersion: inspection.codexVersion,
-          schemaDigest: inspection.schemaDigest,
-        }),
+        target: smokeTarget,
         sourceEnv,
         temporaryRoot,
       });

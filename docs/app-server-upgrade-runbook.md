@@ -157,8 +157,9 @@ CODEX_BIN=/absolute/path/to/codex codex-feishu-bridge compatibility
 规则：如果 exact version/digest 尚未支持，会启动隔离 `owned_stdio` App Server 跑 Bridge 已用控制面 smoke；
 smoke 通过后自动写入 `protocol-versions.json`，来源为 `auto_smoke`，结论为“兼容”。smoke 失败或握手身份不一致
 时返回“不兼容”，不得用 schema digest 或版本号推断支持。
-正式 `start`/`restart` 触发 smoke 时还会向 `ALLOWED_CHATS` 和已有绑定会话发送飞书卡片：开始时提示正在执行
-兼容检查，结束时更新为通过或失败；卡片投递失败只记录日志，不替代协议判定。
+正式 `start`/`restart` 每次执行 runtime 兼容检查时都会向 `ALLOWED_CHATS` 和已有绑定会话发送飞书卡片：
+开始时提示正在执行兼容检查，结束时更新为通过或失败；未知 exact pair 进入 smoke 时会先更新为“协议检查中”。
+卡片投递失败只记录日志，不替代协议判定。
 
 `--approve` 只保留给 schema-compatible 的手工记录流程：当完整 schema digest 已与现有合同一致、但 exact
 version 尚未写入时，操作员可在协议 smoke 也通过后把该 exact version 记为 `approved`：

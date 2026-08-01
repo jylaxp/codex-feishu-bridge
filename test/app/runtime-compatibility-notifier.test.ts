@@ -63,6 +63,29 @@ test('runtime compatibility notifier sends start card and patches successful res
   assert.equal(logger.errors.length, 0);
 });
 
+test('runtime compatibility notifier patches successful registered-version result', async () => {
+  const cards = new RecordingCards();
+  const logger = new RecordingLogger();
+  const notifier = new RuntimeCompatibilityNotifier({
+    cards,
+    chatIds: ['chat-a'],
+    logger,
+  });
+
+  await notifier.started(target);
+  await notifier.succeeded(target, {
+    adapterProfileId: 'app-server-0.145.0-alpha.18',
+    source: 'registered',
+  });
+
+  assert.equal(cards.createdCards.length, 1);
+  assert.equal(cards.sends.length, 1);
+  assert.equal(cards.patches.length, 1);
+  assert.match(JSON.stringify(cards.patches[0]?.card), /已确认当前 exact pair 已支持/);
+  assert.match(JSON.stringify(cards.patches[0]?.card), /已登记版本/);
+  assert.equal(logger.errors.length, 0);
+});
+
 test('runtime compatibility notifier sends failed result even when no start card exists', async () => {
   const cards = new RecordingCards();
   const logger = new RecordingLogger();
@@ -93,7 +116,12 @@ test('runtime compatibility notifier logs delivery failures without throwing', a
   await notifier.started(target);
   await notifier.succeeded(target, smokeResult);
 
-  assert.deepEqual(cards.sends.map((send) => send.chatId), ['chat-a', 'chat-b', 'chat-b']);
+  assert.deepEqual(cards.sends.map((send) => send.chatId), [
+    'chat-a',
+    'chat-b',
+    'chat-b',
+    'chat-b',
+  ]);
   assert.equal(cards.patches.length, 1);
   assert.deepEqual(logger.errors.map((error) => error.event), [
     'runtime_compatibility_start_card_send_failed',

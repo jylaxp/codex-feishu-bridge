@@ -218,8 +218,9 @@ codex-feishu-bridge compatibility --json
 精确版本和 digest 已在配置目录中时可以启动；exact pair 尚未支持时，`start`/`restart` 和 `compatibility`
 都会跑隔离 `owned_stdio` 协议 smoke，验证 Bridge 实际使用的非模型控制面方法。通过后写入
 `protocol-versions.json`，来源为 `auto_smoke`，并继续启动；失败时返回“不兼容”并 fail closed。
-如果正式启动触发了协议 smoke，Bridge 会向已配置 `ALLOWED_CHATS` 和已有绑定会话发送飞书卡片，先提示
-“兼容检查中”，再更新为通过或失败结果；已登记 exact pair 的普通启动不会额外发送兼容检查卡片。
+正式启动每次执行 runtime 兼容检查时，都会向已配置 `ALLOWED_CHATS` 和已有绑定会话发送飞书卡片，先提示
+“兼容检查中”，再更新为通过或失败结果。已登记 exact pair 直接显示已支持；未知 exact pair 会先把卡片更新为
+“协议检查中”，再在 smoke 结束后给出最终结论。卡片投递失败只记录日志，不替代协议判定。
 
 `--approve` 只保留给 schema digest 已与现有合同一致、但 exact version 尚未写入的人工确认路径；该路径仍会先跑
 协议 smoke，不能绕过功能验证：
