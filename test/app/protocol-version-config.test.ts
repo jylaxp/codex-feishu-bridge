@@ -184,6 +184,56 @@ test('stale detection writers preserve versions approved by another store', () =
   }
 });
 
+test('protocol smoke approval permits one Codex version with separate schema digests', () => {
+  const root = mkdtempSync(join(tmpdir(), 'bridge-protocol-versions-smoke-'));
+  try {
+    const store = new ProtocolVersionConfigStore(root);
+    store.loadOrCreate();
+    const platformDigest = 'a'.repeat(64);
+    const candidate = detection('0.146.0-alpha.3.1', platformDigest, 'incompatible');
+
+    const approved = store.approveProtocolSmokeVersion(
+      candidate,
+      'app-server-0.145.0-alpha.18',
+    );
+
+    assert.equal(
+      approved.supportedVersions.filter(
+        (entry) => entry.codexVersion === '0.146.0-alpha.3.1',
+      ).length,
+      2,
+    );
+    assert.equal(approved.supportedVersions.at(-1)?.source, 'auto_smoke');
+    assert.equal(
+      assessProtocolCompatibility(
+        approved.supportedVersions,
+        '0.146.0-alpha.3.1',
+        platformDigest,
+      ).status,
+      'supported',
+    );
+    assert.equal(
+      assessProtocolCompatibility(
+        approved.supportedVersions,
+        '0.146.0-alpha.3.1',
+        schema146,
+      ).status,
+      'supported',
+    );
+
+    const reloaded = new ProtocolVersionConfigStore(root).loadOrCreate();
+    assert.deepEqual(reloaded.supportedVersions.at(-1), {
+      codexVersion: '0.146.0-alpha.3.1',
+      schemaDigest: platformDigest,
+      adapterProfileId: 'app-server-0.145.0-alpha.18',
+      source: 'auto_smoke',
+    });
+    assert.equal(reloaded.lastDetection?.compatibility.status, 'supported');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('catalog mutation fails closed while another process lock is held', () => {
   const root = mkdtempSync(join(tmpdir(), 'bridge-protocol-versions-locked-'));
   const store = new ProtocolVersionConfigStore(root);

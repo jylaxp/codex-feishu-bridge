@@ -30,6 +30,7 @@ import { DesktopThreadStreamNormalizer } from './codex/desktop-thread-stream-nor
 import { CodexAppNavigationAdapter } from './codex/app-navigation-adapter';
 import type { ServerNotification } from './codex/protocol';
 import { verifyCodexRuntimeContract } from './codex/runtime-contract';
+import { runAppServerProtocolSmoke } from './codex/app-server-protocol-smoke';
 import { parseEnvironment } from './config';
 import { loadBridgeEnvironment } from './config-file';
 import { BridgeCommandService } from './command-service';
@@ -70,6 +71,10 @@ import {
   type RuntimeHealthSnapshot,
 } from './runtime-health';
 import type { LarkWebsocketConnectionSnapshot } from './lark/client';
+import {
+  RuntimeCompatibilityNotifier,
+  runtimeCompatibilityNotificationChatIds,
+} from './runtime-compatibility-notifier';
 
 export interface BridgeRuntime {
   readonly config: BridgeConfig;
@@ -117,12 +122,68 @@ export async function startBridge(
   const bindings = new BindingStore(preflight.configHome);
   let runtimeContract: Awaited<ReturnType<typeof verifyCodexRuntimeContract>>;
   let protocolAdapter: ReturnType<typeof adapterForAppServerProfile>;
+  let orchestrator: InMemoryOrchestrator | undefined;
+  let messageAggregator: InboundMessageAggregator | undefined;
+  let inboundGeneration = 0;
+  let publishHealth: () => void = () => undefined;
+  let larkConnection: LarkWebsocketConnectionSnapshot = Object.freeze({
+    state: 'idle',
+    reconnectCount: 0,
+    connectedAtMs: null,
+  });
+  const lark = createLarkRuntimeClients(config, {
+    logSink: (level) => logger.warn(`lark_sdk_${level}`),
+    onTerminalWebsocketError: resolveFailure,
+    onWebsocketStateChanged: (snapshot) => {
+      larkConnection = snapshot;
+      logger.info('lark_websocket_state_changed', {
+        state: snapshot.state,
+        reconnectCount: snapshot.reconnectCount,
+      });
+      if (snapshot.state === 'ready' && snapshot.reconnectCount > 0) {
+        orchestrator?.resumeCardDelivery();
+      }
+      publishHealth();
+    },
+  });
+  const cardImages = new CardImageRenderer(
+    lark.api as unknown as LarkImageApi,
+    [config.codexCwd, resolveCodexVisualizationsRoot(effectiveEnv)],
+  );
+  const cards = new CardKitClient(
+    new CachedTenantTokenProvider(config.larkAppId, config.larkAppSecret),
+    lark.api as unknown as LarkReplyApi,
+    fetch,
+    10_000,
+    (card) => cardImages.render(card),
+  );
   try {
     bindings.load();
+    const compatibilityNotifier = new RuntimeCompatibilityNotifier({
+      cards,
+      chatIds: runtimeCompatibilityNotificationChatIds(
+        config.allowedChats,
+        bindings.list().map((binding) => binding.chatId),
+      ),
+      logger,
+    });
     runtimeContract = await verifyCodexRuntimeContract(
       config,
       effectiveEnv,
       preflight.runtimeDirectory.temporaryDir,
+      {
+        protocolSmokeRunner: async (options) => {
+          await compatibilityNotifier.started(options.target);
+          try {
+            const result = await runAppServerProtocolSmoke(options);
+            await compatibilityNotifier.succeeded(options.target, result);
+            return result;
+          } catch (error) {
+            await compatibilityNotifier.failed(options.target, error);
+            throw error;
+          }
+        },
+      },
     );
     protocolAdapter = adapterForAppServerProfile(runtimeContract.protocolProfile);
   } catch (error) {
@@ -141,9 +202,6 @@ export async function startBridge(
   const appServerControlPlane = new AppServerControlPlane(appServer, protocolAdapter);
   const desktop = new DesktopIpcClient();
   await desktop.syncFollowedThreads(bindings.list().map((binding) => binding.threadId));
-  let orchestrator: InMemoryOrchestrator | undefined;
-  let messageAggregator: InboundMessageAggregator | undefined;
-  let inboundGeneration = 0;
   const healthStore = new RuntimeHealthStore(preflight.configHome);
   let runtimeStarted = false;
   let runtimeStopped = false;
@@ -153,11 +211,6 @@ export async function startBridge(
   let desktopRouteState: DesktopRouteState = 'unknown';
   let lastDesktopDeliveryErrorCode: string | null = null;
   const unavailableDesktopThreads = new Set<string>();
-  let larkConnection: LarkWebsocketConnectionSnapshot = Object.freeze({
-    state: 'idle',
-    reconnectCount: 0,
-    connectedAtMs: null,
-  });
   const writeHealth = (): void => {
     const status = resolveRuntimeHealthStatus({
       runtimeStarted,
@@ -197,7 +250,7 @@ export async function startBridge(
     }
   };
   const healthPublisher = new RuntimeHealthPublisher(writeHealth);
-  const publishHealth = (): void => healthPublisher.request();
+  publishHealth = (): void => healthPublisher.request();
   const updateDesktopDeliveryHealth = (outcome: DesktopDeliveryOutcome): void => {
     const fields = {
       operation: outcome.operation,
@@ -261,32 +314,6 @@ export async function startBridge(
     }
   };
   const normalizer = new DesktopThreadStreamNormalizer();
-  const lark = createLarkRuntimeClients(config, {
-    logSink: (level) => logger.warn(`lark_sdk_${level}`),
-    onTerminalWebsocketError: resolveFailure,
-    onWebsocketStateChanged: (snapshot) => {
-      larkConnection = snapshot;
-      logger.info('lark_websocket_state_changed', {
-        state: snapshot.state,
-        reconnectCount: snapshot.reconnectCount,
-      });
-      if (snapshot.state === 'ready' && snapshot.reconnectCount > 0) {
-        orchestrator?.resumeCardDelivery();
-      }
-      publishHealth();
-    },
-  });
-  const cardImages = new CardImageRenderer(
-    lark.api as unknown as LarkImageApi,
-    [config.codexCwd, resolveCodexVisualizationsRoot(effectiveEnv)],
-  );
-  const cards = new CardKitClient(
-    new CachedTenantTokenProvider(config.larkAppId, config.larkAppSecret),
-    lark.api as unknown as LarkReplyApi,
-    fetch,
-    10_000,
-    (card) => cardImages.render(card),
-  );
   const acknowledgements = new LarkMessageAcknowledgement(
     lark.api as unknown as LarkMessageAcknowledgementApi,
     logger,

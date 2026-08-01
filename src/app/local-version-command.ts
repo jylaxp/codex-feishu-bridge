@@ -15,6 +15,7 @@ const DEFAULT_MACOS_CODEX_BINARY = '/Applications/ChatGPT.app/Contents/Resources
 
 export interface LocalVersionCommandOptions {
   readonly approve?: boolean;
+  readonly autoProtocolSmoke?: boolean;
   readonly now?: () => Date;
 }
 

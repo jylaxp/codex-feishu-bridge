@@ -15,16 +15,19 @@ test('version command emits the detected local application and Codex versions as
   assert.equal(value.conclusion, '兼容');
 });
 
-test('compatibility command prints the required conclusion and only approves explicitly', async () => {
+test('compatibility command prints the required conclusion and enables protocol smoke', async () => {
   let approved = false;
+  let autoProtocolSmoke = false;
   const output = await captureStdout(() => runCli(['compatibility', '--approve'], {}, {
     runLocalVersionCommand: async (_env, options) => {
       approved = options.approve === true;
+      autoProtocolSmoke = options.autoProtocolSmoke === true;
       return compatibleReport();
     },
   }));
 
   assert.equal(approved, true);
+  assert.equal(autoProtocolSmoke, true);
   assert.equal(output.split('\n')[0], '兼容');
   await assert.rejects(
     runCli(['version', '--approve'], {}, {

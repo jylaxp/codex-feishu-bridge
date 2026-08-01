@@ -1,7 +1,8 @@
 # Codex App Server 升级运行手册
 
-本手册用于增加一个新的精确 App Server profile。App Server experimental API 不提供跨版本兼容承诺；每个
-新版本都必须重新采集、审查、注册和验证，不能只修改版本正则或扩大 SemVer range。
+本手册用于增加一个新的精确 App Server profile，或复核自动 smoke 支持的新版 App Server。App Server
+experimental API 不提供跨版本兼容承诺；每个新版本都必须重新采集、审查或通过协议 smoke 验证，不能只修改
+版本正则、schema digest 或扩大 SemVer range。
 
 ## 1. 准备隔离环境
 
@@ -145,25 +146,33 @@ App Server control plane 不参与生产 turn 执行。
 
 ## 8. 执行发布门禁
 
-先查看候选 binary 的本机版本和只读兼容结论：
+先查看候选 binary 的本机版本和兼容结论：
 
 ```bash
 CODEX_BIN=/absolute/path/to/codex codex-feishu-bridge version --json
 CODEX_BIN=/absolute/path/to/codex codex-feishu-bridge compatibility
 ```
 
-结论必须明确为“兼容”或“不兼容”。`upgrade_available` 表示 schema 与现有合同一致，但精确版本尚未批准；
-检查本身不修改支持目录。人工复核 binary 来源、schema 和 smoke 证据后，才允许执行：
+`version` 只探测并记录版本、binary 和完整 schema digest，不执行协议 smoke。`compatibility` 与正式启动使用同一
+规则：如果 exact version/digest 尚未支持，会启动隔离 `owned_stdio` App Server 跑 Bridge 已用控制面 smoke；
+smoke 通过后自动写入 `protocol-versions.json`，来源为 `auto_smoke`，结论为“兼容”。smoke 失败或握手身份不一致
+时返回“不兼容”，不得用 schema digest 或版本号推断支持。
+正式 `start`/`restart` 触发 smoke 时还会向 `ALLOWED_CHATS` 和已有绑定会话发送飞书卡片：开始时提示正在执行
+兼容检查，结束时更新为通过或失败；卡片投递失败只记录日志，不替代协议判定。
+
+`--approve` 只保留给 schema-compatible 的手工记录流程：当完整 schema digest 已与现有合同一致、但 exact
+version 尚未写入时，操作员可在协议 smoke 也通过后把该 exact version 记为 `approved`：
 
 ```bash
 CODEX_BIN=/absolute/path/to/codex codex-feishu-bridge compatibility --approve
 ```
 
 首次运行会把内置支持目录写入 config home 的 `protocol-versions.json`。后续 Bridge 发布新增内置版本时，
-运行会在锁内把缺失的内置项追加到该文件；已有的同版本记录和人工批准项保持不变。这个发布内置目录迁移
-不等同于把探测到的 `upgrade_available` 自动批准；未知 schema 仍不得使用 `--approve` 绕过。
+运行会在锁内把缺失的内置项追加到该文件；已有的人工批准项和 `auto_smoke` 项保持不变。未知 schema 不得使用
+`--approve` 绕过，必须跑协议 smoke；协议 smoke 通过后同一 `codexVersion` 可以因为平台差异保留多个
+`schemaDigest` exact pair。
 
-然后让 doctor 对已批准 binary 给出 exact profile、version、digest 和 mode：
+然后让 doctor 对已支持 binary 给出 exact profile、version、digest 和 mode：
 
 ```bash
 CODEX_BIN=/absolute/path/to/codex codex-feishu-bridge doctor
@@ -197,8 +206,8 @@ version+digest 只能选择操作员声明的 profile；socket 后 daemon 的 in
 
 ## 10. 发布与回滚
 
-注册前，未知版本、未知 digest 和 version/digest cross-match 必须继续 fail closed。完成全部门禁后再更新支持
-矩阵和 release notes；Git tag 只表示发布声明，不参与运行时检测。
+注册前，未知版本、未知 digest 和 version/digest cross-match 不能仅靠签名放行；必须由协议 smoke 或完整人工
+profile 注册证明。完成全部门禁后再更新支持矩阵和 release notes；Git tag 只表示发布声明，不参与运行时检测。
 
 回滚步骤：
 

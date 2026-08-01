@@ -66,7 +66,7 @@ export interface CliDependencies {
   ) => Promise<BackgroundServiceReport>;
   readonly runLocalVersionCommand?: (
     env: NodeJS.ProcessEnv,
-    options: { readonly approve?: boolean },
+    options: { readonly approve?: boolean; readonly autoProtocolSmoke?: boolean },
   ) => Promise<LocalVersionReport>;
 }
 
@@ -110,6 +110,7 @@ export async function runCli(
     try {
       report = await inspect(runtimeEnv, {
         approve: parsed.command === 'compatibility' && parsed.approve,
+        autoProtocolSmoke: parsed.command === 'compatibility',
       });
     } catch (error) {
       if (parsed.command !== 'compatibility') {
@@ -414,7 +415,8 @@ function helpText(): string {
     'rebind forces a new Feishu QR-code app registration and replaces LARK_APP_ID/LARK_APP_SECRET.',
     'start/restart/stop/status manage the PID file and logs under ~/.codex-feishu-bridge/.',
     'version detects local ChatGPT/Codex versions and refreshes protocol-versions.json.',
-    'compatibility reports 兼容/不兼容; --approve explicitly adds a compatible exact version.',
+    'compatibility reports 兼容/不兼容 and smoke-verifies unsupported exact pairs.',
+    '--approve explicitly adds a schema-compatible exact version without unknown-schema bypass.',
     'validate-ui-sync without --thread lists recent workspace tasks.',
     'config reset is a dry run until --confirm; --destructive is required to clear an already-current binding.',
     '',

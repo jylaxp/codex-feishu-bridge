@@ -23,6 +23,9 @@ import {
   parseCodexCliVersion,
 } from '../../src/app/codex/app-server-protocol-registry';
 import {
+  REQUIRED_APP_SERVER_PROTOCOL_SMOKE_METHODS,
+} from '../../src/app/codex/app-server-protocol-smoke';
+import {
   assertCompatibleCodexRuntime,
   CodexRuntimeCompatibilityError,
   digestJsonSchemaDirectory,
@@ -322,12 +325,6 @@ test('runtime verification reports and cleans up the selected profile', async (t
       env: { ...process.env, HOME: root, CODEX_HOME: join(root, 'codex-home'), TMPDIR: root },
     });
     const expectedCodexVersion = parseCodexCliVersion(versionResult.stdout.trim()).version;
-    assert.equal(
-      builtInProtocolVersionConfig().supportedVersions.some(
-        (entry) => entry.codexVersion === expectedCodexVersion,
-      ),
-      true,
-    );
 
     const report = await verifyCodexRuntimeContract(
       minimalConfig(codex145Bin, root),
@@ -342,14 +339,19 @@ test('runtime verification reports and cleans up the selected profile', async (t
     assert.equal(report.runtimeArtifact.protocolContractId, report.protocolProfile.id);
     assert.match(report.runtimeArtifact.binarySha256, /^[a-f0-9]{64}$/);
     const versionConfig = readJson(join(root, 'config', 'protocol-versions.json')) as {
-      readonly supportedVersions: readonly { readonly codexVersion: string }[];
+      readonly supportedVersions: readonly {
+        readonly codexVersion: string;
+        readonly schemaDigest: string;
+        readonly source: string;
+      }[];
       readonly lastDetection: {
         readonly codexVersion: string;
+        readonly schemaDigest: string;
         readonly compatibility: { readonly conclusion: string; readonly status: string };
       };
     };
     assert.deepEqual(
-      versionConfig.supportedVersions.map((entry) => entry.codexVersion),
+      versionConfig.supportedVersions.slice(0, 6).map((entry) => entry.codexVersion),
       [
         '0.144.3',
         '0.145.0-alpha.18',
@@ -359,7 +361,15 @@ test('runtime verification reports and cleans up the selected profile', async (t
         '0.146.0-alpha.3.1',
       ],
     );
+    assert.equal(
+      versionConfig.supportedVersions.some((entry) => (
+        entry.codexVersion === expectedCodexVersion
+        && entry.schemaDigest === report.schemaDigest
+      )),
+      true,
+    );
     assert.equal(versionConfig.lastDetection.codexVersion, expectedCodexVersion);
+    assert.equal(versionConfig.lastDetection.schemaDigest, report.schemaDigest);
     assert.deepEqual(
       versionConfig.lastDetection.compatibility,
       {
@@ -372,7 +382,7 @@ test('runtime verification reports and cleans up the selected profile', async (t
   });
 });
 
-test('compatible exact-version upgrade requires approval and persists across startup', async () => {
+test('schema-compatible exact-version upgrade can still be approved explicitly', async () => {
   await withTemporaryDirectoryAsync(async (root) => {
     const codexCwd = join(root, 'workspace');
     const configHome = join(root, 'config');
@@ -404,11 +414,8 @@ test('compatible exact-version upgrade requires approval and persists across sta
     const config = { ...minimalConfig(candidateBinary, codexCwd), configHome };
     const env = { PATH: process.env.PATH };
 
-    await assert.rejects(
-      verifyCodexRuntimeContract(config, env, temporaryRoot),
-      (error: unknown) => error instanceof CodexRuntimeCompatibilityError
-        && error.status === 'upgrade_available',
-    );
+    const pending = await inspectCodexCompatibility(probe, env, temporaryRoot);
+    assert.equal(pending.assessment.status, 'upgrade_available');
 
     const approved = await inspectCodexCompatibility(
       probe,
@@ -443,6 +450,126 @@ test('compatible exact-version upgrade requires approval and persists across sta
       rejected.config.supportedVersions.some((entry) => entry.codexVersion === '0.145.0-alpha.20'),
       false,
     );
+  });
+});
+
+test('startup auto-supports a smoke-verified unknown schema digest', async () => {
+  await withTemporaryDirectoryAsync(async (root) => {
+    const codexCwd = join(root, 'workspace');
+    const configHome = join(root, 'config');
+    const temporaryRoot = join(root, 'runtime');
+    mkdirSync(codexCwd);
+    mkdirSync(configHome);
+    mkdirSync(temporaryRoot);
+    const schemaValue = { type: 'object', title: 'Unknown but compatible protocol schema' };
+    const schemaRoot = join(root, 'expected-schema');
+    writeJson(join(schemaRoot, 'v2/Fake.json'), schemaValue);
+    const schemaDigest = digestJsonSchemaDirectory(schemaRoot);
+    const candidateBinary = createVersionedFakeCodex(
+      root,
+      '0.146.0-alpha.9.2',
+      schemaValue,
+      'smoke-compatible',
+    );
+    const env = { PATH: process.env.PATH };
+    let smokeCalls = 0;
+
+    const report = await verifyCodexRuntimeContract(
+      { ...minimalConfig(candidateBinary, codexCwd), configHome },
+      env,
+      temporaryRoot,
+      {
+        protocolSmokeRunner: async (options) => {
+          smokeCalls += 1;
+          assert.equal(options.target.codexBin, candidateBinary);
+          assert.equal(options.target.codexVersion, '0.146.0-alpha.9.2');
+          assert.equal(options.target.schemaDigest, schemaDigest);
+          return Object.freeze({
+            adapterProfileId: 'app-server-0.145.0-alpha.18',
+            provenMethods: REQUIRED_APP_SERVER_PROTOCOL_SMOKE_METHODS,
+            rateLimitsCapability: 'unavailable:REQUEST_FAILED',
+            compactCapability: 'not-attempted:model-operation-prohibited' as const,
+          });
+        },
+      },
+    );
+
+    assert.equal(smokeCalls, 1);
+    assert.equal(report.codexVersion, 'codex-cli 0.146.0-alpha.9.2');
+    assert.equal(report.schemaDigest, schemaDigest);
+    assert.equal(report.protocolProfile.id, 'app-server-0.145.0-alpha.18');
+    assert.equal(report.protocolProfile.codexVersion, '0.146.0-alpha.9.2');
+    const persisted = readJson(join(configHome, 'protocol-versions.json')) as {
+      readonly supportedVersions: readonly {
+        readonly codexVersion: string;
+        readonly schemaDigest: string;
+        readonly source: string;
+      }[];
+      readonly lastDetection: {
+        readonly compatibility: { readonly status: string; readonly adapterProfileId: string | null };
+      };
+    };
+    assert.equal(
+      persisted.supportedVersions.some((entry) => (
+        entry.codexVersion === '0.146.0-alpha.9.2'
+        && entry.schemaDigest === schemaDigest
+        && entry.source === 'auto_smoke'
+      )),
+      true,
+    );
+    assert.deepEqual(persisted.lastDetection.compatibility, {
+      conclusion: '兼容',
+      status: 'supported',
+      adapterProfileId: 'app-server-0.145.0-alpha.18',
+    });
+  });
+});
+
+test('startup rejects an unknown schema digest when protocol smoke fails', async () => {
+  await withTemporaryDirectoryAsync(async (root) => {
+    const codexCwd = join(root, 'workspace');
+    const configHome = join(root, 'config');
+    const temporaryRoot = join(root, 'runtime');
+    mkdirSync(codexCwd);
+    mkdirSync(configHome);
+    mkdirSync(temporaryRoot);
+    const candidateBinary = createVersionedFakeCodex(
+      root,
+      '0.146.0-alpha.9.3',
+      { type: 'number', title: 'Incompatible protocol schema' },
+      'smoke-incompatible',
+    );
+
+    await assert.rejects(
+      verifyCodexRuntimeContract(
+        { ...minimalConfig(candidateBinary, codexCwd), configHome },
+        { PATH: process.env.PATH },
+        temporaryRoot,
+        {
+          protocolSmokeRunner: async () => {
+            throw new Error('protocol smoke failed');
+          },
+        },
+      ),
+      (error: unknown) => error instanceof CodexRuntimeCompatibilityError
+        && error.status === 'incompatible',
+    );
+
+    const persisted = readJson(join(configHome, 'protocol-versions.json')) as {
+      readonly supportedVersions: readonly { readonly codexVersion: string }[];
+      readonly lastDetection: {
+        readonly compatibility: { readonly conclusion: string; readonly status: string };
+      };
+    };
+    assert.equal(
+      persisted.supportedVersions.some((entry) => entry.codexVersion === '0.146.0-alpha.9.3'),
+      false,
+    );
+    assert.deepEqual(persisted.lastDetection.compatibility, {
+      conclusion: '不兼容',
+      status: 'incompatible',
+      adapterProfileId: null,
+    });
   });
 });
 

@@ -29,7 +29,13 @@ import {
   type CompatibilityAssessment,
   type ProtocolVersionConfig,
   type RuntimeVersionDetection,
+  type SupportedProtocolVersion,
 } from './protocol-version-config';
+import {
+  runAppServerProtocolSmoke,
+  type AppServerProtocolSmokeResult,
+  type AppServerProtocolSmokeRunner,
+} from './app-server-protocol-smoke';
 
 const execFileAsync = promisify(execFile);
 
@@ -59,10 +65,13 @@ export interface CodexCompatibilityReport {
   readonly detection: RuntimeVersionDetection;
   readonly assessment: CompatibilityAssessment;
   readonly protocolProfile: AppServerProtocolProfile | null;
+  readonly protocolSmoke: AppServerProtocolSmokeResult | null;
 }
 
 export interface CodexCompatibilityOptions {
   readonly approve?: boolean;
+  readonly autoProtocolSmoke?: boolean;
+  readonly protocolSmokeRunner?: AppServerProtocolSmokeRunner;
   readonly now?: () => Date;
 }
 
@@ -80,12 +89,14 @@ export async function verifyCodexRuntimeContract(
   config: BridgeConfig,
   sourceEnv: NodeJS.ProcessEnv,
   temporaryRoot: string,
+  options: Pick<CodexCompatibilityOptions, 'now' | 'protocolSmokeRunner'> = {},
 ): Promise<CodexRuntimeContractReport> {
   const configHome = config.configHome ?? temporaryRoot;
   const compatibility = await inspectCodexCompatibility(
     { codexBin: config.codexBin, codexCwd: config.codexCwd, configHome },
     sourceEnv,
     temporaryRoot,
+    { ...options, autoProtocolSmoke: true },
   );
   if (compatibility.assessment.status !== 'supported' || compatibility.protocolProfile === null) {
     throw new CodexRuntimeCompatibilityError(compatibility.assessment.status);
@@ -117,8 +128,33 @@ export async function inspectCodexCompatibility(
     inspection.codexVersion,
     inspection.schemaDigest,
   );
+  let protocolSmoke: AppServerProtocolSmokeResult | null = null;
 
-  if (options.approve && assessment.status === 'upgrade_available') {
+  if (assessment.status !== 'supported' && options.autoProtocolSmoke) {
+    try {
+      protocolSmoke = await (options.protocolSmokeRunner ?? runAppServerProtocolSmoke)({
+        target: Object.freeze({
+          codexBin: config.codexBin,
+          codexVersionOutput: inspection.codexVersionOutput,
+          codexVersion: inspection.codexVersion,
+          schemaDigest: inspection.schemaDigest,
+        }),
+        sourceEnv,
+        temporaryRoot,
+      });
+      versionConfig = options.approve && assessment.status === 'upgrade_available'
+        ? store.approveCompatibleVersion(detection)
+        : store.approveProtocolSmokeVersion(detection, protocolSmoke.adapterProfileId);
+    } catch {
+      const failedAssessment = incompatibleRuntimeAssessment();
+      versionConfig = store.recordDetectionWithAssessment(
+        createDetection(config, inspection, failedAssessment, options.now ?? (() => new Date())),
+        failedAssessment,
+      );
+    }
+    detection = versionConfig.lastDetection!;
+    assessment = assessmentFromDetection(detection, versionConfig.supportedVersions);
+  } else if (options.approve && assessment.status === 'upgrade_available') {
     versionConfig = store.approveCompatibleVersion(detection);
     detection = versionConfig.lastDetection!;
     assessment = assessProtocolCompatibility(
@@ -139,6 +175,7 @@ export async function inspectCodexCompatibility(
     detection,
     assessment,
     protocolProfile: supportedVersion ? profileForSupportedVersion(supportedVersion) : null,
+    protocolSmoke,
   });
 }
 
@@ -266,6 +303,33 @@ function contractReport(
       binarySha256: detection.binarySha256,
       protocolContractId: protocolProfile.id,
     }),
+  });
+}
+
+function incompatibleRuntimeAssessment(): CompatibilityAssessment {
+  return Object.freeze({
+    conclusion: '不兼容',
+    status: 'incompatible',
+    adapterProfileId: null,
+    matchedVersion: null,
+  });
+}
+
+function assessmentFromDetection(
+  detection: RuntimeVersionDetection,
+  supportedVersions: readonly SupportedProtocolVersion[],
+): CompatibilityAssessment {
+  const matchedVersion = detection.compatibility.status === 'supported'
+    ? supportedVersions.find((entry) => (
+      entry.codexVersion === detection.codexVersion
+      && entry.schemaDigest === detection.schemaDigest
+    )) ?? null
+    : null;
+  return Object.freeze({
+    conclusion: detection.compatibility.conclusion,
+    status: detection.compatibility.status,
+    adapterProfileId: detection.compatibility.adapterProfileId,
+    matchedVersion,
   });
 }
 

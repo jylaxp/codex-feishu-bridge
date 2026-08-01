@@ -1,12 +1,10 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import test from 'node:test';
 
-import { AppServerClient } from '../../src/app/codex/app-server-client';
-import type { AppServerProtocolAdapter } from '../../src/app/codex/app-server-protocol-adapter';
 import {
   AppServerControlPlane,
   AppServerControlPlaneError,
@@ -16,14 +14,12 @@ import {
 import {
   APP_SERVER_PROTOCOL_PROFILE_0_144_3,
   APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18,
-  parseAppServerUserAgentVersion,
   parseCodexCliVersion,
-  type AppServerProtocolProfile,
 } from '../../src/app/codex/app-server-protocol-registry';
 import {
-  builtInProtocolVersionConfig,
-  profileForSupportedVersion,
-} from '../../src/app/codex/protocol-version-config';
+  REQUIRED_APP_SERVER_PROTOCOL_SMOKE_METHODS,
+  runOwnedStdioControlPlaneSmoke,
+} from '../../src/app/codex/app-server-protocol-smoke';
 import { APP_SERVER_PROTOCOL_V144 } from '../../src/app/codex/app-server-protocol-v144';
 import { APP_SERVER_PROTOCOL_V145 } from '../../src/app/codex/app-server-protocol-v145';
 
@@ -327,18 +323,20 @@ test('supported 145-adapter owned stdio proves the isolated non-model control-pl
   }
   const cliVersion = execFileSync(codexBin, ['--version'], { encoding: 'utf8' }).trim();
   const codexVersion = parseCodexCliVersion(cliVersion).version;
-  const supportedVersion = builtInProtocolVersionConfig().supportedVersions.find(
-    (entry) => entry.codexVersion === codexVersion,
-  );
-  assert.ok(supportedVersion, `${cliVersion} is not built into the support catalog`);
-  const protocolProfile = profileForSupportedVersion(supportedVersion);
+  const protocolProfile = Object.freeze({
+    ...APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18,
+    codexVersion,
+    cliVersionOutput: cliVersion,
+    diagnosticLabel: `Codex App Server ${codexVersion} smoke`,
+  });
   const result = await runOwnedStdioControlPlaneSmoke({
     codexBin,
     protocolProfile,
     adapter: APP_SERVER_PROTOCOL_V145,
+    temporaryRoot: tmpdir(),
     temporaryPrefix: 'bridge-app-server-145-smoke-',
   });
-  assert.deepEqual(result.provenMethods, REQUIRED_REAL_SMOKE_METHODS);
+  assert.deepEqual(result.provenMethods, REQUIRED_APP_SERVER_PROTOCOL_SMOKE_METHODS);
   assert.match(result.rateLimitsCapability, /^(available|unavailable:(REQUEST_FAILED|INVALID_RESPONSE))$/);
   assert.equal(result.compactCapability, 'not-attempted:model-operation-prohibited');
   t.diagnostic(`${codexVersion} rateLimits=${result.rateLimitsCapability}`);
@@ -354,190 +352,14 @@ test('exact 144 owned stdio proves the isolated non-model control-plane matrix',
     codexBin,
     protocolProfile: APP_SERVER_PROTOCOL_PROFILE_0_144_3,
     adapter: APP_SERVER_PROTOCOL_V144,
+    temporaryRoot: tmpdir(),
     temporaryPrefix: 'bridge-app-server-144-smoke-',
   });
-  assert.deepEqual(result.provenMethods, REQUIRED_REAL_SMOKE_METHODS);
+  assert.deepEqual(result.provenMethods, REQUIRED_APP_SERVER_PROTOCOL_SMOKE_METHODS);
   assert.match(result.rateLimitsCapability, /^(available|unavailable:(REQUEST_FAILED|INVALID_RESPONSE))$/);
   assert.equal(result.compactCapability, 'not-attempted:model-operation-prohibited');
   t.diagnostic(`144 rateLimits=${result.rateLimitsCapability}`);
 });
-
-const REQUIRED_REAL_SMOKE_METHODS = Object.freeze([
-  'thread/list',
-  'thread/start',
-  'thread/name/set',
-  'thread/read',
-  'thread/resume',
-  'thread/fork',
-  'thread/goal/set',
-  'thread/goal/get',
-  'thread/goal/clear',
-  'skills/list',
-  'mcpServerStatus/list',
-  'thread/archive',
-] as const);
-
-interface OwnedStdioSmokeOptions {
-  readonly codexBin: string;
-  readonly protocolProfile: AppServerProtocolProfile;
-  readonly adapter: AppServerProtocolAdapter;
-  readonly temporaryPrefix: string;
-}
-
-interface OwnedStdioSmokeResult {
-  readonly provenMethods: readonly string[];
-  readonly rateLimitsCapability: string;
-  readonly compactCapability: 'not-attempted:model-operation-prohibited';
-}
-
-async function runOwnedStdioControlPlaneSmoke(
-  options: OwnedStdioSmokeOptions,
-): Promise<OwnedStdioSmokeResult> {
-  const root = mkdtempSync(join(tmpdir(), options.temporaryPrefix));
-  const codexHome = join(root, 'codex-home');
-  const workspace = join(root, 'workspace');
-  mkdirSync(codexHome);
-  mkdirSync(workspace);
-  const client = new AppServerClient({
-    transport: {
-      mode: 'owned_stdio',
-      codexBin: options.codexBin,
-      spawnCwd: workspace,
-      env: {
-        HOME: root,
-        CODEX_HOME: codexHome,
-        TMPDIR: root,
-        PATH: process.env.PATH,
-      },
-    },
-    protocolProfile: options.protocolProfile,
-    clientInfo: {
-      name: 'lark_codex_control_plane_smoke',
-      title: 'Lark Codex Control Plane Smoke',
-      version: '3.0.0',
-    },
-    requestTimeoutMs: 10_000,
-    terminationGraceMs: 2_000,
-  });
-  const controlPlane = new AppServerControlPlane(client, options.adapter);
-  const provenMethods: string[] = [];
-  const disposableThreadIds: string[] = [];
-  const archivedThreadIds = new Set<string>();
-  let started = false;
-
-  try {
-    const initialized = await client.start();
-    started = true;
-    assert.equal(
-      parseAppServerUserAgentVersion(initialized.userAgent).version,
-      options.protocolProfile.codexVersion,
-    );
-    assert.equal(client.state, 'READY');
-
-    const threads = await controlPlane.request<{ readonly data: readonly unknown[] }>(
-      'thread/list',
-      { limit: 5, archived: false, cwd: workspace },
-    );
-    assert.deepEqual(threads.data, []);
-    provenMethods.push('thread/list');
-
-    const created = await controlPlane.request<{ readonly thread: { readonly id: string } }>(
-      'thread/start',
-      { threadSource: 'user', cwd: workspace, runtimeWorkspaceRoots: [workspace] },
-    );
-    const threadId = created.thread.id;
-    assert.equal(typeof threadId, 'string');
-    disposableThreadIds.push(threadId);
-    provenMethods.push('thread/start');
-
-    await controlPlane.request('thread/name/set', { threadId, name: 'Bridge protocol smoke' });
-    provenMethods.push('thread/name/set');
-    const read = await controlPlane.request<{ readonly thread: { readonly id: string } }>(
-      'thread/read',
-      { threadId, includeTurns: true },
-    );
-    assert.equal(read.thread.id, threadId);
-    provenMethods.push('thread/read');
-    const resumed = await controlPlane.request<{ readonly thread: { readonly id: string } }>(
-      'thread/resume',
-      { threadId, cwd: workspace, excludeTurns: false },
-    );
-    assert.equal(resumed.thread.id, threadId);
-    provenMethods.push('thread/resume');
-
-    const forked = await controlPlane.request<{ readonly thread: { readonly id: string } }>(
-      'thread/fork',
-      { threadId, threadSource: 'user' },
-    );
-    const forkedThreadId = forked.thread.id;
-    assert.equal(typeof forkedThreadId, 'string');
-    disposableThreadIds.push(forkedThreadId);
-    provenMethods.push('thread/fork');
-
-    await controlPlane.request('thread/goal/set', {
-      threadId,
-      objective: 'Validate isolated control plane',
-      status: 'active',
-    });
-    provenMethods.push('thread/goal/set');
-    const goal = await controlPlane.request<{ readonly goal: { readonly objective: string } }>(
-      'thread/goal/get',
-      { threadId },
-    );
-    assert.equal(goal.goal.objective, 'Validate isolated control plane');
-    provenMethods.push('thread/goal/get');
-    const cleared = await controlPlane.request<{ readonly cleared: boolean }>(
-      'thread/goal/clear',
-      { threadId },
-    );
-    assert.equal(cleared.cleared, true);
-    provenMethods.push('thread/goal/clear');
-
-    await controlPlane.request('skills/list', { cwds: [workspace], forceReload: false });
-    provenMethods.push('skills/list');
-    await controlPlane.request('mcpServerStatus/list', { threadId, detail: 'toolsAndAuthOnly' });
-    provenMethods.push('mcpServerStatus/list');
-
-    const rateLimitsCapability = await probeRateLimits(controlPlane);
-    for (const disposableThreadId of [...disposableThreadIds].reverse()) {
-      await controlPlane.request('thread/archive', { threadId: disposableThreadId });
-      archivedThreadIds.add(disposableThreadId);
-    }
-    provenMethods.push('thread/archive');
-    return Object.freeze({
-      provenMethods: Object.freeze(provenMethods),
-      rateLimitsCapability,
-      compactCapability: 'not-attempted:model-operation-prohibited' as const,
-    });
-  } finally {
-    if (started) {
-      for (const threadId of disposableThreadIds) {
-        if (!archivedThreadIds.has(threadId)) {
-          await controlPlane.request('thread/archive', { threadId }).catch(() => undefined);
-        }
-      }
-    }
-    await client.stop();
-    rmSync(root, { recursive: true, force: true });
-  }
-}
-
-async function probeRateLimits(
-  controlPlane: AppServerControlPlane,
-): Promise<string> {
-  try {
-    await controlPlane.request('account/rateLimits/read', {});
-    return 'available';
-  } catch (error) {
-    if (
-      error instanceof AppServerControlPlaneError
-      && (error.code === 'REQUEST_FAILED' || error.code === 'INVALID_RESPONSE')
-    ) {
-      return `unavailable:${error.code}`;
-    }
-    throw error;
-  }
-}
 
 class RecordingClient implements AppServerRequestClient {
   readonly calls: Array<{ readonly method: string; readonly params: unknown }> = [];

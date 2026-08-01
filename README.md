@@ -19,12 +19,11 @@ App Server 只承担控制面：会话列表、创建/派生/归档、目标/压
 
 当前精确支持 `codex-cli 0.144.3`、`codex-cli 0.145.0-alpha.18`、
 `codex-cli 0.145.0-alpha.27`、`codex-cli 0.145.0-alpha.30` 和
-`codex-cli 0.146.0-alpha.3`，其中 `0.146.0-alpha.3` 是当前优先版本。145 后续别名复用 schema
-相同的 `.18` 协议适配器；`0.146.0-alpha.3` 使用自己的 schema digest，并在功能 smoke 验证后复用 145
-adapter。Bridge
-启动时根据 `CODEX_BIN` 的精确版本和完整 experimental schema digest 自动选择 profile，并在 App Server
-initialize 时再次核对实际版本；未知版本、未知 digest 或跨 profile 错配都会在 Desktop 和飞书连接前
-失败。完整证据见 [App Server 支持矩阵](docs/app-server-support-matrix.md)，新增版本流程见
+`codex-cli 0.146.0-alpha.3`/`.3.1`。145 后续别名复用 schema 相同的 `.18` 协议适配器；0.146 已验证版本
+在功能 smoke 通过后复用 145 adapter。Bridge 启动时根据 `CODEX_BIN` 的精确版本和完整 experimental
+schema digest 自动选择已支持 exact pair；如果当前 exact pair 尚未支持，会先启动隔离 App Server 跑 Bridge
+已用控制面协议 smoke，smoke 通过后自动写入 `auto_smoke` 支持，失败才在 Desktop 和飞书连接前拒绝启动。
+完整证据见 [App Server 支持矩阵](docs/app-server-support-matrix.md)，新增版本流程见
 [App Server 升级运行手册](docs/app-server-upgrade-runbook.md)。
 
 生产任务的 start/steer/interrupt、审批和 live event 始终由 ChatGPT Desktop IPC 负责，App Server 多版本
@@ -206,7 +205,7 @@ codex-feishu-bridge doctor
 codex-feishu-bridge version
 codex-feishu-bridge version --json
 
-# 只读检查协议兼容性；第一行固定为“兼容”或“不兼容”
+# 检查协议兼容性；未知 exact pair 会先跑隔离控制面 smoke
 codex-feishu-bridge compatibility
 codex-feishu-bridge compatibility --json
 ```
@@ -216,14 +215,20 @@ codex-feishu-bridge compatibility --json
 记录最近一次 ChatGPT App/Codex 版本、binary SHA-256、完整 schema digest 和兼容结论，不包含 prompt、结果或
 凭证。
 
-精确版本和 digest 已在配置目录中时可以启动；版本尚未列入、但完整 schema digest 与已支持合同相同时，
-`compatibility` 返回“兼容”并标记 `upgrade_available`，Bridge 仍拒绝启动，直到操作员审查后明确执行：
+精确版本和 digest 已在配置目录中时可以启动；exact pair 尚未支持时，`start`/`restart` 和 `compatibility`
+都会跑隔离 `owned_stdio` 协议 smoke，验证 Bridge 实际使用的非模型控制面方法。通过后写入
+`protocol-versions.json`，来源为 `auto_smoke`，并继续启动；失败时返回“不兼容”并 fail closed。
+如果正式启动触发了协议 smoke，Bridge 会向已配置 `ALLOWED_CHATS` 和已有绑定会话发送飞书卡片，先提示
+“兼容检查中”，再更新为通过或失败结果；已登记 exact pair 的普通启动不会额外发送兼容检查卡片。
+
+`--approve` 只保留给 schema digest 已与现有合同一致、但 exact version 尚未写入的人工确认路径；该路径仍会先跑
+协议 smoke，不能绕过功能验证：
 
 ```bash
 codex-feishu-bridge compatibility --approve
 ```
 
-`--approve` 只允许加入 schema 已匹配的精确版本，不接受未知 schema，也不会修改源码或 `package.json`。
+未知 schema 不接受 `--approve` 绕过，也不会修改源码或 `package.json`。
 
 `doctor` 会生成配置 binary 的完整 experimental schema digest，并报告
 `protocolProfileId`、`codexVersion`、`schemaDigest`、`appServerMode` 和
