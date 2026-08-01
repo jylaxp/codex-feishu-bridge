@@ -1,0 +1,70 @@
+src/app/local-version-command.ts
+  s_e980cd34574f78::t_73d823570d45a9 18
+src/app/codex/protocol-version-config.ts
+  s_e980cd34574f78::t_371743bb295d5b 25,201-210,214-240,290,292,328-332,336-337,414-418,481,485-486,495,504
+  s_e980cd34574f78::t_92cf949a12f1c2 139-154,211-213
+  s_e980cd34574f78::t_6ea095c41d752d 487-489,501-503
+  s_e980cd34574f78::t_9c5cc208090644 505-506
+src/app/codex/app-server-protocol-smoke.ts
+  s_e980cd34574f78::t_985e4763d53cab 1-135,139-244,248-258,261,263-281,285-303
+  s_e980cd34574f78::t_3574fc4279d136 136-138,245-247,259-260,262,282-284
+docs/app-server-upgrade-runbook.md
+  s_e980cd34574f78::t_3fdcd3ff46350e 3-5,149,156-159,171-173,175,209-210
+  s_e980cd34574f78::t_974a99340f2042 160-161
+  s_e980cd34574f78::t_aa18b1b42515b7 163-164
+  s_e980cd34574f78::t_671e3827fdff0e 162
+test/app/runtime-compatibility-notifier.test.ts
+  s_e980cd34574f78::t_91c91e4dd9cbd2 1-166
+test/app/app-server-control-plane.test.ts
+  s_e980cd34574f78::t_4eb7407fc0dc45 3,20-22,326-331,336,339,355,358
+  s_e980cd34574f78::t_22bc5aae529f13 5
+src/app/codex/runtime-contract.ts
+  s_e980cd34574f78::t_1d96e1ae718a56 34-38,68,73-74,92,99,131,133-144,148-149,151,153-155,157,178,309-314
+  s_e980cd34574f78::t_3cec3db5537196 32,320,332
+  s_e980cd34574f78::t_8705e8375ac1d4 156,315-319,321-331,333-334
+  s_e980cd34574f78::t_6d3853fc8175de 150,152
+  s_e980cd34574f78::t_0ec1942dac0571 145-147
+  s_e980cd34574f78::t_7b268cf6f0f96b 335
+test/app/runtime-contract.test.ts
+  s_e980cd34574f78::t_f8fbaf7e9a283d 26-27
+  s_e980cd34574f78::t_ec7c061067a090 342-346,349,354,364-370,372,385,417-418,456-520,522-574
+  s_e980cd34574f78::t_52b299a2090862 521
+  s_e980cd34574f78::t_96bdf0832c6c20 25
+  s_e980cd34574f78::t_146843e983fc54 575
+test/app/protocol-version-config.test.ts
+  s_e980cd34574f78::t_911ab4366ff629 201-203
+  s_e980cd34574f78::t_81d582a3170e96 187-200,204-236
+test/app/cli-version.test.ts
+  s_e980cd34574f78::t_316ea476a9c553 18,20,24,30
+docs/app-server-support-matrix.md
+  s_e980cd34574f78::t_b00c8499e8ef66 16-17,19,36-39,42,44-45
+README.md
+  s_e980cd34574f78::t_974a99340f2042 221-222
+  s_e980cd34574f78::t_062747894f92cc 22-26,208,218-220,231
+  s_e980cd34574f78::t_7ec20d6d626131 224-225
+  s_e980cd34574f78::t_21379946652a4c 223
+src/app/main.ts
+  s_e980cd34574f78::t_e3c3b9198f3385 33,74-77,125-159,162-169,174-186,253
+src/app/cli.ts
+  s_e980cd34574f78::t_a42f1bf72906e7 69,113
+  s_e980cd34574f78::t_0efc5e6c08a05f 418-419
+src/app/runtime-compatibility-notifier.ts
+  s_e980cd34574f78::t_47e3f1ffc532d5 1-121,123-138,140,142-143,145-210
+  s_e980cd34574f78::t_509d4856aa9b7d 122,139,141,144
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.19",
+  "base_commit_sha": "c5f67a48b35d6dbe3995b6a558f1481519d4be51",
+  "prompts": {},
+  "sessions": {
+    "s_e980cd34574f78": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f7eaf-8cfe-75e2-9bbd-34eae0f6e1d8",
+        "model": "gpt-5.5"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    }
+  }
+}
