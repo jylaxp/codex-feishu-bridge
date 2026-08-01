@@ -1,0 +1,36 @@
+test/app/runtime-contract.test.ts
+  s_e980cd34574f78::t_1beda24ed260d8 476-479,486-491,507-510
+src/app/main.ts
+  s_e980cd34574f78::t_c50a4cf2d2f41e 77,161-162,207-217
+  s_e980cd34574f78::t_9194e0e0453f61 174,180-181,183,185,187-188,193-202,205-206
+  s_e980cd34574f78::t_e8538b70cfaf69 165,173,182,186,192
+README.md
+  s_e980cd34574f78::t_ebc391e4ca8e58 221-223
+src/app/runtime-compatibility-notifier.ts
+  s_e980cd34574f78::t_fd7058f0d13fc0 5,9-24,51,58,90,97-109,111-112,117,121-124,132,138-139,152-155,173,175-178,187-195,218,253-256,258-259,263-265,267-287
+  s_e980cd34574f78::t_e75889c9ea585f 67-76,79,86,88,92,196-217
+test/app/runtime-compatibility-notifier.test.ts
+  s_e980cd34574f78::t_1beda24ed260d8 66-88
+  s_e980cd34574f78::t_eb9d4d5d60e73c 119-124
+docs/app-server-upgrade-runbook.md
+  s_e980cd34574f78::t_ebc391e4ca8e58 160-162
+src/app/codex/runtime-contract.ts
+  s_e980cd34574f78::t_e8538b70cfaf69 38
+  s_e980cd34574f78::t_dd91e5d7a09237 76,94-97,122-128,148
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.19",
+  "base_commit_sha": "7152946d64a9d4814b8718162a581d83282178f3",
+  "prompts": {},
+  "sessions": {
+    "s_e980cd34574f78": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f7eaf-8cfe-75e2-9bbd-34eae0f6e1d8",
+        "model": "gpt-5.5"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    }
+  }
+}
