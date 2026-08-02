@@ -19,16 +19,15 @@ App Server 只承担控制面：会话列表、创建/派生/归档、目标/压
 
 当前精确支持 `codex-cli 0.144.3`、`codex-cli 0.145.0-alpha.18`、
 `codex-cli 0.145.0-alpha.27`、`codex-cli 0.145.0-alpha.30` 和
-`codex-cli 0.146.0-alpha.3`/`.3.1`。145 后续别名复用 schema 相同的 `.18` 协议适配器；0.146 已验证版本
-在功能 smoke 通过后复用 145 adapter。Bridge 启动时根据 `CODEX_BIN` 的精确版本和完整 experimental
-schema digest 自动选择已支持 exact pair；如果当前 exact pair 尚未支持，会先启动隔离 App Server 跑 Bridge
-已用控制面协议 smoke，smoke 通过后自动写入 `auto_smoke` 支持，失败才在 Desktop 和飞书连接前拒绝启动。
+`codex-cli 0.146.0-alpha.3`/`.3.1`。145 后续别名和已验证 0.146 版本在功能 smoke 通过后复用 145 adapter。
+Bridge 启动时只根据 `CODEX_BIN` 的精确版本选择已支持版本；如果当前版本尚未支持，会先启动隔离 App Server
+跑 Bridge 已用控制面协议 smoke，smoke 通过后自动写入 `auto_smoke` 支持，失败才在 Desktop 和飞书连接前拒绝启动。
 完整证据见 [App Server 支持矩阵](docs/app-server-support-matrix.md)，新增版本流程见
 [App Server 升级运行手册](docs/app-server-upgrade-runbook.md)。
 
 生产任务的 start/steer/interrupt、审批和 live event 始终由 ChatGPT Desktop IPC 负责，App Server 多版本
-选择不会改变这条执行链。`managed_proxy` 模式的 initialize identity 只能佐证 proxy 自报版本，不能证明
-socket 后 daemon 的完整 schema；操作员必须把远端 daemon 精确钉在已支持 profile。
+选择不会改变这条执行链。`managed_proxy` 模式的 initialize identity 只能佐证 proxy 自报版本；操作员必须把
+远端 daemon 精确钉在已支持 profile。
 
 ## 安装方式
 
@@ -201,40 +200,33 @@ codex-feishu-bridge update --force
 # 检查本机配置、App Server protocol profile 和运行依赖
 codex-feishu-bridge doctor
 
-# 查看本机 ChatGPT App、Codex CLI、binary 和 schema 版本
+# 查看本机 ChatGPT App、Codex CLI 和 binary
 codex-feishu-bridge version
 codex-feishu-bridge version --json
 
-# 检查协议兼容性；未知 exact pair 会先跑隔离控制面 smoke
+# 检查协议兼容性；未知版本会先跑隔离控制面 smoke
 codex-feishu-bridge compatibility
 codex-feishu-bridge compatibility --json
 ```
 
 首次执行 `run`、`start`、`doctor`、`version` 或 `compatibility` 时，如果配置不存在，Bridge 会把内置支持
 目录写入 `~/.codex-feishu-bridge/protocol-versions.json`。后续启动读取该文件，再检测当前本机版本。文件同时
-记录最近一次 ChatGPT App/Codex 版本、binary SHA-256、完整 schema digest 和兼容结论，不包含 prompt、结果或
+记录最近一次 ChatGPT App/Codex 版本、binary SHA-256 和兼容结论，不包含 prompt、结果或
 凭证。
 
-精确版本和 digest 已在配置目录中时可以启动；exact pair 尚未支持时，`start`/`restart` 和 `compatibility`
-都会跑隔离 `owned_stdio` 协议 smoke，验证 Bridge 实际使用的非模型控制面方法。通过后写入
+精确版本已在配置目录中时可以启动；版本尚未支持时，`start`/`restart` 和 `compatibility` 都会跑隔离
+`owned_stdio` 协议 smoke，验证 Bridge 实际使用的非模型控制面方法。通过后写入
 `protocol-versions.json`，来源为 `auto_smoke`，并继续启动；失败时返回“不兼容”并 fail closed。
-正式启动每次执行 runtime 兼容检查时，都会向已配置 `ALLOWED_CHATS` 和已有绑定会话发送飞书卡片，先提示
-“兼容检查中”，再更新为通过或失败结果。已登记 exact pair 直接显示已支持；未知 exact pair 会先把卡片更新为
-“协议检查中”，再在 smoke 结束后给出最终结论。卡片投递失败只记录日志，不替代协议判定。
+正式启动每次执行 runtime 兼容检查时，都会向 `ALLOWED_CHATS` 中经飞书确认的 p2p 单聊发送卡片，先提示
+“开始检查兼容性”，runtime 探测完成后继续流式更新同一张卡片，最后明确提示“兼容性通过，可以继续使用”或
+“兼容性不通过，当前版本不能使用”。已登记版本直接显示已支持；未知版本会先把卡片更新为
+“协议兼容性检查中”，再在 smoke 结束后给出最终结论。卡片投递失败只记录日志，不替代协议判定。
 
-`--approve` 只保留给 schema digest 已与现有合同一致、但 exact version 尚未写入的人工确认路径；该路径仍会先跑
-协议 smoke，不能绕过功能验证：
+`--approve` 已废弃；兼容性不能人工按签名批准，只能由已登记版本或协议 smoke 通过来放行。
 
-```bash
-codex-feishu-bridge compatibility --approve
-```
-
-未知 schema 不接受 `--approve` 绕过，也不会修改源码或 `package.json`。
-
-`doctor` 会生成配置 binary 的完整 experimental schema digest，并报告
-`protocolProfileId`、`codexVersion`、`schemaDigest`、`appServerMode` 和
+`doctor` 会报告 `protocolProfileId`、`codexVersion`、`appServerMode` 和
 `appServerIdentityAssurance`。doctor 只做本机探测；正式启动还会用 initialize identity 核对实际 App Server
-版本。`managed_proxy` 的 assurance 会明确显示为操作员信任的版本佐证，而不是远端 schema 证明。
+版本。`managed_proxy` 的 assurance 会明确显示为操作员信任的版本佐证，而不是远端协议证明。
 
 `LOG_TO_FILE=true` 时可实时查看后台输出日志：
 

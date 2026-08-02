@@ -40,7 +40,6 @@ interface CliArguments {
   readonly rebind: boolean;
   readonly force: boolean;
   readonly json: boolean;
-  readonly approve: boolean;
 }
 
 export interface CliRuntime {
@@ -66,7 +65,7 @@ export interface CliDependencies {
   ) => Promise<BackgroundServiceReport>;
   readonly runLocalVersionCommand?: (
     env: NodeJS.ProcessEnv,
-    options: { readonly approve?: boolean; readonly autoProtocolSmoke?: boolean },
+    options: { readonly autoProtocolSmoke?: boolean },
   ) => Promise<LocalVersionReport>;
 }
 
@@ -109,7 +108,6 @@ export async function runCli(
     let report: LocalVersionReport;
     try {
       report = await inspect(runtimeEnv, {
-        approve: parsed.command === 'compatibility' && parsed.approve,
         autoProtocolSmoke: parsed.command === 'compatibility',
       });
     } catch (error) {
@@ -238,7 +236,6 @@ function parseArguments(args: readonly string[]): CliArguments {
   let rebind = false;
   let force = false;
   let json = false;
-  let approve = false;
   let commandSeen = false;
 
   for (let index = 0; index < args.length; index += 1) {
@@ -274,8 +271,7 @@ function parseArguments(args: readonly string[]): CliArguments {
       continue;
     }
     if (argument === '--approve') {
-      approve = true;
-      continue;
+      throw new Error('--approve is no longer supported; compatibility uses protocol smoke automatically');
     }
     if (argument === '--help' || argument === '-h') {
       command = 'help';
@@ -331,10 +327,7 @@ function parseArguments(args: readonly string[]): CliArguments {
   if (json && command !== 'status' && command !== 'version' && command !== 'compatibility') {
     throw new Error('--json is only valid with status, version, or compatibility');
   }
-  if (approve && command !== 'compatibility') {
-    throw new Error('--approve is only valid with compatibility');
-  }
-  return { command, threadId, configHome, confirm, destructive, rebind, force, json, approve };
+  return { command, threadId, configHome, confirm, destructive, rebind, force, json };
 }
 
 function requireOptionValue(
@@ -404,7 +397,7 @@ function helpText(): string {
     '  codex-feishu-bridge update [--force] [--config-home PATH]',
     '  codex-feishu-bridge doctor',
     '  codex-feishu-bridge version [--json] [--config-home PATH]',
-    '  codex-feishu-bridge compatibility [--json] [--approve] [--config-home PATH]',
+    '  codex-feishu-bridge compatibility [--json] [--config-home PATH]',
     '  codex-feishu-bridge validate-ui-sync [--thread THREAD_ID]',
     '  codex-feishu-bridge config reset [--config-home PATH] [--confirm] [--destructive]',
     '',
@@ -415,8 +408,7 @@ function helpText(): string {
     'rebind forces a new Feishu QR-code app registration and replaces LARK_APP_ID/LARK_APP_SECRET.',
     'start/restart/stop/status manage the PID file and logs under ~/.codex-feishu-bridge/.',
     'version detects local ChatGPT/Codex versions and refreshes protocol-versions.json.',
-    'compatibility reports 兼容/不兼容 and smoke-verifies unsupported exact pairs.',
-    '--approve explicitly adds a schema-compatible exact version without unknown-schema bypass.',
+    'compatibility reports 兼容/不兼容 and smoke-verifies unsupported versions.',
     'validate-ui-sync without --thread lists recent workspace tasks.',
     'config reset is a dry run until --confirm; --destructive is required to clear an already-current binding.',
     '',

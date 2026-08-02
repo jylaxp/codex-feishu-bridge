@@ -73,8 +73,11 @@ import {
 import type { LarkWebsocketConnectionSnapshot } from './lark/client';
 import {
   RuntimeCompatibilityNotifier,
-  runtimeCompatibilityNotificationChatIds,
+  runtimeCompatibilityDirectNotificationChatIds,
+  type RuntimeCompatibilityCardClient,
+  type RuntimeCompatibilityChatInfoClient,
   type RuntimeCompatibilityCheckTarget,
+  type RuntimeCompatibilityLogger,
 } from './runtime-compatibility-notifier';
 
 export interface BridgeRuntime {
@@ -162,16 +165,15 @@ export async function startBridge(
   let compatibilityTarget: RuntimeCompatibilityCheckTarget | null = null;
   try {
     bindings.load();
-    const activeCompatibilityNotifier = new RuntimeCompatibilityNotifier({
+    const activeCompatibilityNotifier = await createRuntimeCompatibilityNotifier(
+      config,
       cards,
-      chatIds: runtimeCompatibilityNotificationChatIds(
-        config.allowedChats,
-        bindings.list().map((binding) => binding.chatId),
-      ),
+      lark.api,
       logger,
-    });
+    );
     compatibilityNotifier = activeCompatibilityNotifier;
     let protocolSmokeResult: Awaited<ReturnType<typeof runAppServerProtocolSmoke>> | null = null;
+    await activeCompatibilityNotifier.started({ codexBin: config.codexBin });
     runtimeContract = await verifyCodexRuntimeContract(
       config,
       effectiveEnv,
@@ -179,7 +181,7 @@ export async function startBridge(
       {
         onRuntimeDetected: async (target) => {
           compatibilityTarget = target;
-          await activeCompatibilityNotifier.started(target);
+          await activeCompatibilityNotifier.runtimeDetected(target);
         },
         protocolSmokeRunner: async (options) => {
           compatibilityTarget = options.target;
@@ -193,7 +195,6 @@ export async function startBridge(
       compatibilityTarget ?? {
         codexBin: config.codexBin,
         codexVersionOutput: runtimeContract.codexVersion,
-        schemaDigest: runtimeContract.schemaDigest,
       },
       protocolSmokeResult ?? {
         adapterProfileId: runtimeContract.protocolProfile.id,
@@ -202,17 +203,10 @@ export async function startBridge(
     );
     protocolAdapter = adapterForAppServerProfile(runtimeContract.protocolProfile);
   } catch (error) {
-    // If runtime detection completed, the notifier already has the exact
-    // version/digest; otherwise it still reports the startup inspection failure.
+    // If runtime detection completed, the notifier already has the version;
+    // otherwise it still reports the startup inspection failure.
     if (compatibilityNotifier === null) {
-      compatibilityNotifier = new RuntimeCompatibilityNotifier({
-        cards,
-        chatIds: runtimeCompatibilityNotificationChatIds(
-          config.allowedChats,
-          bindings.list().map((binding) => binding.chatId),
-        ),
-        logger,
-      });
+      compatibilityNotifier = await createRuntimeCompatibilityNotifier(config, cards, lark.api, logger);
     }
     await compatibilityNotifier.failed(compatibilityTarget, error);
     processLock.release();
@@ -258,7 +252,6 @@ export async function startBridge(
         appServer: Object.freeze({
           state: appServerState,
           protocolContractId: runtimeContract.protocolProfile.id,
-          schemaDigest: runtimeContract.schemaDigest,
           artifactSha256: runtimeContract.runtimeArtifact.binarySha256,
         }),
         desktop: Object.freeze({
@@ -769,7 +762,6 @@ export async function startBridge(
       codexVersion: runtimeContract.codexVersion,
       appServerProtocolProfile: runtimeContract.protocolProfile.id,
       appServerProtocolSupported: true,
-      appServerSchemaDigest: runtimeContract.schemaDigest,
       codexRuntimeArtifactSha256: runtimeContract.runtimeArtifact.binarySha256,
       desktopIpcContract: DESKTOP_IPC_CONTRACT.id,
       runtimeInstance: randomUUID().slice(0, 8),
@@ -841,6 +833,35 @@ function notificationLocalImagePaths(notification: ServerNotification): readonly
     return item?.type === 'localImage' && typeof item.path === 'string'
       ? [item.path]
       : [];
+  });
+}
+
+async function createRuntimeCompatibilityNotifier(
+  config: BridgeConfig,
+  cards: RuntimeCompatibilityCardClient,
+  larkApi: unknown,
+  logger: RuntimeCompatibilityLogger,
+): Promise<RuntimeCompatibilityNotifier> {
+  const chatIds = await runtimeCompatibilityDirectNotificationChatIds(
+    config.allowedChats,
+    larkChatInfoClient(larkApi),
+    logger,
+  );
+  return new RuntimeCompatibilityNotifier({ cards, chatIds, logger });
+}
+
+function larkChatInfoClient(larkApi: unknown): RuntimeCompatibilityChatInfoClient {
+  return Object.freeze({
+    getChatMode: async (chatId: string): Promise<string | null> => {
+      const im = asRecord(asRecord(larkApi)?.im);
+      const chat = asRecord(im?.chat);
+      if (typeof chat?.get !== 'function') {
+        throw new Error('Lark chat.get API is unavailable');
+      }
+      const response = asRecord(await chat.get.call(chat, { path: { chat_id: chatId } }));
+      const data = asRecord(response?.data);
+      return textField(data?.chat_mode) ?? textField(data?.chat_type);
+    },
   });
 }
 

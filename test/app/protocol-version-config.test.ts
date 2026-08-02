@@ -12,11 +12,7 @@ import {
 } from '../../src/app/codex/protocol-version-config';
 import { BridgeProcessLock } from '../../src/app/process-lock';
 
-const schema145 = '7a5aaea66a649faae713d43313289ddd79b4883086c10875f9031a56ec00bd5c';
-const schema144 = '3b1af113954376a68d0d2382190f4bde6ca58c02a5c9a5cfebcd01f1747e79e7';
-const schema146 = '8535b3371e916d0ea4f2bc62c28a7236323d5f37fd7652184098c90d256c738f';
-
-test('first load seeds built-ins and later loads preserve approved versions', () => {
+test('first load seeds built-ins and protocol smoke can add an unknown version', () => {
   const root = mkdtempSync(join(tmpdir(), 'bridge-protocol-versions-'));
   try {
     const store = new ProtocolVersionConfigStore(root);
@@ -34,54 +30,37 @@ test('first load seeds built-ins and later loads preserve approved versions', ()
     );
     assert.deepEqual(initial.supportedVersions[2], {
       codexVersion: '0.145.0-alpha.27',
-      schemaDigest: schema145,
-      adapterProfileId: 'app-server-0.145.0-alpha.18',
-      source: 'builtin',
-    });
-    assert.deepEqual(initial.supportedVersions[3], {
-      codexVersion: '0.145.0-alpha.30',
-      schemaDigest: schema145,
-      adapterProfileId: 'app-server-0.145.0-alpha.18',
-      source: 'builtin',
-    });
-    assert.deepEqual(initial.supportedVersions[4], {
-      codexVersion: '0.146.0-alpha.3',
-      schemaDigest: schema146,
       adapterProfileId: 'app-server-0.145.0-alpha.18',
       source: 'builtin',
     });
     assert.deepEqual(initial.supportedVersions[5], {
       codexVersion: '0.146.0-alpha.3.1',
-      schemaDigest: schema146,
       adapterProfileId: 'app-server-0.145.0-alpha.18',
       source: 'builtin',
     });
     assert.equal(initial.lastDetection, null);
 
-    const candidate = detection('0.145.0-alpha.19', schema145, 'upgrade_available');
+    const candidate = detection('0.146.0-alpha.9.2', 'incompatible');
     store.recordDetection(candidate);
-    store.approveCompatibleVersion(candidate);
+    assert.throws(
+      () => store.approveCompatibleVersion(candidate),
+      /already supported runtime/,
+    );
+    store.approveProtocolSmokeVersion(candidate, 'app-server-0.145.0-alpha.18');
 
     const reloaded = new ProtocolVersionConfigStore(root).loadOrCreate();
-    assert.deepEqual(
-      reloaded.supportedVersions.map((entry) => entry.codexVersion),
-      [
-        '0.144.3',
-        '0.145.0-alpha.18',
-        '0.145.0-alpha.27',
-        '0.145.0-alpha.30',
-        '0.146.0-alpha.3',
-        '0.146.0-alpha.3.1',
-        '0.145.0-alpha.19',
-      ],
-    );
-    assert.equal(reloaded.supportedVersions[6]?.source, 'approved');
+    assert.deepEqual(reloaded.supportedVersions.at(-1), {
+      codexVersion: '0.146.0-alpha.9.2',
+      adapterProfileId: 'app-server-0.145.0-alpha.18',
+      source: 'auto_smoke',
+    });
+    assert.equal(reloaded.lastDetection?.compatibility.status, 'supported');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test('existing catalogs gain newly shipped built-ins without replacing approved entries', () => {
+test('existing catalogs ignore legacy schema digests and gain newly shipped built-ins', () => {
   const root = mkdtempSync(join(tmpdir(), 'bridge-protocol-versions-upgrade-'));
   try {
     const filePath = join(root, 'protocol-versions.json');
@@ -90,24 +69,36 @@ test('existing catalogs gain newly shipped built-ins without replacing approved 
       supportedVersions: [
         {
           codexVersion: '0.144.3',
-          schemaDigest: schema144,
+          schemaDigest: '3b1af113954376a68d0d2382190f4bde6ca58c02a5c9a5cfebcd01f1747e79e7',
           adapterProfileId: 'app-server-0.144.3',
           source: 'builtin',
         },
         {
           codexVersion: '0.145.0-alpha.18',
-          schemaDigest: schema145,
+          schemaDigest: '7a5aaea66a649faae713d43313289ddd79b4883086c10875f9031a56ec00bd5c',
           adapterProfileId: 'app-server-0.145.0-alpha.18',
           source: 'approved',
         },
         {
           codexVersion: '0.145.0-alpha.19',
-          schemaDigest: schema145,
+          schemaDigest: '7a5aaea66a649faae713d43313289ddd79b4883086c10875f9031a56ec00bd5c',
           adapterProfileId: 'app-server-0.145.0-alpha.18',
-          source: 'approved',
+          source: 'auto_smoke',
         },
       ],
-      lastDetection: null,
+      lastDetection: {
+        checkedAt: '2026-07-19T08:33:48.000Z',
+        codexBinary: '/Applications/ChatGPT.app/Contents/Resources/codex',
+        codexVersion: '0.145.0-alpha.28',
+        binarySha256: 'b'.repeat(64),
+        schemaDigest: '7a5aaea66a649faae713d43313289ddd79b4883086c10875f9031a56ec00bd5c',
+        chatGptApp: null,
+        compatibility: {
+          conclusion: '兼容',
+          status: 'upgrade_available',
+          adapterProfileId: 'app-server-0.145.0-alpha.18',
+        },
+      },
     }, null, 2)}\n`);
 
     const upgraded = new ProtocolVersionConfigStore(root).loadOrCreate();
@@ -117,53 +108,38 @@ test('existing catalogs gain newly shipped built-ins without replacing approved 
       [
         ['0.144.3', 'builtin'],
         ['0.145.0-alpha.18', 'approved'],
-        ['0.145.0-alpha.19', 'approved'],
+        ['0.145.0-alpha.19', 'auto_smoke'],
         ['0.145.0-alpha.27', 'builtin'],
         ['0.145.0-alpha.30', 'builtin'],
         ['0.146.0-alpha.3', 'builtin'],
         ['0.146.0-alpha.3.1', 'builtin'],
       ],
     );
-    assert.equal(
-      assessProtocolCompatibility(upgraded.supportedVersions, '0.145.0-alpha.27', schema145).status,
-      'supported',
-    );
-    assert.equal(
-      assessProtocolCompatibility(upgraded.supportedVersions, '0.145.0-alpha.30', schema145).status,
-      'supported',
-    );
-    assert.equal(
-      assessProtocolCompatibility(upgraded.supportedVersions, '0.145.0-alpha.28', schema145).status,
-      'upgrade_available',
-    );
-    assert.equal(
-      assessProtocolCompatibility(upgraded.supportedVersions, '0.146.0-alpha.3', schema146).status,
-      'supported',
-    );
-    assert.equal(
-      assessProtocolCompatibility(upgraded.supportedVersions, '0.146.0-alpha.3.1', schema146).status,
-      'supported',
-    );
-    assert.deepEqual(
-      JSON.parse(readFileSync(filePath, 'utf8')),
-      upgraded,
-    );
+    assert.deepEqual(upgraded.lastDetection?.compatibility, {
+      conclusion: '不兼容',
+      status: 'incompatible',
+      adapterProfileId: null,
+    });
+    assert.equal(assessProtocolCompatibility(upgraded.supportedVersions, '0.145.0-alpha.27').status, 'supported');
+    assert.equal(assessProtocolCompatibility(upgraded.supportedVersions, '0.145.0-alpha.28').status, 'incompatible');
+    assert.equal(assessProtocolCompatibility(upgraded.supportedVersions, '0.146.0-alpha.3.1').status, 'supported');
+    assert.doesNotMatch(readFileSync(filePath, 'utf8'), /schemaDigest|upgrade_available/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test('stale detection writers preserve versions approved by another store', () => {
+test('stale detection writers preserve versions added by another store', () => {
   const root = mkdtempSync(join(tmpdir(), 'bridge-protocol-versions-race-'));
   try {
     const staleStore = new ProtocolVersionConfigStore(root);
     staleStore.loadOrCreate();
     const approvingStore = new ProtocolVersionConfigStore(root);
-    const candidate = detection('0.145.0-alpha.19', schema145, 'upgrade_available');
+    const candidate = detection('0.146.0-alpha.9.2', 'incompatible');
 
     approvingStore.recordDetection(candidate);
-    approvingStore.approveCompatibleVersion(candidate);
-    staleStore.recordDetection(detection('0.144.3', schema144, 'incompatible'));
+    approvingStore.approveProtocolSmokeVersion(candidate, 'app-server-0.145.0-alpha.18');
+    staleStore.recordDetection(detection('0.144.3', 'supported'));
 
     const reloaded = new ProtocolVersionConfigStore(root).loadOrCreate();
     assert.deepEqual(
@@ -175,7 +151,7 @@ test('stale detection writers preserve versions approved by another store', () =
         '0.145.0-alpha.30',
         '0.146.0-alpha.3',
         '0.146.0-alpha.3.1',
-        '0.145.0-alpha.19',
+        '0.146.0-alpha.9.2',
       ],
     );
     assert.equal(reloaded.lastDetection?.compatibility.status, 'supported');
@@ -184,51 +160,38 @@ test('stale detection writers preserve versions approved by another store', () =
   }
 });
 
-test('protocol smoke approval permits one Codex version with separate schema digests', () => {
+test('protocol smoke approval records one entry per Codex version', () => {
   const root = mkdtempSync(join(tmpdir(), 'bridge-protocol-versions-smoke-'));
   try {
     const store = new ProtocolVersionConfigStore(root);
     store.loadOrCreate();
-    const platformDigest = 'a'.repeat(64);
-    const candidate = detection('0.146.0-alpha.3.1', platformDigest, 'incompatible');
+    const candidate = detection('0.146.0-alpha.9.2', 'incompatible');
 
     const approved = store.approveProtocolSmokeVersion(
       candidate,
       'app-server-0.145.0-alpha.18',
     );
+    const approvedAgain = store.approveProtocolSmokeVersion(
+      candidate,
+      'app-server-0.145.0-alpha.18',
+    );
 
     assert.equal(
-      approved.supportedVersions.filter(
-        (entry) => entry.codexVersion === '0.146.0-alpha.3.1',
+      approvedAgain.supportedVersions.filter(
+        (entry) => entry.codexVersion === '0.146.0-alpha.9.2',
       ).length,
-      2,
+      1,
     );
     assert.equal(approved.supportedVersions.at(-1)?.source, 'auto_smoke');
     assert.equal(
-      assessProtocolCompatibility(
-        approved.supportedVersions,
-        '0.146.0-alpha.3.1',
-        platformDigest,
-      ).status,
+      assessProtocolCompatibility(approved.supportedVersions, '0.146.0-alpha.9.2').status,
       'supported',
     );
-    assert.equal(
-      assessProtocolCompatibility(
-        approved.supportedVersions,
-        '0.146.0-alpha.3.1',
-        schema146,
-      ).status,
-      'supported',
-    );
-
-    const reloaded = new ProtocolVersionConfigStore(root).loadOrCreate();
-    assert.deepEqual(reloaded.supportedVersions.at(-1), {
-      codexVersion: '0.146.0-alpha.3.1',
-      schemaDigest: platformDigest,
+    assert.deepEqual(new ProtocolVersionConfigStore(root).loadOrCreate().supportedVersions.at(-1), {
+      codexVersion: '0.146.0-alpha.9.2',
       adapterProfileId: 'app-server-0.145.0-alpha.18',
       source: 'auto_smoke',
     });
-    assert.equal(reloaded.lastDetection?.compatibility.status, 'supported');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -242,7 +205,7 @@ test('catalog mutation fails closed while another process lock is held', () => {
   lock.acquire();
   try {
     assert.throws(
-      () => store.recordDetection(detection('0.144.3', schema144, 'supported')),
+      () => store.recordDetection(detection('0.144.3', 'supported')),
       /already owns this data directory/,
     );
   } finally {
@@ -251,11 +214,11 @@ test('catalog mutation fails closed while another process lock is held', () => {
   }
 });
 
-test('compatibility distinguishes supported, compatible upgrade, and incompatible protocols', () => {
+test('compatibility is version-only before protocol smoke runs', () => {
   const supported = builtInProtocolVersionConfig().supportedVersions;
 
   assert.deepEqual(
-    assessProtocolCompatibility(supported, '0.145.0-alpha.18', schema145),
+    assessProtocolCompatibility(supported, '0.145.0-alpha.18'),
     {
       conclusion: '兼容',
       status: 'supported',
@@ -263,39 +226,8 @@ test('compatibility distinguishes supported, compatible upgrade, and incompatibl
       matchedVersion: supported[1],
     },
   );
-  assert.equal(
-    assessProtocolCompatibility(supported, '0.145.0-alpha.19', schema145).status,
-    'upgrade_available',
-  );
   assert.deepEqual(
-    assessProtocolCompatibility(supported, '0.145.0-alpha.27', schema145),
-    {
-      conclusion: '兼容',
-      status: 'supported',
-      adapterProfileId: 'app-server-0.145.0-alpha.18',
-      matchedVersion: supported[2],
-    },
-  );
-  assert.deepEqual(
-    assessProtocolCompatibility(supported, '0.145.0-alpha.30', schema145),
-    {
-      conclusion: '兼容',
-      status: 'supported',
-      adapterProfileId: 'app-server-0.145.0-alpha.18',
-      matchedVersion: supported[3],
-    },
-  );
-  assert.deepEqual(
-    assessProtocolCompatibility(supported, '0.146.0-alpha.3', schema146),
-    {
-      conclusion: '兼容',
-      status: 'supported',
-      adapterProfileId: 'app-server-0.145.0-alpha.18',
-      matchedVersion: supported[4],
-    },
-  );
-  assert.deepEqual(
-    assessProtocolCompatibility(supported, '0.146.0-alpha.3.1', schema146),
+    assessProtocolCompatibility(supported, '0.146.0-alpha.3.1'),
     {
       conclusion: '兼容',
       status: 'supported',
@@ -304,7 +236,7 @@ test('compatibility distinguishes supported, compatible upgrade, and incompatibl
     },
   );
   assert.deepEqual(
-    assessProtocolCompatibility(supported, '0.145.0-alpha.18', 'a'.repeat(64)),
+    assessProtocolCompatibility(supported, '0.146.0-alpha.9.2'),
     {
       conclusion: '不兼容',
       status: 'incompatible',
@@ -336,7 +268,6 @@ test('persisted catalog rejects malformed Codex versions', () => {
       schemaVersion: 1,
       supportedVersions: [{
         codexVersion: '0.145',
-        schemaDigest: schema145,
         adapterProfileId: 'app-server-0.145.0-alpha.18',
         source: 'approved',
       }],
@@ -353,15 +284,13 @@ test('persisted catalog rejects malformed Codex versions', () => {
 
 function detection(
   codexVersion: string,
-  schemaDigest: string,
-  status: 'supported' | 'upgrade_available' | 'incompatible',
+  status: 'supported' | 'incompatible',
 ): RuntimeVersionDetection {
   return Object.freeze({
     checkedAt: '2026-07-19T08:33:48.000Z',
     codexBinary: '/Applications/ChatGPT.app/Contents/Resources/codex',
     codexVersion,
     binarySha256: 'b'.repeat(64),
-    schemaDigest,
     chatGptApp: Object.freeze({
       appPath: '/Applications/ChatGPT.app',
       version: '26.715.31925',

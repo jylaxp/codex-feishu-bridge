@@ -154,10 +154,9 @@ export class AppServerRpcError extends Error {
 /**
  * Describes what an initialize identity can prove for the configured mode.
  *
- * An owned process is the same configured binary whose complete schema was
- * hashed during preflight. A managed proxy can only corroborate its reported
- * version; the operator is responsible for pinning that daemon to the selected
- * profile. The bridge never invents a remote schema digest.
+ * An owned process is the same configured binary probed during preflight. A
+ * managed proxy can only corroborate its reported version; the operator is
+ * responsible for pinning that daemon to the selected profile.
  */
 export function appServerIdentityAssurance(
   mode: AppServerTransportOptions['mode'],

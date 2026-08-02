@@ -93,6 +93,185 @@ test('binding pushes latest history when Desktop projection is unknown', async (
   assert.match(sentCards[0]?.idempotencyKey ?? '', /history:picker-message:thread-active:turn-completed/);
 });
 
+test('binding pushes only the newest terminal history turn by timestamp', async () => {
+  const createdCards: CardKitJson[] = [];
+  const sentCards: Array<{ readonly chatId: string; readonly cardId: string; readonly idempotencyKey?: string }> = [];
+  const catalog: BindingCatalogV3 = {
+    request: async <TResult>(method: string): Promise<TResult> => {
+      if (method !== 'thread/resume') {
+        throw new Error(`unexpected method: ${method}`);
+      }
+      return threadResumeResponseWithTurns([
+        completedTurn('turn-newest', 'new prompt', 'newest answer', 3_000, 4_000),
+        completedTurn('turn-middle', 'middle prompt', 'middle answer', 2_000, 3_000),
+        completedTurn('turn-oldest', 'old prompt', 'old answer', 1_000, 2_000),
+      ]) as TResult;
+    },
+  };
+  const cards: BindingCardsV3 = {
+    createCard: async (card: CardKitJson) => {
+      createdCards.push(card);
+      return `card-${createdCards.length}`;
+    },
+    replyCard: async () => 'message',
+    sendCard: async (chatId, cardId, idempotencyKey) => {
+      sentCards.push({ chatId, cardId, idempotencyKey });
+      return 'message';
+    },
+    replaceCard: async (_cardId, _card, sequence) => sequence + 1,
+  };
+  const store = {
+    get: () => binding,
+  } as unknown as BindingStore;
+  const service = new ConversationBindingServiceV3(
+    config,
+    store,
+    catalog,
+    cards,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => false,
+  );
+
+  await (service as unknown as {
+    completeBindingSideEffects(
+      selectedBinding: ChatThreadBinding,
+      messageId: string,
+    ): Promise<void>;
+  }).completeBindingSideEffects(binding, 'picker-message');
+
+  assert.equal(sentCards.length, 1);
+  assert.match(sentCards[0]?.idempotencyKey ?? '', /turn-newest/);
+  const cardJson = JSON.stringify(createdCards[0]);
+  assert.match(cardJson, /newest answer/);
+  assert.doesNotMatch(cardJson, /old answer/);
+  assert.doesNotMatch(cardJson, /middle answer/);
+});
+
+test('binding does not push stale history after the chat is rebound again', async () => {
+  let currentBinding: ChatThreadBinding | undefined = binding;
+  let projectionStarted = false;
+  let resolveProjection: ((value: boolean) => void) | undefined;
+  const catalogRequests: string[] = [];
+  const sentCards: Array<{ readonly chatId: string; readonly cardId: string; readonly idempotencyKey?: string }> = [];
+  const catalog: BindingCatalogV3 = {
+    request: async <TResult>(method: string): Promise<TResult> => {
+      catalogRequests.push(method);
+      return completedThreadResumeResponse() as TResult;
+    },
+  };
+  const cards: BindingCardsV3 = {
+    createCard: async (_card: CardKitJson) => 'card',
+    replyCard: async () => 'message',
+    sendCard: async (chatId, cardId, idempotencyKey) => {
+      sentCards.push({ chatId, cardId, idempotencyKey });
+      return 'message';
+    },
+    replaceCard: async (_cardId, _card, sequence) => sequence + 1,
+  };
+  const store = {
+    get: () => currentBinding,
+  } as unknown as BindingStore;
+  const service = new ConversationBindingServiceV3(
+    config,
+    store,
+    catalog,
+    cards,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => {
+      projectionStarted = true;
+      return new Promise<boolean>((resolve) => {
+        resolveProjection = resolve;
+      });
+    },
+  );
+  const sideEffect = (service as unknown as {
+    completeBindingSideEffects(
+      selectedBinding: ChatThreadBinding,
+      messageId: string,
+    ): Promise<void>;
+  }).completeBindingSideEffects(binding, 'picker-message');
+
+  await waitFor(() => projectionStarted);
+  currentBinding = {
+    ...binding,
+    threadId: 'thread-new-binding',
+    revision: binding.revision + 1,
+  };
+  resolveProjection?.(false);
+  await sideEffect;
+
+  assert.deepEqual(catalogRequests, []);
+  assert.equal(sentCards.length, 0);
+});
+
+test('binding sends at most one history card for concurrent same-revision side effects', async () => {
+  let resumeCalls = 0;
+  let releaseResume: (() => void) | undefined;
+  const resumeGate = new Promise<void>((resolve) => {
+    releaseResume = resolve;
+  });
+  const sentCards: Array<{ readonly chatId: string; readonly cardId: string; readonly idempotencyKey?: string }> = [];
+  const catalog: BindingCatalogV3 = {
+    request: async <TResult>(method: string): Promise<TResult> => {
+      if (method !== 'thread/resume') {
+        throw new Error(`unexpected method: ${method}`);
+      }
+      resumeCalls += 1;
+      await resumeGate;
+      return completedThreadResumeResponse() as TResult;
+    },
+  };
+  const cards: BindingCardsV3 = {
+    createCard: async (_card: CardKitJson) => 'card',
+    replyCard: async () => 'message',
+    sendCard: async (chatId, cardId, idempotencyKey) => {
+      sentCards.push({ chatId, cardId, idempotencyKey });
+      return 'message';
+    },
+    replaceCard: async (_cardId, _card, sequence) => sequence + 1,
+  };
+  const store = {
+    get: () => binding,
+  } as unknown as BindingStore;
+  const service = new ConversationBindingServiceV3(
+    config,
+    store,
+    catalog,
+    cards,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => false,
+  );
+  const completeBindingSideEffects = (selectedBinding: ChatThreadBinding, messageId: string) => (
+    service as unknown as {
+      completeBindingSideEffects(
+        binding: ChatThreadBinding,
+        messageId: string,
+      ): Promise<void>;
+    }
+  ).completeBindingSideEffects(selectedBinding, messageId);
+
+  const first = completeBindingSideEffects(binding, 'picker-message');
+  const second = completeBindingSideEffects(binding, 'picker-message');
+  await waitFor(() => resumeCalls === 1);
+  releaseResume?.();
+  await Promise.all([first, second]);
+
+  assert.equal(resumeCalls, 1);
+  assert.equal(sentCards.length, 1);
+});
+
 test('binding skips history when Desktop projection reports active turn', async () => {
   let catalogRequests = 0;
   const catalog: BindingCatalogV3 = {
@@ -131,6 +310,57 @@ test('binding skips history when Desktop projection reports active turn', async 
   }).completeBindingSideEffects(binding, 'picker-message');
 
   assert.equal(catalogRequests, 0);
+});
+
+test('binding skips stale history when App Server reports the thread is active', async () => {
+  const sentCards: Array<{ readonly chatId: string; readonly cardId: string; readonly idempotencyKey?: string }> = [];
+  const catalog: BindingCatalogV3 = {
+    request: async <TResult>(method: string): Promise<TResult> => {
+      if (method !== 'thread/resume') {
+        throw new Error(`unexpected method: ${method}`);
+      }
+      const response = threadResumeResponseWithTurns([
+        completedTurn('turn-old', 'old prompt', 'old answer', 1_000, 2_000),
+      ]) as {
+        readonly thread: { status: { type: string } };
+      };
+      response.thread.status = { type: 'active' };
+      return response as TResult;
+    },
+  };
+  const cards: BindingCardsV3 = {
+    createCard: async (_card: CardKitJson) => 'card',
+    replyCard: async () => 'message',
+    sendCard: async (chatId, cardId, idempotencyKey) => {
+      sentCards.push({ chatId, cardId, idempotencyKey });
+      return 'message';
+    },
+    replaceCard: async (_cardId, _card, sequence) => sequence + 1,
+  };
+  const store = {
+    get: () => binding,
+  } as unknown as BindingStore;
+  const service = new ConversationBindingServiceV3(
+    config,
+    store,
+    catalog,
+    cards,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => false,
+  );
+
+  await (service as unknown as {
+    completeBindingSideEffects(
+      selectedBinding: ChatThreadBinding,
+      messageId: string,
+    ): Promise<void>;
+  }).completeBindingSideEffects(binding, 'picker-message');
+
+  assert.equal(sentCards.length, 0);
 });
 
 test('binding sends a failure card when latest history cannot be read', async () => {
@@ -210,6 +440,12 @@ for (const command of ['/l', '/ll']) {
 }
 
 function completedThreadResumeResponse(): unknown {
+  return threadResumeResponseWithTurns([
+    completedTurn('turn-completed', 'hello', 'done', 1_000, 2_000),
+  ]);
+}
+
+function threadResumeResponseWithTurns(turns: readonly unknown[]): unknown {
   return {
     thread: {
       id: binding.threadId,
@@ -219,36 +455,56 @@ function completedThreadResumeResponse(): unknown {
       modelProvider: 'openai',
       status: { type: 'idle' },
       name: binding.threadTitle,
-      turns: [{
-        id: 'turn-completed',
-        input: [{
-          type: 'text',
-          text: 'hello',
-          text_elements: [],
-        }],
-        items: [{
-          id: 'item-user',
-          type: 'userMessage',
-          text: 'hello',
-        }, {
-          id: 'item-final',
-          type: 'agentMessage',
-          phase: 'final_answer',
-          text: 'done',
-        }],
-        itemsView: 'full',
-        status: 'completed',
-        error: null,
-        startedAt: 1_000,
-        completedAt: 2_000,
-        durationMs: 1_000,
-      }],
+      turns,
     },
     model: 'gpt-5.6-sol',
     modelProvider: 'openai',
     cwd: binding.workspaceId,
     initialTurnsPage: null,
   };
+}
+
+function completedTurn(
+  id: string,
+  prompt: string,
+  answer: string,
+  startedAt: number,
+  completedAt: number,
+): unknown {
+  return {
+    id,
+    input: [{
+      type: 'text',
+      text: prompt,
+      text_elements: [],
+    }],
+    items: [{
+      id: `${id}-user`,
+      type: 'userMessage',
+      text: prompt,
+    }, {
+      id: `${id}-final`,
+      type: 'agentMessage',
+      phase: 'final_answer',
+      text: answer,
+    }],
+    itemsView: 'full',
+    status: 'completed',
+    error: null,
+    startedAt,
+    completedAt,
+    durationMs: (completedAt - startedAt) * 1_000,
+  };
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  assert.equal(predicate(), true);
 }
 
 async function assertCommandScansThreadListPages(command: string): Promise<void> {

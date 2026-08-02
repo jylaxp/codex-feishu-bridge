@@ -1,12 +1,5 @@
-import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import {
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-} from 'node:fs';
-import { basename, join, relative } from 'node:path';
+import { basename } from 'node:path';
 import { promisify } from 'node:util';
 
 import type { BridgeConfig } from '../domain';
@@ -42,7 +35,6 @@ const execFileAsync = promisify(execFile);
 
 export interface CodexRuntimeContractReport {
   readonly codexVersion: string;
-  readonly schemaDigest: string;
   readonly protocolProfile: AppServerProtocolProfile;
   readonly runtimeArtifact: CodexRuntimeArtifact;
 }
@@ -56,7 +48,6 @@ export interface CodexRuntimeProbeConfig {
 export interface CodexRuntimeInspection {
   readonly codexVersionOutput: string;
   readonly codexVersion: string;
-  readonly schemaDigest: string;
   readonly binaryArtifact: CodexBinaryArtifact;
 }
 
@@ -70,7 +61,6 @@ export interface CodexCompatibilityReport {
 }
 
 export interface CodexCompatibilityOptions {
-  readonly approve?: boolean;
   readonly autoProtocolSmoke?: boolean;
   readonly protocolSmokeRunner?: AppServerProtocolSmokeRunner;
   readonly onRuntimeDetected?: (target: AppServerProtocolSmokeTarget) => Promise<void> | void;
@@ -79,14 +69,12 @@ export interface CodexCompatibilityOptions {
 
 export class CodexRuntimeCompatibilityError extends Error {
   public constructor(readonly status: CompatibilityAssessment['status']) {
-    super(status === 'upgrade_available'
-      ? 'Local Codex protocol is compatible but the exact version requires operator approval'
-      : 'Local Codex protocol is incompatible with the configured supported versions');
+    super('Local Codex protocol is incompatible with the configured supported versions');
     this.name = 'CodexRuntimeCompatibilityError';
   }
 }
 
-/** Verifies the configured CLI and its generated App Server protocol exactly. */
+/** Verifies the configured CLI version or a successful protocol smoke result. */
 export async function verifyCodexRuntimeContract(
   config: BridgeConfig,
   sourceEnv: NodeJS.ProcessEnv,
@@ -109,7 +97,7 @@ export async function verifyCodexRuntimeContract(
   return contractReport(compatibility.detection, compatibility.protocolProfile);
 }
 
-/** Detects the local runtime, persists the result, and optionally approves a compatible version. */
+/** Detects the local runtime, persists the result, and can auto-support a smoke-verified version. */
 export async function inspectCodexCompatibility(
   config: CodexRuntimeProbeConfig,
   sourceEnv: NodeJS.ProcessEnv,
@@ -123,14 +111,12 @@ export async function inspectCodexCompatibility(
     codexBin: config.codexBin,
     codexVersionOutput: inspection.codexVersionOutput,
     codexVersion: inspection.codexVersion,
-    schemaDigest: inspection.schemaDigest,
   });
   await options.onRuntimeDetected?.(smokeTarget);
   let versionConfig = store.loadOrCreate();
   let assessment = assessProtocolCompatibility(
     versionConfig.supportedVersions,
     inspection.codexVersion,
-    inspection.schemaDigest,
   );
   let detection = createDetection(config, inspection, assessment, options.now ?? (() => new Date()));
   versionConfig = store.recordDetection(detection);
@@ -138,7 +124,6 @@ export async function inspectCodexCompatibility(
   assessment = assessProtocolCompatibility(
     versionConfig.supportedVersions,
     inspection.codexVersion,
-    inspection.schemaDigest,
   );
   let protocolSmoke: AppServerProtocolSmokeResult | null = null;
 
@@ -149,9 +134,7 @@ export async function inspectCodexCompatibility(
         sourceEnv,
         temporaryRoot,
       });
-      versionConfig = options.approve && assessment.status === 'upgrade_available'
-        ? store.approveCompatibleVersion(detection)
-        : store.approveProtocolSmokeVersion(detection, protocolSmoke.adapterProfileId);
+      versionConfig = store.approveProtocolSmokeVersion(detection, protocolSmoke.adapterProfileId);
     } catch {
       const failedAssessment = incompatibleRuntimeAssessment();
       versionConfig = store.recordDetectionWithAssessment(
@@ -161,20 +144,9 @@ export async function inspectCodexCompatibility(
     }
     detection = versionConfig.lastDetection!;
     assessment = assessmentFromDetection(detection, versionConfig.supportedVersions);
-  } else if (options.approve && assessment.status === 'upgrade_available') {
-    versionConfig = store.approveCompatibleVersion(detection);
-    detection = versionConfig.lastDetection!;
-    assessment = assessProtocolCompatibility(
-      versionConfig.supportedVersions,
-      inspection.codexVersion,
-      inspection.schemaDigest,
-    );
   }
   const supportedVersion = assessment.status === 'supported'
-    ? versionConfig.supportedVersions.find((entry) => (
-      entry.codexVersion === inspection.codexVersion
-      && entry.schemaDigest === inspection.schemaDigest
-    ))
+    ? versionConfig.supportedVersions.find((entry) => entry.codexVersion === inspection.codexVersion)
     : undefined;
   return Object.freeze({
     configPath: store.filePath,
@@ -186,79 +158,31 @@ export async function inspectCodexCompatibility(
   });
 }
 
-/** Captures version, full schema digest, and binary identity without deciding support. */
+/** Captures version and binary identity without deciding support. */
 export async function inspectCodexRuntime(
   config: CodexRuntimeProbeConfig,
   sourceEnv: NodeJS.ProcessEnv,
-  temporaryRoot: string,
+  _temporaryRoot: string,
 ): Promise<CodexRuntimeInspection> {
-  const schemaDirectory = mkdtempSync(join(temporaryRoot, 'schema-'));
   const env = buildCodexEnvironment(sourceEnv);
-  try {
-    const codexVersionOutput = await codexOutput(config, ['--version'], env);
-    const codexVersion = parseCodexCliVersion(codexVersionOutput).version;
-    await codexOutput(
-      config,
-      ['app-server', 'generate-json-schema', '--experimental', '--out', schemaDirectory],
-      env,
-    );
-    const schemaDigest = digestJsonSchemaDirectory(schemaDirectory);
-    const binaryArtifact = await captureCodexBinaryArtifact(config.codexBin);
-    return Object.freeze({ codexVersionOutput, codexVersion, schemaDigest, binaryArtifact });
-  } finally {
-    rmSync(schemaDirectory, { recursive: true, force: true });
-  }
+  const codexVersionOutput = await codexOutput(config, ['--version'], env);
+  const codexVersion = parseCodexCliVersion(codexVersionOutput).version;
+  const binaryArtifact = await captureCodexBinaryArtifact(config.codexBin);
+  return Object.freeze({ codexVersionOutput, codexVersion, binaryArtifact });
 }
 
-/** Returns the exact registered profile after validating CLI and schema identity. */
+/** Returns the registered profile for a supported CLI version. */
 export function assertCompatibleCodexRuntime(
   codexVersion: string,
-  schemaDigest: string,
 ): AppServerProtocolProfile {
   const parsedVersion = parseCodexCliVersion(codexVersion);
   const versionMatch = BUILT_IN_SUPPORTED_PROTOCOL_VERSIONS.find(
     (entry) => entry.codexVersion === parsedVersion.version,
   );
-  const digestMatch = BUILT_IN_SUPPORTED_PROTOCOL_VERSIONS.find(
-    (entry) => entry.schemaDigest === schemaDigest,
-  );
-  if (versionMatch !== undefined && versionMatch.schemaDigest === schemaDigest) {
+  if (versionMatch !== undefined) {
     return profileForSupportedVersion(versionMatch);
   }
-  if (
-    versionMatch !== undefined
-    && digestMatch !== undefined
-    && versionMatch.adapterProfileId !== digestMatch.adapterProfileId
-  ) {
-    throw new Error(
-      'Configured Codex CLI version and App Server schema digest '
-        + 'identify different supported profiles',
-    );
-  }
-  if (versionMatch !== undefined) {
-    throw new Error(
-      'Configured Codex App Server schema digest does not match the registered CLI profile',
-    );
-  }
-  if (digestMatch !== undefined) {
-    throw new Error(
-      'Configured Codex CLI version does not match the registered App Server schema profile',
-    );
-  }
   throw new Error('Configured Codex App Server protocol profile is unsupported');
-}
-
-/** Digests generated schemas independently of nondeterministic JSON object key order. */
-export function digestJsonSchemaDirectory(root: string): string {
-  const hash = createHash('sha256');
-  for (const filePath of listFiles(root)) {
-    hash.update(relative(root, filePath));
-    hash.update('\0');
-    const schema = JSON.parse(readFileSync(filePath, 'utf8')) as unknown;
-    hash.update(JSON.stringify(canonicalizeJson(schema)));
-    hash.update('\0');
-  }
-  return hash.digest('hex');
 }
 
 async function codexOutput(
@@ -287,7 +211,6 @@ function createDetection(
     codexBinary: config.codexBin,
     codexVersion: inspection.codexVersion,
     binarySha256: inspection.binaryArtifact.binarySha256,
-    schemaDigest: inspection.schemaDigest,
     chatGptApp: inspectChatGptAppVersion(config.codexBin),
     compatibility: Object.freeze({
       conclusion: assessment.conclusion,
@@ -303,7 +226,6 @@ function contractReport(
 ): CodexRuntimeContractReport {
   return Object.freeze({
     codexVersion: `codex-cli ${detection.codexVersion}`,
-    schemaDigest: detection.schemaDigest,
     protocolProfile,
     runtimeArtifact: Object.freeze({
       binaryName: basename(detection.codexBinary),
@@ -327,10 +249,7 @@ function assessmentFromDetection(
   supportedVersions: readonly SupportedProtocolVersion[],
 ): CompatibilityAssessment {
   const matchedVersion = detection.compatibility.status === 'supported'
-    ? supportedVersions.find((entry) => (
-      entry.codexVersion === detection.codexVersion
-      && entry.schemaDigest === detection.schemaDigest
-    )) ?? null
+    ? supportedVersions.find((entry) => entry.codexVersion === detection.codexVersion) ?? null
     : null;
   return Object.freeze({
     conclusion: detection.compatibility.conclusion,
@@ -338,40 +257,4 @@ function assessmentFromDetection(
     adapterProfileId: detection.compatibility.adapterProfileId,
     matchedVersion,
   });
-}
-
-function canonicalizeJson(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(canonicalizeJson);
-  }
-  if (isRecord(value)) {
-    const result: Record<string, unknown> = {};
-    for (const key of Object.keys(value).sort()) {
-      result[key] = canonicalizeJson(value[key]);
-    }
-    return result;
-  }
-  return value;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
-
-function listFiles(root: string): readonly string[] {
-  const files: string[] = [];
-  const visit = (directory: string): void => {
-    const entries = readdirSync(directory, { withFileTypes: true })
-      .sort((left, right) => left.name.localeCompare(right.name));
-    for (const entry of entries) {
-      const filePath = join(directory, entry.name);
-      if (entry.isDirectory()) {
-        visit(filePath);
-      } else if (entry.isFile() && basename(filePath) !== '.DS_Store') {
-        files.push(filePath);
-      }
-    }
-  };
-  visit(root);
-  return files;
 }

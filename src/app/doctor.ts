@@ -22,7 +22,6 @@ export interface DoctorReport {
   readonly appServerIdentityAssurance: AppServerIdentityAssurance;
   readonly protocolProfileId: AppServerProtocolProfileId;
   readonly approvalCardMode: BridgeConfig['approvalCardMode'];
-  readonly schemaDigest: string;
   readonly bindingCount: number;
   readonly bindingsFileBytes: number;
   readonly allowedChatCount: number;
@@ -60,7 +59,6 @@ export async function runDoctor(
     appServerIdentityAssurance: appServerIdentityAssurance(preflight.config.appServerMode),
     protocolProfileId: contract.protocolProfile.id,
     approvalCardMode: preflight.config.approvalCardMode,
-    schemaDigest: contract.schemaDigest,
     bindingCount: store.list().length,
     bindingsFileBytes,
     allowedChatCount: preflight.config.allowedChats.length,

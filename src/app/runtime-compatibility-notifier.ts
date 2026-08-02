@@ -10,7 +10,6 @@ export interface RuntimeCompatibilityCheckTarget {
   readonly codexBin: string;
   readonly codexVersionOutput?: string;
   readonly codexVersion?: string;
-  readonly schemaDigest?: string;
 }
 
 export interface RegisteredRuntimeCompatibilityResult {
@@ -32,6 +31,10 @@ export interface RuntimeCompatibilityLogger {
   info(event: string, fields?: LogFields): void;
   warn(event: string, fields?: LogFields): void;
   error(event: string, error: unknown, fields?: LogFields): void;
+}
+
+export interface RuntimeCompatibilityChatInfoClient {
+  getChatMode(chatId: string): Promise<string | null>;
 }
 
 export interface RuntimeCompatibilityNotifierOptions {
@@ -66,12 +69,12 @@ export class RuntimeCompatibilityNotifier {
 
     const startCard = createCompatibilityCard({
       template: 'blue',
-      title: 'App Server 兼容检查中',
+      title: '开始检查兼容性',
       content: [
-        'Bridge 正在检查当前 Codex App Server runtime。',
-        '正在采集版本、完整 schema digest，并按协议目录执行功能兼容判定。',
+        'Bridge 开始检查当前 ChatGPT/Codex App Server 兼容性。',
+        '正在采集版本与协议信息，确认当前版本是否可以继续使用。',
         '',
-        compatibilityTargetMarkdown(target),
+        compatibilityRuntimeMarkdown(target),
       ].join('\n'),
     });
     let cardId: string;
@@ -94,15 +97,28 @@ export class RuntimeCompatibilityNotifier {
     }));
   }
 
-  public async protocolSmokeStarted(target: AppServerProtocolSmokeTarget): Promise<void> {
-    await this.deliverResult(target, 'smoke', createCompatibilityCard({
+  public async runtimeDetected(target: RuntimeCompatibilityCheckTarget): Promise<void> {
+    await this.deliverStatus(target, 'detected', createCompatibilityCard({
       template: 'blue',
-      title: 'App Server 协议检查中',
+      title: '兼容性检查中',
       content: [
-        '当前 exact pair 尚未登记。',
-        '正在运行隔离协议检查，验证 Bridge 实际使用的非模型控制面。',
+        'Bridge 已完成版本与协议信息采集。',
+        '正在判定当前版本是否兼容、是否可以继续使用。',
         '',
-        compatibilityTargetMarkdown(target),
+        compatibilityRuntimeMarkdown(target),
+      ].join('\n'),
+    }));
+  }
+
+  public async protocolSmokeStarted(target: AppServerProtocolSmokeTarget): Promise<void> {
+    await this.deliverStatus(target, 'smoke', createCompatibilityCard({
+      template: 'blue',
+      title: '协议兼容性检查中',
+      content: [
+        '当前版本尚未登记为已支持版本。',
+        '正在运行协议功能检测，确认 Bridge 是否还能继续使用。',
+        '',
+        compatibilityRuntimeMarkdown(target),
       ].join('\n'),
     }));
   }
@@ -111,9 +127,9 @@ export class RuntimeCompatibilityNotifier {
     target: RuntimeCompatibilityCheckTarget,
     result: RuntimeCompatibilitySuccessResult,
   ): Promise<void> {
-    await this.deliverResult(target, 'success', createCompatibilityCard({
+    await this.deliverStatus(target, 'success', createCompatibilityCard({
       template: 'green',
-      title: 'App Server 兼容检查通过',
+      title: '兼容性检查通过',
       content: successMarkdown(target, result),
     }));
   }
@@ -122,21 +138,22 @@ export class RuntimeCompatibilityNotifier {
     target: RuntimeCompatibilityCheckTarget | null,
     error: unknown,
   ): Promise<void> {
-    await this.deliverResult(target, 'failed', createCompatibilityCard({
+    await this.deliverStatus(target, 'failed', createCompatibilityCard({
       template: 'red',
-      title: 'App Server 兼容检查失败',
+      title: '兼容性检查不通过',
       content: [
-        '结果：不兼容，Bridge 已拒绝继续启动。',
+        '结果：兼容性不通过，当前版本不能使用。',
+        'Bridge 已拒绝继续启动，请回退到已支持版本或先完成协议适配。',
         `失败原因：${errorSummary(error)}`,
         '',
-        target ? compatibilityTargetMarkdown(target) : 'Codex：`未完成 runtime 探测`',
+        target ? compatibilityRuntimeMarkdown(target) : 'Codex：`未完成版本探测`',
       ].join('\n'),
     }));
   }
 
-  private async deliverResult(
+  private async deliverStatus(
     target: RuntimeCompatibilityCheckTarget | null,
-    phase: 'smoke' | 'success' | 'failed',
+    phase: 'detected' | 'smoke' | 'success' | 'failed',
     card: CardKitJson,
   ): Promise<void> {
     if (this.chatIds.length === 0) {
@@ -187,12 +204,11 @@ export class RuntimeCompatibilityNotifier {
 
   private idempotencyKey(
     target: RuntimeCompatibilityCheckTarget | null,
-    phase: 'start' | 'smoke' | 'success' | 'failed',
+    phase: 'start' | 'detected' | 'smoke' | 'success' | 'failed',
     index: number,
   ): string {
     const version = target?.codexVersion ?? 'unknown';
-    const digest = target?.schemaDigest ?? this.checkId;
-    return `runtime-compat:${phase}:${version}:${digest}:${index}`;
+    return `runtime-compat:${phase}:${version}:${this.checkId}:${index}`;
   }
 
   private async retryStartCard(
@@ -220,13 +236,43 @@ export class RuntimeCompatibilityNotifier {
 
 export function runtimeCompatibilityNotificationChatIds(
   allowedChats: readonly string[],
-  bindingChats: readonly string[],
 ): readonly string[] {
   return Object.freeze([...new Set(
-    [...allowedChats, ...bindingChats]
+    allowedChats
       .map((chatId) => chatId.trim())
       .filter(Boolean),
   )]);
+}
+
+export async function runtimeCompatibilityDirectNotificationChatIds(
+  allowedChats: readonly string[],
+  chatInfo: RuntimeCompatibilityChatInfoClient,
+  logger: RuntimeCompatibilityLogger,
+): Promise<readonly string[]> {
+  const chatIds = runtimeCompatibilityNotificationChatIds(allowedChats);
+  const checked = await Promise.all(chatIds.map(async (chatId) => {
+    try {
+      const chatMode = await chatInfo.getChatMode(chatId);
+      if (chatMode === 'p2p' || chatMode === 'direct') {
+        return { chatId, accepted: true };
+      }
+      logger.info('runtime_compatibility_notification_chat_skipped', {
+        chatId,
+        reason: 'not_direct_chat',
+        chatMode: chatMode ?? 'unknown',
+      });
+    } catch (error) {
+      logger.warn('runtime_compatibility_notification_chat_skipped', {
+        chatId,
+        reason: 'chat_mode_unavailable',
+        error: errorSummary(error),
+      });
+    }
+    return { chatId, accepted: false };
+  }));
+  return Object.freeze(checked
+    .filter((result) => result.accepted)
+    .map((result) => result.chatId));
 }
 
 function createCompatibilityCard(input: {
@@ -250,14 +296,11 @@ function createCompatibilityCard(input: {
   });
 }
 
-function compatibilityTargetMarkdown(target: RuntimeCompatibilityCheckTarget): string {
+function compatibilityRuntimeMarkdown(target: RuntimeCompatibilityCheckTarget): string {
   const codex = target.codexVersionOutput ?? (
     target.codexVersion ? `codex-cli ${target.codexVersion}` : 'detecting'
   );
-  return [
-    `Codex：\`${codex}\``,
-    `Schema：\`${target.schemaDigest ?? 'detecting'}\``,
-  ].join('\n');
+  return `Codex：\`${codex}\``;
 }
 
 function successMarkdown(
@@ -266,8 +309,8 @@ function successMarkdown(
 ): string {
   const lines = [
     isProtocolSmokeResult(result)
-      ? '结果：兼容，Bridge 已自动支持当前 exact pair。'
-      : '结果：兼容，Bridge 已确认当前 exact pair 已支持。',
+      ? '结果：兼容性通过，可以继续使用。Bridge 已自动支持当前版本。'
+      : '结果：兼容性通过，可以继续使用。Bridge 已确认当前版本已支持。',
     `协议：\`${result.adapterProfileId}\``,
   ];
   if (isProtocolSmokeResult(result)) {
@@ -278,7 +321,7 @@ function successMarkdown(
   } else {
     lines.push('来源：`已登记版本`');
   }
-  return [...lines, '', compatibilityTargetMarkdown(target)].join('\n');
+  return [...lines, '', compatibilityRuntimeMarkdown(target)].join('\n');
 }
 
 function isProtocolSmokeResult(

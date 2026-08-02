@@ -34,7 +34,6 @@ test('doctor reports selected profile and managed proxy trust boundary', async (
         detectionCount += 1;
         return {
           codexVersion: 'codex-cli 0.145.0-alpha.18',
-          schemaDigest: APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18.schemaDigest,
           protocolProfile: APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18,
           runtimeArtifact: {
             binaryName: 'codex',
@@ -53,7 +52,6 @@ test('doctor reports selected profile and managed proxy trust boundary', async (
       report.appServerIdentityAssurance,
       'operator_trusted_managed_proxy',
     );
-    assert.equal(report.schemaDigest, APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18.schemaDigest);
     assert.equal(report.bindingCount, 0);
   } finally {
     rmSync(root, { recursive: true, force: true });

@@ -34,7 +34,6 @@ export interface AppServerProtocolSmokeTarget {
   readonly codexBin: string;
   readonly codexVersionOutput: string;
   readonly codexVersion: string;
-  readonly schemaDigest: string;
 }
 
 export interface AppServerProtocolSmokeOptions {
@@ -221,7 +220,6 @@ function smokeProfileForRuntime(target: AppServerProtocolSmokeTarget): AppServer
     ...APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18,
     codexVersion: target.codexVersion,
     cliVersionOutput: target.codexVersionOutput,
-    schemaDigest: target.schemaDigest,
     diagnosticLabel: `Codex App Server ${target.codexVersion} protocol smoke`,
   });
 }

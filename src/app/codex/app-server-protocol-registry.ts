@@ -1,8 +1,3 @@
-import {
-  APP_SERVER_SCHEMA_DIGEST_0_144_3,
-  APP_SERVER_SCHEMA_DIGEST_0_145_0_ALPHA_18,
-} from './contract';
-
 const SEMVER_CORE_PATTERN = '(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)';
 const SEMVER_PRERELEASE_PATTERN = '(?:-([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?';
 const SEMVER_BUILD_PATTERN = '(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?';
@@ -35,7 +30,6 @@ export interface AppServerProtocolContract {
   readonly id: AppServerProtocolProfileId;
   readonly codexVersion: string;
   readonly cliVersionOutput: string;
-  readonly schemaDigest: string;
   readonly diagnosticLabel: string;
 }
 
@@ -45,18 +39,16 @@ export type AppServerProtocolProfile = AppServerProtocolContract;
 export const APP_SERVER_PROTOCOL_PROFILE_0_144_3 = createProfile({
   id: 'app-server-0.144.3',
   codexVersion: '0.144.3',
-  schemaDigest: APP_SERVER_SCHEMA_DIGEST_0_144_3,
   diagnosticLabel: 'Codex App Server 0.144.3',
 });
 
 export const APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18 = createProfile({
   id: 'app-server-0.145.0-alpha.18',
   codexVersion: '0.145.0-alpha.18',
-  schemaDigest: APP_SERVER_SCHEMA_DIGEST_0_145_0_ALPHA_18,
   diagnosticLabel: 'Codex App Server 0.145.0-alpha.18',
 });
 
-/** Exact supported contracts. There is deliberately no version-range fallback. */
+/** Supported protocol contracts. Unknown versions must pass the protocol smoke before use. */
 export const APP_SERVER_PROTOCOL_PROFILES: readonly AppServerProtocolProfile[] =
   Object.freeze([
     APP_SERVER_PROTOCOL_PROFILE_0_144_3,
@@ -119,36 +111,15 @@ export function parseAppServerUserAgentVersion(userAgent: string): CodexCliVersi
   }
 }
 
-/** Selects the sole registered profile matching both version and schema digest. */
+/** Selects the registered profile matching the probed Codex CLI version. */
 export function selectAppServerProtocolProfile(
   codexVersion: CodexCliVersion,
-  schemaDigest: string,
 ): AppServerProtocolProfile {
   const versionProfile = APP_SERVER_PROTOCOL_PROFILES.find(
     (profile) => profile.codexVersion === codexVersion.version,
   );
-  const digestProfile = APP_SERVER_PROTOCOL_PROFILES.find(
-    (profile) => profile.schemaDigest === schemaDigest,
-  );
-
-  if (versionProfile !== undefined && digestProfile !== undefined) {
-    if (versionProfile !== digestProfile) {
-      throw new Error(
-        'Configured Codex CLI version and App Server schema digest '
-          + 'identify different supported profiles',
-      );
-    }
-    return versionProfile;
-  }
   if (versionProfile !== undefined) {
-    throw new Error(
-      'Configured Codex App Server schema digest does not match the registered CLI profile',
-    );
-  }
-  if (digestProfile !== undefined) {
-    throw new Error(
-      'Configured Codex CLI version does not match the registered App Server schema profile',
-    );
+    return versionProfile;
   }
   throw new Error('Configured Codex App Server protocol profile is unsupported');
 }
@@ -156,7 +127,6 @@ export function selectAppServerProtocolProfile(
 function createProfile(input: {
   readonly id: AppServerProtocolProfileId;
   readonly codexVersion: string;
-  readonly schemaDigest: string;
   readonly diagnosticLabel: string;
 }): AppServerProtocolProfile {
   return Object.freeze({
@@ -191,13 +161,11 @@ function parseSafeVersionNumber(value: string): number {
 function assertUniqueProfiles(profiles: readonly AppServerProtocolProfile[]): void {
   const ids = new Set<AppServerProtocolProfileId>();
   const versions = new Set<string>();
-  const digests = new Set<string>();
   for (const profile of profiles) {
-    if (ids.has(profile.id) || versions.has(profile.codexVersion) || digests.has(profile.schemaDigest)) {
+    if (ids.has(profile.id) || versions.has(profile.codexVersion)) {
       throw new Error('App Server protocol registry contains a duplicate identity');
     }
     ids.add(profile.id);
     versions.add(profile.codexVersion);
-    digests.add(profile.schemaDigest);
   }
 }

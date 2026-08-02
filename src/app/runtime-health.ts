@@ -43,7 +43,6 @@ export interface RuntimeHealthSnapshot {
   readonly appServer: {
     readonly state: 'starting' | 'ready' | 'stopped';
     readonly protocolContractId: AppServerProtocolProfileId;
-    readonly schemaDigest: string;
     readonly artifactSha256: string;
   };
   readonly desktop: {

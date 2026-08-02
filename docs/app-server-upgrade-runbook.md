@@ -1,8 +1,7 @@
 # Codex App Server 升级运行手册
 
-本手册用于增加一个新的精确 App Server profile，或复核自动 smoke 支持的新版 App Server。App Server
-experimental API 不提供跨版本兼容承诺；每个新版本都必须重新采集、审查或通过协议 smoke 验证，不能只修改
-版本正则、schema digest 或扩大 SemVer range。
+本手册用于复核或登记新的 Codex App Server 版本。运行时兼容性只能由两件事决定：`codexVersion` 已登记，
+或未知版本通过 Bridge 已用控制面的协议 smoke。schema 摘要不参与兼容判断，也不作为人工批准旁路。
 
 ## 1. 准备隔离环境
 
@@ -16,12 +15,13 @@ experimental API 不提供跨版本兼容承诺；每个新版本都必须重新
 shasum -a 256 /absolute/path/to/codex
 ```
 
-版本输出必须是计划注册的精确 identity，例如 `codex-cli 0.145.0-alpha.18`。不要把 alpha、patch 或 build
+版本输出必须是计划验证的精确 identity，例如 `codex-cli 0.146.0-alpha.9.2`。不要把 alpha、patch 或 build
 metadata 归并成范围。
 
-## 2. 采集完整 experimental schema
+## 2. 审查协议面
 
-使用仓库脚本在临时目录采集版本、完整 schema digest、schema 文件数和代表性消息：
+schema 文件可以作为人工审查材料，但不再作为运行时兼容签名。需要审查时，可用仓库脚本采集代表性消息和
+schema 文件数：
 
 ```bash
 node scripts/capture-app-server-contract.mjs \
@@ -30,66 +30,25 @@ node scripts/capture-app-server-contract.mjs \
   --distribution 'official distribution description'
 ```
 
-脚本实际执行：
-
-```bash
-/absolute/path/to/codex app-server generate-json-schema \
-  --experimental \
-  --out /private/tmp/app-server-schema-NEW_VERSION
-```
-
-Digest 必须覆盖生成目录中的全部 schema 相对路径和规范化 JSON 内容，而不是只计算 Bridge 当前使用的
-文件。目标输出中的 `manifest.json` 是评审输入；不要手工填写 digest。若要记录真实握手 identity，先完成
-isolated `owned_stdio` initialize，再用一个新的空输出目录重新采集并增加：
-
-```bash
-node scripts/capture-app-server-contract.mjs \
-  --codex-bin /absolute/path/to/codex \
-  --out /private/tmp/app-server-contract-NEW_VERSION-with-handshake \
-  --distribution 'official distribution description' \
-  --server-user-agent 'REAL_INITIALIZE_USER_AGENT'
-```
-
-## 3. 审查 15 个已用方法
-
-分别为当前已支持版本和目标版本生成 schema，再逐项审查以下 15 个方法的 Params、Response 和相关
-Notification 定义：
-
-```text
-thread/list
-thread/read
-thread/resume
-thread/start
-thread/fork
-thread/name/set
-thread/archive
-thread/goal/get
-thread/goal/set
-thread/goal/clear
-thread/compact/start
-skills/list
-mcpServerStatus/list
-account/rateLimits/read
-turn/start
-```
-
-最小审查内容：
+人工审查重点是 Bridge 实际消费的方法是否仍保持合同：
 
 - request 必填字段、字段类型和枚举是否变化；
 - response 中 Bridge 消费字段是否新增、删除、改名或改变 nullability；
 - 新增字段是否仅为可忽略的 additive extension；
-- `turn/start` 相关生命周期 notification 是否改变；
 - initialize `userAgent` 是否仍能用精确 SemVer 解析；
 - RPC error envelope 是否改变。
 
-把结论保存为目标 fixture 附近的 comparison 证据。当前 144/145 示例是
-`test/fixtures/app-server/0.144.3/schema-comparison.json`。
+当前自动 smoke 覆盖非模型控制面：`thread/list`、`thread/start`、`thread/name/set`、`thread/read`、
+`thread/resume`、`thread/fork`、`thread/archive`、`thread/goal/set`、`thread/goal/get`、
+`thread/goal/clear`、`skills/list`、`mcpServerStatus/list`，并探测 `account/rateLimits/read` 能力。
+`turn/start` 和 `thread/compact/start` 可能触发模型或改变真实任务，不在自动 smoke 中执行，必须在专用测试账号和
+thread 上另行验收。
 
-## 4. 决定 adapter 边界
+## 3. 决定 adapter 边界
 
 只有在两个条件同时成立时才复用共享 validator：
 
-1. 15 个方法中 Bridge 实际消费的 response 字段语义完全一致；
+1. Bridge 实际消费的 response 字段语义完全一致；
 2. request 差异只是当前调用不需要的可选 additive 字段。
 
 即使复用 validator，每个 profile 也必须保留显式、可穷举的 adapter export 和 registry mapping，例如当前的
@@ -97,42 +56,41 @@ turn/start
 `adapterForAppServerProfile()`。
 
 如果必填字段、类型、nullability、枚举或当前请求参数不同，必须实现专用 adapter/request mapper；不要在
-业务服务中添加版本判断，也不要把未审查的完整生成类型扩散到 Desktop IPC canonical model。
+业务服务中添加散落的版本判断，也不要把未审查的完整生成类型扩散到 Desktop IPC canonical model。
 
-## 5. 注册 profile 和 fixture
+## 4. 登记或自动支持
 
-按以下顺序落地：
+已确认长期支持的版本可作为内置版本登记：
 
-1. 在 `src/app/codex/contract.ts` 增加精确 full schema digest；
-2. 在 `src/app/codex/app-server-protocol-registry.ts` 增加 exact version/profile；
-3. 增加 `test/fixtures/app-server/NEW_VERSION/manifest.json`，以及测试或协议审查实际消费的控制面响应、
-   schema comparison 等证据；
-4. 在 `adapterForAppServerProfile()` 增加穷举 mapping；
-5. 为 version/digest、cross-match、握手错配、adapter 和 15 方法补测试。
+1. 在 `src/app/codex/app-server-protocol-registry.ts` 增加 profile（如需要新 adapter）；
+2. 在 `src/app/codex/protocol-version-config.ts` 的内置支持列表增加 `codexVersion -> adapterProfileId`；
+3. 增加或更新 fixture、support matrix 和测试证据；
+4. 在 `adapterForAppServerProfile()` 增加穷举 mapping（如新增 profile）；
+5. 为版本选择、未知版本 smoke 成功/失败、握手错配和 adapter 行为补测试。
 
-fixture 必须保留 `manifest.json`，并保留已提交测试或协议审查实际消费的控制面/schema 证据。
-`representative-messages.json` 只在已提交测试或审计/复现流程存在明确消费者时保留。`0.144.3` 是有意的例外：
-它没有 representative messages 的消费者，因此只保留 manifest、控制面响应和 schema comparison；`0.145.0-alpha.18`
-的复现测试会比较 representative messages，所以该文件及通用 capture 输出必须继续保留。
+如果只是 ChatGPT/Codex 临时升级，且协议 smoke 已通过，可以先让运行时自动写入 `auto_smoke`。这不会修改源码；
+后续是否内置取决于发布评审。
 
-任何一步缺少真实 binary 证据，都只能保留为待验证实现，不能加入“支持”矩阵。
+## 5. 执行 isolated `owned_stdio` smoke
 
-## 6. 执行 isolated `owned_stdio` smoke
-
-运行目标 binary 的 initialize/initialized 与隔离控制面 smoke。现有双版本测试支持显式 binary 路径：
+运行目标 binary 的隔离控制面 smoke：
 
 ```bash
-CODEX_144_BIN=/absolute/path/to/codex-0.144.3 \
-CODEX_145_BIN=/absolute/path/to/codex-0.145.0-alpha.18 \
-npm run test:protocol
+CODEX_BIN=/absolute/path/to/codex codex-feishu-bridge compatibility
 ```
 
-测试使用临时 `CODEX_HOME` 和临时 workspace，并验证 initialize `userAgent` 中的版本与选中 profile 完全一致。
-当前 smoke 会在专用 thread 上验证 list/start/name/read/resume/fork/archive、goal set/get/clear、skills 和 MCP
-status；不得操作用户 binding。`account/rateLimits/read` 在隔离未认证环境中允许以稳定能力不可用结果结束。
-`thread/compact/start` 会触发模型操作，不在自动 smoke 中执行，必须在已授权的专用测试账号和 thread 上另行验收。
+`compatibility` 与正式启动使用同一规则：如果版本尚未支持，会启动隔离 `owned_stdio` App Server 跑 Bridge 已用
+控制面 smoke；smoke 通过后自动写入 `protocol-versions.json`，来源为 `auto_smoke`，结论为“兼容”。smoke 失败
+或握手身份不一致时返回“不兼容”，不得用 schema 摘要、版本范围或手工批准绕过。
 
-## 7. 验证 Desktop IPC 不变量
+正式 `start`/`restart` 每次执行 runtime 兼容检查时都会向 `ALLOWED_CHATS` 中经飞书确认的 p2p 单聊发送卡片：
+开始时提示“开始检查兼容性”，runtime 探测完成后流式更新同一张卡片，结束时明确提示“兼容性通过，可以继续使用”
+或“兼容性不通过，当前版本不能使用”；未知版本进入 smoke 时会先更新为“协议兼容性检查中”。卡片投递失败只记录
+日志，不替代协议判定。
+
+`--approve` 已废弃；兼容性不能人工按签名批准，只能由已登记版本或协议 smoke 通过来放行。
+
+## 6. 验证 Desktop IPC 不变量
 
 App Server 升级不得改变生产 turn owner。运行独立 Desktop 回归：
 
@@ -144,7 +102,7 @@ node --test dist-test/test/app/desktop-ipc-regression.test.js
 确认 start/steer/interrupt、approval、live event、内存队列和“不恢复、不重放”仍由 Desktop IPC 路径处理，
 App Server control plane 不参与生产 turn 执行。
 
-## 8. 执行发布门禁
+## 7. 执行发布门禁
 
 先查看候选 binary 的本机版本和兼容结论：
 
@@ -153,31 +111,7 @@ CODEX_BIN=/absolute/path/to/codex codex-feishu-bridge version --json
 CODEX_BIN=/absolute/path/to/codex codex-feishu-bridge compatibility
 ```
 
-`version` 只探测并记录版本、binary 和完整 schema digest，不执行协议 smoke。`compatibility` 与正式启动使用同一
-规则：如果 exact version/digest 尚未支持，会启动隔离 `owned_stdio` App Server 跑 Bridge 已用控制面 smoke；
-smoke 通过后自动写入 `protocol-versions.json`，来源为 `auto_smoke`，结论为“兼容”。smoke 失败或握手身份不一致
-时返回“不兼容”，不得用 schema digest 或版本号推断支持。
-正式 `start`/`restart` 每次执行 runtime 兼容检查时都会向 `ALLOWED_CHATS` 和已有绑定会话发送飞书卡片：
-开始时提示正在执行兼容检查，结束时更新为通过或失败；未知 exact pair 进入 smoke 时会先更新为“协议检查中”。
-卡片投递失败只记录日志，不替代协议判定。
-
-`--approve` 只保留给 schema-compatible 的手工记录流程：当完整 schema digest 已与现有合同一致、但 exact
-version 尚未写入时，操作员可在协议 smoke 也通过后把该 exact version 记为 `approved`：
-
-```bash
-CODEX_BIN=/absolute/path/to/codex codex-feishu-bridge compatibility --approve
-```
-
-首次运行会把内置支持目录写入 config home 的 `protocol-versions.json`。后续 Bridge 发布新增内置版本时，
-运行会在锁内把缺失的内置项追加到该文件；已有的人工批准项和 `auto_smoke` 项保持不变。未知 schema 不得使用
-`--approve` 绕过，必须跑协议 smoke；协议 smoke 通过后同一 `codexVersion` 可以因为平台差异保留多个
-`schemaDigest` exact pair。
-
-然后让 doctor 对已支持 binary 给出 exact profile、version、digest 和 mode：
-
-```bash
-CODEX_BIN=/absolute/path/to/codex codex-feishu-bridge doctor
-```
+`version` 只探测并记录版本与 binary SHA-256，不执行协议 smoke。`compatibility` 和正式启动会按需要自动 smoke。
 
 然后执行完整仓库门禁：
 
@@ -195,20 +129,18 @@ codex-feishu-bridge status --json
 健康结果必须同时显示 App Server、Desktop IPC 和飞书为 ready；PID 存活但 worker 不存活或健康快照不属于
 当前 supervisor 时，不得判为 READY。健康文件只保存协议标识、连接状态和计数，不保存任务内容。
 
-`npm run check` 已包含 typecheck、协议测试、应用构建和 package 检查。发布证据还应记录真实
-`owned_stdio` smoke、必要的飞书/Desktop E2E，以及当前版本在
+发布证据还应记录真实 `owned_stdio` smoke、必要的飞书/Desktop E2E，以及当前版本在
 `docs/app-server-support-matrix.md` 中的状态。
 
-## 9. `managed_proxy` 验证
+## 8. `managed_proxy` 验证
 
-先用 `owned_stdio` 完成完整 schema 和控制面证明，再验证 `managed_proxy`。后者的本地 `CODEX_BIN`
-version+digest 只能选择操作员声明的 profile；socket 后 daemon 的 initialize identity 只能佐证版本，不能证明
-其完整 schema。操作员必须独立钉住远端 binary 及 digest，Bridge 不会从 userAgent 推导远端 digest。
+先用 `owned_stdio` 完成控制面证明，再验证 `managed_proxy`。后者的本地 `CODEX_BIN` 只能证明本机探测到的
+版本；socket 后 daemon 的 initialize identity 只能佐证其自报版本。操作员必须自行钉住远端 daemon 的来源和版本。
 
-## 10. 发布与回滚
+## 9. 发布与回滚
 
-注册前，未知版本、未知 digest 和 version/digest cross-match 不能仅靠签名放行；必须由协议 smoke 或完整人工
-profile 注册证明。完成全部门禁后再更新支持矩阵和 release notes；Git tag 只表示发布声明，不参与运行时检测。
+注册前，未知版本不能仅靠签名、版本范围或人工确认放行；必须由协议 smoke 或完整 profile 注册证明。完成全部
+门禁后再更新支持矩阵和 release notes；Git tag 只表示发布声明，不参与运行时检测。
 
 回滚步骤：
 

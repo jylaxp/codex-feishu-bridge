@@ -359,6 +359,61 @@ test('Desktop stream normalization preserves structured local image inputs', () 
   ]);
 });
 
+test('Desktop stream normalization preserves terminal response stream errors', () => {
+  const normalizer = new DesktopThreadStreamNormalizer(() => 100);
+  const errorMessage = 'stream disconnected before completion: error sending request for url';
+  normalizer.handle({
+    type: 'broadcast',
+    method: 'thread-stream-state-changed',
+    sourceClientId: 'desktop-owner',
+    version: DESKTOP_THREAD_STREAM_PROTOCOL_VERSION,
+    params: {
+      conversationId: binding.threadId,
+      change: {
+        type: 'snapshot',
+        conversationState: {
+          turns: [{ id: 'turn-stream-error', status: 'inProgress', items: [] }],
+        },
+      },
+    },
+  });
+
+  const notifications = normalizer.handle({
+    type: 'broadcast',
+    method: 'thread-stream-state-changed',
+    sourceClientId: 'desktop-owner',
+    version: DESKTOP_THREAD_STREAM_PROTOCOL_VERSION,
+    params: {
+      conversationId: binding.threadId,
+      change: {
+        type: 'patches',
+        patches: [{
+          op: 'replace',
+          path: ['turns'],
+          value: [{
+            id: 'turn-stream-error',
+            status: 'completed',
+            streamError: {
+              message: errorMessage,
+              codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: null } },
+            },
+            items: [],
+          }],
+        }],
+      },
+    },
+  });
+  const completed = notifications.find((notification) => notification.method === 'turn/completed') as
+    | Extract<ServerNotification, { readonly method: 'turn/completed' }>
+    | undefined;
+
+  assert.ok(completed);
+  assert.equal(completed.params.turn.error?.message, errorMessage);
+  assert.deepEqual(completed.params.turn.error?.codexErrorInfo, {
+    responseStreamDisconnected: { httpStatusCode: null },
+  });
+});
+
 test('Desktop supervisor restores followers after an actual socket loss', async () => {
   const mock = createMockTransport((message, socket) => {
     if (message.method === 'initialize') {
@@ -653,6 +708,26 @@ test('orchestrator closes a genuinely textless completed turn after the converge
   await waitFor(() => cards.closedCardIds.length === 1);
   assert.equal(orchestrator.runtimeTaskHealth().active, 0);
   assert.doesNotMatch(JSON.stringify(cards.replacements.at(-1)), /停止任务/);
+  orchestrator.abandonAll();
+});
+
+test('orchestrator shows terminal stream errors instead of empty final output', async () => {
+  const desktop = new RecordingDesktopTurnClient();
+  const cards = new RecordingCards();
+  const orchestrator = new InMemoryOrchestrator(config, desktop, cards, {
+    terminalConvergenceTimeoutMs: 5,
+    requestThreadSnapshot: async () => undefined,
+  });
+  const errorMessage = 'stream disconnected before completion: error sending request for url';
+
+  assert.equal(await orchestrator.handleInbound(inbound('stream-error', 'network task'), binding), 'started');
+  orchestrator.handleNotification(errorCompletedNotification('turn-1', errorMessage));
+
+  await waitFor(() => cards.closedCardIds.length === 1);
+  const delivered = JSON.stringify(cards.replacements.at(-1));
+  assert.match(delivered, /失败/);
+  assert.match(delivered, /stream disconnected before completion/);
+  assert.doesNotMatch(delivered, /无最终文本输出/);
   orchestrator.abandonAll();
 });
 
@@ -2027,6 +2102,25 @@ function answerlessCompletedNotification(turnId: string): ServerNotification {
       turn: {
         id: turnId,
         status: 'completed',
+        items: [],
+      },
+    },
+  };
+}
+
+function errorCompletedNotification(turnId: string, message: string): ServerNotification {
+  return {
+    method: 'turn/completed',
+    params: {
+      threadId: 'thread-bound',
+      turn: {
+        id: turnId,
+        status: 'completed',
+        error: {
+          message,
+          codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: null } },
+          additionalDetails: null,
+        },
         items: [],
       },
     },
