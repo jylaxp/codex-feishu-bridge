@@ -1,0 +1,135 @@
+test/app/conversation-binding-service-v3.test.ts
+  s_c54cf697e76a51::t_d396fe3bba974e 315-365
+  s_c54cf697e76a51::t_093ce3d27af5ea 443-448,458,467-508
+  s_c54cf697e76a51::t_23a3abe410005d 96-274
+  s_c80eace0d97eef::t_0a6544334893ec 509
+src/app/runtime-compatibility-notifier.ts
+  s_e980cd34574f78::t_1e88d57d2fe70c 211
+  s_e980cd34574f78::t_63867fd90e1da9 77,108,121,149,299,303,324
+  s_e980cd34574f78::t_7e0b5d30120384 72,74-75,103,105-106,116,118-119,132,143,145-146,312-313
+  s_e980cd34574f78::t_d7152d5c54f25e 36-39,247-276
+  s_e980cd34574f78::t_d5a7cb6b29aa50 100-102,104,107,109-112,114,130,141,154,156,207,241
+  s_e980cd34574f78::t_515dc615955244 277
+docs/app-server-upgrade-runbook.md
+  s_e980cd34574f78::t_95b962cee7c358 3-4,18,21,23-24,33,41-45,47,51,59,61,63,65-69,71-72,74,76,79,82-91,93,105,114,132,135,137-138,140,142-143
+src/app/codex/protocol-version-config.ts
+  s_e980cd34574f78::t_af4481e185f438 25,154,158-159,379,387,424-431
+  s_e980cd34574f78::t_7f8a6a79d64ce0 393
+  s_e980cd34574f78::t_07305a9e2a2092 52-53
+  s_e980cd34574f78::t_7d884b5f818b90 289-290,294-295,310,443,451,453
+  s_e980cd34574f78::t_27bbebf6bf79e9 389,394,401-405
+  s_e980cd34574f78::t_938a38ce0c5346 432-433
+src/app/codex/app-server-protocol-registry.ts
+  s_e980cd34574f78::t_ed1e063a1dd45e 51,114,122,165
+test/app/protocol-version-config.test.ts
+  s_e980cd34574f78::t_b255cd72741d63 15,43,45-49,52-57,63,72,78,84,86,89-101,111,123-126,132,138,141-142,154,163,168,174-177,180-181,183,187,190-191,208,217,221,230,239,287
+  s_e980cd34574f78::t_d40c38dadac519 118-122
+src/app/main.ts
+  s_e980cd34574f78::t_6544fc13a0bdb8 839-864,866
+  s_e980cd34574f78::t_a06bfc008a6a45 176,184
+  s_e980cd34574f78::t_fe4886f80c1003 76-78,80,168-169,171,173,209
+  s_e980cd34574f78::t_2ff306decaaf9b 206-207
+  s_e980cd34574f78::t_88b0c310209044 865
+  s_e980cd34574f78::t_47bb73a31887c7 867
+src/app/codex/runtime-contract.ts
+  s_e980cd34574f78::t_02956ad8238947 100
+  s_e980cd34574f78::t_cf85e40e0e3850 149,161,165,168-171,174,183,252
+  s_e980cd34574f78::t_18666f3877ba87 72,77,137
+  s_e980cd34574f78::t_2e528ff56317c1 2
+src/app/codex/app-server-client.ts
+  s_e980cd34574f78::t_8cd8e213e1aae4 157-159
+docs/app-server-support-matrix.md
+  s_e980cd34574f78::t_00389968847026 3-6,11-19,36-40,43-44,48,65-67,69-70,74-76
+test/app/desktop-ipc-regression.test.ts
+  s_c54cf697e76a51::t_5b9bb5e508b171 714-733
+  s_c54cf697e76a51::t_de6d672f2c968c 2111-2129
+  s_c54cf697e76a51::t_28302b761dc00d 362-416
+test/app/runtime-contract.test.ts
+  s_e980cd34574f78::t_26f96877dfd3d9 71,150
+  s_e980cd34574f78::t_b9985e7c499c3c 14
+  s_e980cd34574f78::t_59ad59db132ba8 249-253,255
+  s_e980cd34574f78::t_b19ca24ef0f804 187
+  s_e980cd34574f78::t_a815b2290ade03 322-324
+  s_e980cd34574f78::t_0590f7e479e7d9 529,535-538,540-541,650
+  s_e980cd34574f78::t_d94e417b7160e5 779
+  s_e980cd34574f78::t_aab62eec90db70 330,340,347,349,352-359,363,396,435,439
+  s_e980cd34574f78::t_3a9579453285e1 325
+test/app/cli-version.test.ts
+  s_e980cd34574f78::t_130bc15261b67e 20,30,33
+src/app/local-version-command.ts
+  s_e980cd34574f78::t_6b28be246e03bc 25,63
+README.md
+  s_e980cd34574f78::t_55891fc63aa09e 221,223
+  s_e980cd34574f78::t_ea998d41ae5592 22-24,29-30,203,207,214,217-218,222,225,227,229
+  s_e980cd34574f78::t_86c4a56d473afc 220
+src/app/cli.ts
+  s_e980cd34574f78::t_89e8493522d05f 68,274,330
+  s_e980cd34574f78::t_9be47b92e483fc 400,411
+src/app/conversation-binding-service-v3.ts
+  s_c54cf697e76a51::t_b732af55655daa 500-501,503-520,523-548
+  s_c54cf697e76a51::t_b554291428e617 400
+  s_c54cf697e76a51::t_0974f06e2593b4 77,297,318-320,328-336,354-358,369-372,382-389,407-409,412-414,433-434
+  s_c54cf697e76a51::t_763a3c6226c243 430-432
+test/app/runtime-compatibility-notifier.test.ts
+  s_e980cd34574f78::t_238ef4d4243824 111
+  s_e980cd34574f78::t_fddf5a633cfcf4 59,66,91,113,133
+  s_e980cd34574f78::t_425642c6c27b8d 95-110,112,162,167
+  s_e980cd34574f78::t_52bcaf0b6af07b 11,14,93,168-169,171-185,187-207,246-259
+  s_e980cd34574f78::t_95a98e75b4b03f 58,64-65,88-89,130-131
+  s_e980cd34574f78::t_69d3446752421d 92
+  s_e980cd34574f78::t_17ce949d6940c6 94
+  s_e980cd34574f78::t_cc4c82c40f2f32 170
+  s_e980cd34574f78::t_48a6ea2f0e3cb2 260-262
+src/app/codex/desktop-thread-stream-normalizer.ts
+  s_c54cf697e76a51::t_a76bc0b3c662b1 672-694,696-698,700-701,705,713-762
+  s_c54cf697e76a51::t_3ff93117e0bfb7 24-41
+  s_c54cf697e76a51::t_adf566fffbfc27 526
+  s_348e14b2dbcb4d::t_9b569be2491347 763
+src/app/in-memory-orchestrator.ts
+  s_c54cf697e76a51::t_4e446ab5f3718b 2933-2940
+  s_c54cf697e76a51::t_8b179ae564aa9f 1039,1044
+  s_c54cf697e76a51::t_1eb78ae616b183 1099-1100,1113-1116,1122,1124-1128
+  s_c54cf697e76a51::t_c6b728927ede90 2730-2754
+test/app/local-version-command.test.ts
+  s_e980cd34574f78::t_9c0bb22bf4bf6c 12,31,72,102,116,123
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.19",
+  "base_commit_sha": "838c4ee97d38885ab25eccbf8f5dc2e27c47de2e",
+  "prompts": {},
+  "sessions": {
+    "s_348e14b2dbcb4d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4792-fc59-7e93-989c-5935dbef519b",
+        "model": "gpt-5.5"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    },
+    "s_c54cf697e76a51": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5e80-7c30-7a71-a434-09aeae22cce8",
+        "model": "gpt-5.5"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    },
+    "s_c80eace0d97eef": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f1ec0-76d6-7711-934c-897faa43d1a7",
+        "model": "gpt-5.5"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    },
+    "s_e980cd34574f78": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f7eaf-8cfe-75e2-9bbd-34eae0f6e1d8",
+        "model": "gpt-5.5"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    }
+  }
+}
