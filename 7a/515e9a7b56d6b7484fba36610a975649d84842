@@ -1,0 +1,32 @@
+src/app/binding-store.ts
+  s_7aa13d4c94b804::t_64fbabbb60aa46 74-87,96,113,132,146,167-170,353,380-382
+  s_7aa13d4c94b804::t_42239eb7790e33 383
+test/app/binding-store.test.ts
+  s_7aa13d4c94b804::t_eec96fc80b8452 7,50,53-70,76-91
+  s_7aa13d4c94b804::t_8554528ddb383c 92-93
+docs/plans/2026-07-28-004-feat-channel-adapter-abstraction-plan.md
+  s_7aa13d4c94b804::t_a09a3266eb1a64 51-102
+src/app/main.ts
+  s_7aa13d4c94b804::t_3b1fa4f8212d38 6-9,188-192,194,198-199
+  s_7aa13d4c94b804::t_2f1a8d94cc3cf2 5
+docs/plans/2026-07-28-004-feat-channel-adapter-abstraction-plan.zh-CN.md
+  s_7aa13d4c94b804::t_fa2fbad8ab2551 51-102
+src/app/doctor.ts
+  s_7aa13d4c94b804::t_37617d7e1f4d07 3,72-75
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "7a515e9a7b56d6b7484fba36610a975649d84842",
+  "prompts": {},
+  "sessions": {
+    "s_7aa13d4c94b804": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fa36d-4ecc-7211-aef0-9010548d16a1",
+        "model": "gpt-5.5"
+      },
+      "human_author": "jyl25609 <jyl25609@ly.com>"
+    }
+  }
+}
