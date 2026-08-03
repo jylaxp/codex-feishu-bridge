@@ -102,12 +102,11 @@ turn/start
 
 按以下顺序落地：
 
-1. 在 `src/app/codex/contract.ts` 增加精确 full schema digest；
-2. 在 `src/app/codex/app-server-protocol-registry.ts` 增加 exact version/profile；
-3. 增加 `test/fixtures/app-server/NEW_VERSION/manifest.json`，以及测试或协议审查实际消费的控制面响应、
+1. 在 `src/app/codex/app-server-protocol-registry.ts` 增加 exact version/profile；
+2. 增加 `test/fixtures/app-server/NEW_VERSION/manifest.json`，以及测试或协议审查实际消费的控制面响应、
    schema comparison 等证据；
-4. 在 `adapterForAppServerProfile()` 增加穷举 mapping；
-5. 为 version/digest、cross-match、握手错配、adapter 和 15 方法补测试。
+3. 在 `adapterForAppServerProfile()` 增加穷举 mapping；
+4. 为版本解析、握手错配、adapter 和控制面 smoke 补测试。
 
 fixture 必须保留 `manifest.json`，并保留已提交测试或协议审查实际消费的控制面/schema 证据。
 `representative-messages.json` 只在已提交测试或审计/复现流程存在明确消费者时保留。`0.144.3` 是有意的例外：
@@ -152,18 +151,13 @@ CODEX_BIN=/absolute/path/to/codex codex-feishu-bridge version --json
 CODEX_BIN=/absolute/path/to/codex codex-feishu-bridge compatibility
 ```
 
-结论必须明确为“兼容”或“不兼容”。`upgrade_available` 表示 schema 与现有合同一致，但精确版本尚未批准；
-检查本身不修改支持目录。人工复核 binary 来源、schema 和 smoke 证据后，才允许执行：
-
-```bash
-CODEX_BIN=/absolute/path/to/codex codex-feishu-bridge compatibility --approve
-```
+结论必须明确为“兼容”或“不兼容”。未知版本会自动运行隔离的 control-plane smoke；smoke 通过会以
+`auto_smoke` 写入 `protocol-versions.json`，失败则保持“不兼容”。`--approve` 已移除。
 
 首次运行会把内置支持目录写入 config home 的 `protocol-versions.json`。后续 Bridge 发布新增内置版本时，
-运行会在锁内把缺失的内置项追加到该文件；已有的同版本记录和人工批准项保持不变。这个发布内置目录迁移
-不等同于把探测到的 `upgrade_available` 自动批准；未知 schema 仍不得使用 `--approve` 绕过。
+运行会在锁内把缺失的内置项追加到该文件；已有的同版本记录和自动 smoke 项保持不变。
 
-然后让 doctor 对已批准 binary 给出 exact profile、version、digest 和 mode：
+然后让 doctor 对已支持 binary 给出 exact profile、version 和 mode：
 
 ```bash
 CODEX_BIN=/absolute/path/to/codex codex-feishu-bridge doctor
@@ -192,12 +186,12 @@ codex-feishu-bridge status --json
 ## 9. `managed_proxy` 验证
 
 先用 `owned_stdio` 完成完整 schema 和控制面证明，再验证 `managed_proxy`。后者的本地 `CODEX_BIN`
-version+digest 只能选择操作员声明的 profile；socket 后 daemon 的 initialize identity 只能佐证版本，不能证明
+version 只能选择操作员声明的 profile；socket 后 daemon 的 initialize identity 只能佐证版本，不能证明
 其完整 schema。操作员必须独立钉住远端 binary 及 digest，Bridge 不会从 userAgent 推导远端 digest。
 
 ## 10. 发布与回滚
 
-注册前，未知版本、未知 digest 和 version/digest cross-match 必须继续 fail closed。完成全部门禁后再更新支持
+注册前，未知版本必须继续依赖隔离 smoke，smoke 失败必须 fail closed。完成全部门禁后再更新支持
 矩阵和 release notes；Git tag 只表示发布声明，不参与运行时检测。
 
 回滚步骤：

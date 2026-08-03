@@ -20,10 +20,7 @@ import {
   parseCodexCliVersion,
   type AppServerProtocolProfile,
 } from '../../src/app/codex/app-server-protocol-registry';
-import {
-  builtInProtocolVersionConfig,
-  profileForSupportedVersion,
-} from '../../src/app/codex/protocol-version-config';
+import { runAppServerProtocolSmoke } from '../../src/app/codex/app-server-protocol-smoke';
 import { APP_SERVER_PROTOCOL_V144 } from '../../src/app/codex/app-server-protocol-v144';
 import { APP_SERVER_PROTOCOL_V145 } from '../../src/app/codex/app-server-protocol-v145';
 
@@ -327,17 +324,16 @@ test('supported 145-adapter owned stdio proves the isolated non-model control-pl
   }
   const cliVersion = execFileSync(codexBin, ['--version'], { encoding: 'utf8' }).trim();
   const codexVersion = parseCodexCliVersion(cliVersion).version;
-  const supportedVersion = builtInProtocolVersionConfig().supportedVersions.find(
-    (entry) => entry.codexVersion === codexVersion,
-  );
-  assert.ok(supportedVersion, `${cliVersion} is not built into the support catalog`);
-  const protocolProfile = profileForSupportedVersion(supportedVersion);
-  const result = await runOwnedStdioControlPlaneSmoke({
-    codexBin,
-    protocolProfile,
-    adapter: APP_SERVER_PROTOCOL_V145,
-    temporaryPrefix: 'bridge-app-server-145-smoke-',
+  const result = await runAppServerProtocolSmoke({
+    target: {
+      codexBin,
+      codexVersionOutput: cliVersion,
+      codexVersion,
+    },
+    sourceEnv: { PATH: process.env.PATH },
+    temporaryRoot: tmpdir(),
   });
+  assert.equal(result.adapterProfileId, APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18.id);
   assert.deepEqual(result.provenMethods, REQUIRED_REAL_SMOKE_METHODS);
   assert.match(result.rateLimitsCapability, /^(available|unavailable:(REQUEST_FAILED|INVALID_RESPONSE))$/);
   assert.equal(result.compactCapability, 'not-attempted:model-operation-prohibited');

@@ -28,6 +28,11 @@ import {
 } from './cards/layouts';
 import { AppServerClient, type AppServerTransportOptions } from './codex/app-server-client';
 import {
+  runAppServerProtocolSmoke,
+  type AppServerProtocolSmokeResult,
+  type AppServerProtocolSmokeTarget,
+} from './codex/app-server-protocol-smoke';
+import {
   AppServerControlPlane,
   adapterForAppServerProfile,
   type AppServerRequestClient,
@@ -95,6 +100,12 @@ import {
   type RuntimeHealthSnapshot,
 } from './runtime-health';
 import type { LarkWebsocketConnectionSnapshot } from './lark/client';
+import {
+  RuntimeCompatibilityNotifier,
+  runtimeCompatibilityDirectNotificationChatIds,
+  type RegisteredRuntimeCompatibilityResult,
+  type RuntimeCompatibilityCheckTarget,
+} from './runtime-compatibility-notifier';
 
 export interface BridgeRuntime {
   readonly config: BridgeConfig;
@@ -105,6 +116,7 @@ export interface BridgeRuntime {
 const BINDING_DESKTOP_SNAPSHOT_TIMEOUT_MS = 5_000;
 const DESKTOP_ROUTE_RECOVERY_TIMEOUT_MS = 5_000;
 const DESKTOP_ROUTE_PROBE_TIMEOUT_MS = 2_000;
+const LARK_CHAT_ENDPOINT_PREFIX = 'https://open.feishu.cn/open-apis/im/v1/chats';
 
 interface BotRuntime {
   readonly botKey: string;
@@ -160,6 +172,9 @@ export async function startBridge(
   const externalBotDirectory = new ExternalBotDirectoryStore(preflight.configHome);
   let runtimeContract: Awaited<ReturnType<typeof verifyCodexRuntimeContract>>;
   let protocolAdapter: ReturnType<typeof adapterForAppServerProfile>;
+  let configuredBots: readonly LarkBotConfig[] = [];
+  let enabledBots: readonly LarkBotConfig[] = [];
+  let botConfigs = new Map<string, BridgeConfig>();
   try {
     botStore.load(config);
     const materializeDefault = !botStore.hasMaterializedFile() && hasLegacyLarkBotConfig(config);
@@ -174,10 +189,63 @@ export async function startBridge(
       bindings.materialize();
     }
     externalBotDirectory.load();
+    configuredBots = botStore.list();
+    if (configuredBots.length === 0) {
+      throw new Error('No Feishu bot is configured');
+    }
+    enabledBots = configuredBots.filter((bot) => bot.enabled);
+    botConfigs = new Map<string, BridgeConfig>(
+      configuredBots.map((bot) => [bot.botKey, { ...botConfigToBridgeConfig(config, bot) } as BridgeConfig]),
+    );
+    const runtimeCompatibilityNotifiers = await createRuntimeCompatibilityNotifiers(
+      enabledBots,
+      botConfigs,
+      logger,
+    );
+    const initialCompatibilityTarget = Object.freeze({ codexBin: config.codexBin });
+    let detectedCompatibilityTarget: AppServerProtocolSmokeTarget | null = null;
+    let protocolSmokeResult: AppServerProtocolSmokeResult | null = null;
+    await notifyRuntimeCompatibility(
+      runtimeCompatibilityNotifiers,
+      'started',
+      initialCompatibilityTarget,
+    );
     runtimeContract = await verifyCodexRuntimeContract(
       config,
       effectiveEnv,
       preflight.runtimeDirectory.temporaryDir,
+      {
+        onRuntimeDetected: async (target) => {
+          detectedCompatibilityTarget = target;
+          await notifyRuntimeCompatibility(runtimeCompatibilityNotifiers, 'runtimeDetected', target);
+        },
+        protocolSmokeRunner: async (options) => {
+          await notifyRuntimeCompatibility(
+            runtimeCompatibilityNotifiers,
+            'protocolSmokeStarted',
+            options.target,
+          );
+          protocolSmokeResult = await runAppServerProtocolSmoke(options);
+          return protocolSmokeResult;
+        },
+      },
+    ).catch(async (error: unknown) => {
+      await notifyRuntimeCompatibility(
+        runtimeCompatibilityNotifiers,
+        'failed',
+        detectedCompatibilityTarget ?? initialCompatibilityTarget,
+        error,
+      );
+      throw error;
+    });
+    await notifyRuntimeCompatibility(
+      runtimeCompatibilityNotifiers,
+      'succeeded',
+      detectedCompatibilityTarget ?? initialCompatibilityTarget,
+      protocolSmokeResult ?? Object.freeze({
+        adapterProfileId: runtimeContract.protocolProfile.id,
+        source: 'registered' as const,
+      }),
     );
     protocolAdapter = adapterForAppServerProfile(runtimeContract.protocolProfile);
   } catch (error) {
@@ -196,15 +264,6 @@ export async function startBridge(
   const appServerControlPlane = new AppServerControlPlane(appServer, protocolAdapter);
   const desktop = new DesktopIpcClient();
   await desktop.syncFollowedThreads(bindings.list().map((binding) => binding.threadId));
-  const configuredBots = botStore.list();
-  if (configuredBots.length === 0) {
-    processLock.release();
-    throw new Error('No Feishu bot is configured');
-  }
-  const enabledBots = configuredBots.filter((bot) => bot.enabled);
-  const botConfigs = new Map<string, BridgeConfig>(
-    configuredBots.map((bot) => [bot.botKey, { ...botConfigToBridgeConfig(config, bot) } as BridgeConfig]),
-  );
   let orchestrator: InMemoryOrchestrator | undefined;
   let messageAggregator: InboundMessageAggregator | undefined;
   let inboundGeneration = 0;
@@ -245,7 +304,6 @@ export async function startBridge(
         appServer: Object.freeze({
           state: appServerState,
           protocolContractId: runtimeContract.protocolProfile.id,
-          schemaDigest: runtimeContract.schemaDigest,
           artifactSha256: runtimeContract.runtimeArtifact.binarySha256,
         }),
         desktop: Object.freeze({
@@ -1243,7 +1301,6 @@ export async function startBridge(
       codexVersion: runtimeContract.codexVersion,
       appServerProtocolProfile: runtimeContract.protocolProfile.id,
       appServerProtocolSupported: true,
-      appServerSchemaDigest: runtimeContract.schemaDigest,
       codexRuntimeArtifactSha256: runtimeContract.runtimeArtifact.binarySha256,
       desktopIpcContract: DESKTOP_IPC_CONTRACT.id,
       larkBotCount: botRuntimes.size,
@@ -1346,6 +1403,147 @@ function appServerTransport(
     };
   }
   return { mode: 'owned_stdio', codexBin: config.codexBin, spawnCwd: config.codexCwd, env };
+}
+
+async function createRuntimeCompatibilityNotifiers(
+  bots: readonly LarkBotConfig[],
+  botConfigs: ReadonlyMap<string, BridgeConfig>,
+  logger: BridgeLogger,
+): Promise<readonly RuntimeCompatibilityNotifier[]> {
+  const notifiers: RuntimeCompatibilityNotifier[] = [];
+  for (const bot of bots) {
+    const scopedConfig = botConfigs.get(bot.botKey);
+    if (!scopedConfig) {
+      continue;
+    }
+    const tokenProvider = new CachedTenantTokenProvider(
+      scopedConfig.larkAppId,
+      scopedConfig.larkAppSecret,
+    );
+    const lark = createLarkRuntimeClients(scopedConfig, {
+      logSink: (level) => logger.warn(`lark_sdk_${level}`, { botKey: bot.botKey }),
+    });
+    const chatIds = await runtimeCompatibilityDirectNotificationChatIds(
+      scopedConfig.allowedChats,
+      {
+        getChatMode: (chatId) => fetchLarkChatMode(tokenProvider, chatId),
+      },
+      logger,
+    );
+    if (chatIds.length === 0) {
+      continue;
+    }
+    notifiers.push(new RuntimeCompatibilityNotifier({
+      cards: new CardKitClient(
+        tokenProvider,
+        lark.api as unknown as LarkReplyApi,
+      ),
+      chatIds,
+      logger,
+    }));
+  }
+  return Object.freeze(notifiers);
+}
+
+async function notifyRuntimeCompatibility(
+  notifiers: readonly RuntimeCompatibilityNotifier[],
+  phase: 'started',
+  target: RuntimeCompatibilityCheckTarget,
+): Promise<void>;
+async function notifyRuntimeCompatibility(
+  notifiers: readonly RuntimeCompatibilityNotifier[],
+  phase: 'runtimeDetected' | 'protocolSmokeStarted',
+  target: AppServerProtocolSmokeTarget,
+): Promise<void>;
+async function notifyRuntimeCompatibility(
+  notifiers: readonly RuntimeCompatibilityNotifier[],
+  phase: 'succeeded',
+  target: RuntimeCompatibilityCheckTarget,
+  result: AppServerProtocolSmokeResult | RegisteredRuntimeCompatibilityResult,
+): Promise<void>;
+async function notifyRuntimeCompatibility(
+  notifiers: readonly RuntimeCompatibilityNotifier[],
+  phase: 'failed',
+  target: RuntimeCompatibilityCheckTarget | null,
+  error: unknown,
+): Promise<void>;
+async function notifyRuntimeCompatibility(
+  notifiers: readonly RuntimeCompatibilityNotifier[],
+  phase: 'started' | 'runtimeDetected' | 'protocolSmokeStarted' | 'succeeded' | 'failed',
+  target: RuntimeCompatibilityCheckTarget | null,
+  payload?: AppServerProtocolSmokeResult | RegisteredRuntimeCompatibilityResult | unknown,
+): Promise<void> {
+  await Promise.all(notifiers.map(async (notifier) => {
+    if (phase === 'started') {
+      await notifier.started(requiredCompatibilityTarget(target));
+      return;
+    }
+    if (phase === 'runtimeDetected') {
+      await notifier.runtimeDetected(requiredCompatibilityTarget(target));
+      return;
+    }
+    if (phase === 'protocolSmokeStarted') {
+      await notifier.protocolSmokeStarted(requiredProtocolSmokeTarget(target));
+      return;
+    }
+    if (phase === 'succeeded') {
+      await notifier.succeeded(
+        requiredCompatibilityTarget(target),
+        payload as AppServerProtocolSmokeResult | RegisteredRuntimeCompatibilityResult,
+      );
+      return;
+    }
+    await notifier.failed(target, payload);
+  }));
+}
+
+async function fetchLarkChatMode(
+  tokenProvider: CachedTenantTokenProvider,
+  chatId: string,
+): Promise<string | null> {
+  const token = await tokenProvider.getToken();
+  const response = await fetch(`${LARK_CHAT_ENDPOINT_PREFIX}/${encodeURIComponent(chatId)}`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!response.ok) {
+    throw new Error(`Feishu chat info HTTP status ${response.status}`);
+  }
+  const payload = asRecord(await response.json()) ?? {};
+  if (typeof payload.code === 'number' && payload.code !== 0) {
+    throw new Error(`Feishu chat info rejected: ${textField(payload.msg) ?? 'unknown error'}`);
+  }
+  const data = asRecord(payload.data);
+  const chat = asRecord(data?.chat);
+  return textField(data?.chat_mode) ?? textField(chat?.chat_mode);
+}
+
+function requiredCompatibilityTarget(
+  target: RuntimeCompatibilityCheckTarget | null,
+): RuntimeCompatibilityCheckTarget {
+  if (!target || !target.codexBin) {
+    throw new Error('Runtime compatibility target is unavailable');
+  }
+  return target;
+}
+
+function requiredProtocolSmokeTarget(
+  target: RuntimeCompatibilityCheckTarget | null,
+): AppServerProtocolSmokeTarget {
+  if (
+    !target
+    || !target.codexBin
+    || !target.codexVersion
+    || !target.codexVersionOutput
+  ) {
+    throw new Error('Runtime compatibility smoke target is unavailable');
+  }
+  return {
+    codexBin: target.codexBin,
+    codexVersion: target.codexVersion,
+    codexVersionOutput: target.codexVersionOutput,
+  };
 }
 
 async function readThreadTitle(

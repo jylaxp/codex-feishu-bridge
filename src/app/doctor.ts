@@ -25,7 +25,6 @@ export interface DoctorReport {
   readonly approvalCardMode: BridgeConfig['approvalCardMode'];
   readonly platform: NodeJS.Platform;
   readonly desktopAttachedSupported: boolean;
-  readonly schemaDigest: string;
   readonly bindingCount: number;
   readonly bindingsFileBytes: number;
   readonly allowedChatCount: number;
@@ -91,7 +90,6 @@ export async function runDoctor(
     approvalCardMode: preflight.config.approvalCardMode,
     platform,
     desktopAttachedSupported: platform === 'darwin',
-    schemaDigest: contract.schemaDigest,
     bindingCount: store.list().length,
     bindingsFileBytes,
     allowedChatCount: preflight.config.allowedChats.length,

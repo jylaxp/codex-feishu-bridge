@@ -15,22 +15,22 @@ test('version command emits the detected local application and Codex versions as
   assert.equal(value.conclusion, '兼容');
 });
 
-test('compatibility command prints the required conclusion and only approves explicitly', async () => {
-  let approved = false;
-  const output = await captureStdout(() => runCli(['compatibility', '--approve'], {}, {
+test('compatibility command prints the required conclusion and enables protocol smoke', async () => {
+  let autoProtocolSmoke = false;
+  const output = await captureStdout(() => runCli(['compatibility'], {}, {
     runLocalVersionCommand: async (_env, options) => {
-      approved = options.approve === true;
+      autoProtocolSmoke = options.autoProtocolSmoke === true;
       return compatibleReport();
     },
   }));
 
-  assert.equal(approved, true);
+  assert.equal(autoProtocolSmoke, true);
   assert.equal(output.split('\n')[0], '兼容');
   await assert.rejects(
-    runCli(['version', '--approve'], {}, {
+    runCli(['compatibility', '--approve'], {}, {
       runLocalVersionCommand: async () => compatibleReport(),
     }),
-    /--approve is only valid with compatibility/,
+    /--approve is no longer supported/,
   );
 });
 
@@ -53,11 +53,9 @@ function compatibleReport(): LocalVersionReport {
     conclusion: '兼容',
     compatible: true,
     status: 'supported',
-    requiresApproval: false,
     codexBinary: '/Applications/ChatGPT.app/Contents/Resources/codex',
     codexVersion: '0.145.0-alpha.18',
     binarySha256: 'a'.repeat(64),
-    schemaDigest: 'b'.repeat(64),
     chatGptApp: Object.freeze({
       appPath: '/Applications/ChatGPT.app',
       version: '26.715.31925',

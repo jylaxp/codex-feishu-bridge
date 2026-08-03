@@ -236,7 +236,7 @@ cfb update --force
 # 检查本机配置、App Server protocol profile 和运行依赖
 cfb doctor
 
-# 查看本机 ChatGPT App、Codex CLI、binary 和 schema 版本
+# 查看本机 ChatGPT App、Codex CLI、binary 和协议兼容性
 cfb version
 cfb version --json
 
@@ -247,24 +247,18 @@ cfb compatibility --json
 
 首次执行 `run`、`start`、`doctor`、`version` 或 `compatibility` 时，如果配置不存在，Bridge 会把内置支持
 目录写入 `~/.codex-feishu-bridge/protocol-versions.json`。后续启动读取该文件，再检测当前本机版本。文件同时
-记录最近一次 ChatGPT App/Codex 版本、binary SHA-256、完整 schema digest 和兼容结论，不包含 prompt、结果或
+记录最近一次 ChatGPT App/Codex 版本、binary SHA-256 和兼容结论，不包含 prompt、结果或
 凭证。
 
-精确版本和 digest 已在配置目录中时可以启动；版本尚未列入、但完整 schema digest 与已支持合同相同时，
-`compatibility` 返回“兼容”并标记 `upgrade_available`，Bridge 仍拒绝启动，直到操作员审查后明确执行：
+精确版本已在配置目录中时可以启动；未知版本启动时会先运行隔离的 App Server control-plane smoke。smoke 通过后，
+Bridge 会把该精确版本以 `auto_smoke` 写入 `protocol-versions.json` 并继续启动；smoke 失败则返回“不兼容”并拒绝启动。
+`--approve` 已移除，`compatibility` 会自动执行同一套 smoke。
 
-```bash
-cfb compatibility --approve
-```
-
-`--approve` 只允许加入 schema 已匹配的精确版本，不接受未知 schema，也不会修改源码或 `package.json`。
-
-`doctor` 会生成配置 binary 的完整 experimental schema digest，并报告
-`protocolProfileId`、`codexVersion`、`schemaDigest`、`appServerMode`、
+`doctor` 会报告 `protocolProfileId`、`codexVersion`、`appServerMode`、
 `appServerIdentityAssurance`、当前平台和 bot 协作就绪摘要。doctor 只做本机探测；正式启动还会用
-initialize identity 核对实际 App Server 版本。`managed_proxy` 的 assurance 会明确显示为操作员信任的版本佐证，
-而不是远端 schema 证明。当前 Desktop-attached 执行只声明 macOS 支持；Windows 在 native named-pipe probe
-和 owner/session attestation 完成前会保持 not ready。
+initialize identity 核对实际 App Server 版本。`managed_proxy` 的 assurance 会明确显示为操作员信任的版本佐证。
+当前 Desktop-attached 执行只声明 macOS 支持；Windows 在 native named-pipe probe 和 owner/session attestation
+完成前会保持 not ready。
 
 `logging.toFile=true` 时可实时查看后台输出日志：
 

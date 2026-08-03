@@ -1105,11 +1105,12 @@ export class InMemoryOrchestrator {
       appendToTask(task, 'tools', stringField((params.error as Record<string, unknown> | undefined)?.message));
     } else if (notification.method === 'turn/completed') {
       const turn = params.turn as Turn;
-      const nextStatus = terminalStatus(turn.status);
+      const nextStatus = terminalStatus(turn);
       const terminalAnswer = finalAnswerFromTurn(turn);
       if (terminalAnswer) {
         task.finalAnswer = terminalAnswer;
       }
+      applyTerminalError(task, turn);
       if (nextStatus === 'SUCCEEDED' && !terminalAnswer && !task.finalAnswerCompleted) {
         this.beginTerminalConvergence(task, nextStatus);
         return;
@@ -1199,6 +1200,8 @@ export class InMemoryOrchestrator {
       return;
     }
     const previousAnswer = task.finalAnswer;
+    const previousTools = task.tools;
+    const previousStatus = task.status;
     if (notification.method === 'item/agentMessage/delta') {
       if (stringField(params.phase) !== 'commentary') {
         appendToTask(task, 'finalAnswer', stringField(params.delta));
@@ -1211,13 +1214,22 @@ export class InMemoryOrchestrator {
       }
     } else if (notification.method === 'turn/completed') {
       const turn = params.turn as Turn;
+      const nextStatus = terminalStatus(turn);
+      if (nextStatus === 'FAILED') {
+        task.status = 'FAILED';
+      }
       const terminalAnswer = finalAnswerFromTurn(turn);
       if (terminalAnswer) {
         task.finalAnswer = terminalAnswer;
         task.finalAnswerCompleted = true;
       }
+      applyTerminalError(task, turn);
     }
-    if (task.finalAnswer === previousAnswer) {
+    if (
+      task.finalAnswer === previousAnswer
+      && task.tools === previousTools
+      && task.status === previousStatus
+    ) {
       return;
     }
     if (!previousAnswer) {
@@ -2855,6 +2867,31 @@ function finalAnswerFromTurn(turn: Turn): string {
     .join('');
 }
 
+function applyTerminalError(task: RuntimeTask, turn: Turn): void {
+  const error = terminalErrorFromTurn(turn);
+  if (!error) {
+    return;
+  }
+  if (!task.tools.trim()) {
+    task.tools = error;
+    return;
+  }
+  if (!task.tools.includes(error)) {
+    task.tools = `${task.tools}\n\n${error}`;
+  }
+}
+
+function terminalErrorFromTurn(turn: Turn): string {
+  const message = turn.error?.message?.trim() ?? '';
+  if (!message) {
+    return '';
+  }
+  const additionalDetails = turn.error?.additionalDetails?.trim() ?? '';
+  return additionalDetails && !message.includes(additionalDetails)
+    ? `${message}\n\n${additionalDetails}`
+    : message;
+}
+
 function completedFinalAgentMessage(
   params: Record<string, unknown>,
 ): { readonly text: string } | null {
@@ -3036,8 +3073,14 @@ function isMentionBoundary(value: string): boolean {
   return /[\s\p{P}]/u.test(value);
 }
 
-function terminalStatus(status: Turn['status']): TaskStatus {
-  return status === 'completed' ? 'SUCCEEDED' : status === 'interrupted' ? 'INTERRUPTED' : 'FAILED';
+function terminalStatus(turn: Turn): TaskStatus {
+  if (turn.status === 'interrupted') {
+    return 'INTERRUPTED';
+  }
+  if (turn.status === 'failed' || turn.error) {
+    return 'FAILED';
+  }
+  return turn.status === 'completed' ? 'SUCCEEDED' : 'FAILED';
 }
 
 function isCancellableTask(task: RuntimeTask): boolean {

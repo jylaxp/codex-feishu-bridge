@@ -146,11 +146,8 @@ cfb version
 cfb compatibility
 ```
 
-当 `compatibility` 显示 schema 相同但精确版本尚未批准时，需要操作员审查后执行：
-
-```bash
-cfb compatibility --approve
-```
+未知 Codex 精确版本会自动运行隔离的 App Server control-plane smoke。smoke 通过后会写入
+`protocol-versions.json` 并继续启动；smoke 失败会显示“不兼容”。`--approve` 已移除。
 
 ## 6. 单聊使用
 

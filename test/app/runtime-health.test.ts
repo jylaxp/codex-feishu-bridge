@@ -27,7 +27,6 @@ test('runtime health is atomic, content-free, and readable by status', () => {
       appServer: {
         state: 'ready',
         protocolContractId: 'app-server-0.145.0-alpha.18',
-        schemaDigest: 'a'.repeat(64),
         artifactSha256: 'b'.repeat(64),
       },
       desktop: {
@@ -164,7 +163,6 @@ test('background status rejects health from a dead supervised worker', async () 
       appServer: {
         state: 'ready',
         protocolContractId: 'app-server-0.145.0-alpha.18',
-        schemaDigest: 'a'.repeat(64),
         artifactSha256: 'b'.repeat(64),
       },
       desktop: {

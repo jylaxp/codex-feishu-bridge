@@ -43,7 +43,6 @@ interface CliArguments {
   readonly rebind: boolean;
   readonly force: boolean;
   readonly json: boolean;
-  readonly approve: boolean;
   readonly botAction: BotCommandAction | undefined;
   readonly appId: string | undefined;
   readonly appSecret: string | undefined;
@@ -72,7 +71,7 @@ export interface CliDependencies {
   ) => Promise<BackgroundServiceReport>;
   readonly runLocalVersionCommand?: (
     env: NodeJS.ProcessEnv,
-    options: { readonly approve?: boolean },
+    options: { readonly autoProtocolSmoke?: boolean },
   ) => Promise<LocalVersionReport>;
   readonly runBotCommand?: (
     options: {
@@ -126,7 +125,7 @@ export async function runCli(
     let report: LocalVersionReport;
     try {
       report = await inspect(runtimeEnv, {
-        approve: parsed.command === 'compatibility' && parsed.approve,
+        autoProtocolSmoke: parsed.command === 'compatibility',
       });
     } catch (error) {
       if (parsed.command !== 'compatibility') {
@@ -277,7 +276,6 @@ function parseArguments(args: readonly string[]): CliArguments {
   let rebind = false;
   let force = false;
   let json = false;
-  let approve = false;
   let botAction: BotCommandAction | undefined;
   let appId: string | undefined;
   let appSecret: string | undefined;
@@ -316,8 +314,7 @@ function parseArguments(args: readonly string[]): CliArguments {
       continue;
     }
     if (argument === '--approve') {
-      approve = true;
-      continue;
+      throw new Error('--approve is no longer supported; compatibility uses protocol smoke automatically');
     }
     if (argument === '--app-id') {
       appId = requireOptionValue(args, index, '--app-id');
@@ -407,9 +404,6 @@ function parseArguments(args: readonly string[]): CliArguments {
   ) {
     throw new Error('--json is only valid with status, version, compatibility, config migrate, or bot');
   }
-  if (approve && command !== 'compatibility') {
-    throw new Error('--approve is only valid with compatibility');
-  }
   if ((appId || appSecret) && command !== 'bot') {
     throw new Error('--app-id and --app-secret are only valid with bot management commands');
   }
@@ -438,7 +432,6 @@ function parseArguments(args: readonly string[]): CliArguments {
     rebind,
     force,
     json,
-    approve,
     botAction,
     appId,
     appSecret,
@@ -534,7 +527,7 @@ function helpText(): string {
     '  codex-feishu-bridge update [--force] [--config-home PATH]',
     '  codex-feishu-bridge doctor',
     '  codex-feishu-bridge version [--json] [--config-home PATH]',
-    '  codex-feishu-bridge compatibility [--json] [--approve] [--config-home PATH]',
+    '  codex-feishu-bridge compatibility [--json] [--config-home PATH]',
     '  codex-feishu-bridge config migrate [--json] [--config-home PATH]',
     '  codex-feishu-bridge bot add [--config-home PATH]',
     '  codex-feishu-bridge bot import --app-id APP_ID --app-secret SECRET [--config-home PATH]',
@@ -555,7 +548,7 @@ function helpText(): string {
     'rebind forces a new Feishu QR-code app registration and updates channels/feishu/bots.json.',
     'start/restart/stop/status manage the PID file and logs under ~/.codex-feishu-bridge/.',
     'version detects local ChatGPT/Codex versions and refreshes protocol-versions.json.',
-    'compatibility reports 兼容/不兼容; --approve explicitly adds a compatible exact version.',
+    'compatibility reports 兼容/不兼容 and smoke-verifies unsupported versions.',
     'config migrate converts legacy .env bot credentials into channels/feishu/bots.json using the appId as the robot identifier.',
     'bot add scans one QR code, fetches the robot identity, and stores one appId-scoped robot config.',
     'validate-ui-sync without --thread lists recent workspace tasks.',

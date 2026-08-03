@@ -1,6 +1,7 @@
 # Codex App Server 支持矩阵
 
-Bridge 只支持经过完整 experimental schema、握手身份和控制面回归验证的精确协议档案。代码内的
+Bridge 只支持经过握手身份和控制面回归验证的精确协议档案。完整 experimental schema 仍作为发布审计证据保存，
+但运行时不再生成 schema digest 作为启动门禁。代码内的
 `src/app/codex/app-server-protocol-registry.ts` 是首次启动种子；运行时事实源是 config home 下的
 `protocol-versions.json`。本表用于发布和运维核对，不参与协议选择。
 
@@ -30,22 +31,22 @@ Bridge 只支持经过完整 experimental schema、握手身份和控制面回�
 启动时，Bridge 对配置的 `CODEX_BIN` 执行一次精确探测：
 
 1. 读取 `codex --version`；
-2. 执行 `codex app-server generate-json-schema --experimental`；
-3. 对完整 schema 文件集合和规范化 JSON 内容计算 SHA-256；
-4. 从 `protocol-versions.json` 以 `CLI version + full schema digest` 精确选择唯一已批准版本；
-5. 启动 App Server 后，再用 initialize `userAgent` 核对同一精确版本。
+2. 捕获 binary SHA-256 和 ChatGPT App 元数据；
+3. 从 `protocol-versions.json` 以 CLI 精确版本选择已支持版本；
+4. 如果版本未登记，运行隔离的 `owned_stdio` control-plane smoke；
+5. smoke 通过后以 `auto_smoke` 写入该精确版本；失败则“不兼容”并 fail closed；
+6. 启动 App Server 后，再用 initialize `userAgent` 核对同一精确版本。
 
 首次启动缺少配置文件时，Bridge 将上述内置版本写入配置；后续 Bridge 发布新增内置版本时，启动会把缺失的
-内置项合并进已落盘目录，并保留人工批准和运维修改的同版本记录。这里的 digest 是 runtime identity 和审计证据，
-不是要求所有功能兼容版本必须与 adapter 基线 schema 完全相同；只要该精确版本和 digest 已经经过 Bridge 已用
-控制面 smoke 验证，就可以作为内置项复用现有 adapter。未列入的版本若完整 schema digest 与一个已支持合同一致，
-兼容检查返回“兼容／upgrade_available”，但启动仍在 READY 前拒绝，必须人工执行 `compatibility --approve`
-才加入精确版本。未知 digest、version/digest cross-match 或握手版本不一致返回“不兼容”并 fail closed。
+内置项合并进已落盘目录，并保留运维修改和自动 smoke 追加的同版本记录。schema digest 是发布审计证据，
+不是运行时选择键；只要该精确版本已经经过 Bridge 已用控制面 smoke 验证，就可以作为内置项复用现有 adapter。
+未列入版本由 `compatibility` 或启动流程自动执行 smoke，成功即登记，失败返回“不兼容”并 fail closed。
 Bridge 不使用 `^0.145`、`>=0.144` 或“同 minor 即兼容”等 SemVer range 猜测 experimental 协议兼容性。
 
 ## 已验证控制面
 
-除 initialize/initialized 握手外，两个 adapter profile 及其已列入别名都覆盖以下 15 个 Bridge 实际使用的方法：
+除 initialize/initialized 握手外，adapter profile 及其已列入别名会覆盖 Bridge 实际使用的控制面方法。自动 smoke
+不会启动模型任务，只验证非模型控制面：
 
 - `thread/list`
 - `thread/read`
@@ -57,10 +58,13 @@ Bridge 不使用 `^0.145`、`>=0.144` 或“同 minor 即兼容”等 SemVer ran
 - `thread/goal/get`
 - `thread/goal/set`
 - `thread/goal/clear`
-- `thread/compact/start`
 - `skills/list`
 - `mcpServerStatus/list`
 - `account/rateLimits/read`
+
+以下方法属于已授权测试或生产路径，不在自动 startup smoke 中执行：
+
+- `thread/compact/start`
 - `turn/start`（仅实验 UI sync validator）
 
 App Server 只负责这些控制面操作。飞书生产任务的 start/steer/interrupt、审批和 live event 仍由

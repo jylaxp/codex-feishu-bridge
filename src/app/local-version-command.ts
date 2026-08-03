@@ -14,7 +14,7 @@ import {
 const DEFAULT_MACOS_CODEX_BINARY = '/Applications/ChatGPT.app/Contents/Resources/codex';
 
 export interface LocalVersionCommandOptions {
-  readonly approve?: boolean;
+  readonly autoProtocolSmoke?: boolean;
   readonly now?: () => Date;
 }
 
@@ -22,12 +22,10 @@ export interface LocalVersionReport {
   readonly configPath: string;
   readonly conclusion: '兼容' | '不兼容';
   readonly compatible: boolean;
-  readonly status: 'supported' | 'upgrade_available' | 'incompatible';
-  readonly requiresApproval: boolean;
+  readonly status: 'supported' | 'incompatible';
   readonly codexBinary: string;
   readonly codexVersion: string;
   readonly binarySha256: string;
-  readonly schemaDigest: string;
   readonly chatGptApp: CodexCompatibilityReport['detection']['chatGptApp'];
   readonly protocolProfileId: string | null;
   readonly supportedVersions: readonly string[];
@@ -53,18 +51,16 @@ export function formatLocalVersion(report: LocalVersionReport): string {
     `Codex: ${report.codexVersion}`,
     `Codex binary: ${report.codexBinary}`,
     `Binary SHA-256: ${report.binarySha256}`,
-    `Schema SHA-256: ${report.schemaDigest}`,
     `版本配置: ${report.configPath}`,
     '',
   ].join('\n');
 }
 
 export function formatCompatibility(report: LocalVersionReport): string {
-  const approval = report.requiresApproval ? '（需要人工确认升级支持版本）' : '';
   return [
     report.conclusion,
     `Codex: ${report.codexVersion}`,
-    `状态: ${report.status}${approval}`,
+    `状态: ${report.status}`,
     `协议: ${report.protocolProfileId ?? '未匹配'}`,
     `版本配置: ${report.configPath}`,
     '',
@@ -126,11 +122,9 @@ function toLocalVersionReport(report: CodexCompatibilityReport): LocalVersionRep
     conclusion: report.assessment.conclusion,
     compatible: report.assessment.conclusion === '兼容',
     status: report.assessment.status,
-    requiresApproval: report.assessment.status === 'upgrade_available',
     codexBinary: detection.codexBinary,
     codexVersion: detection.codexVersion,
     binarySha256: detection.binarySha256,
-    schemaDigest: detection.schemaDigest,
     chatGptApp: detection.chatGptApp,
     protocolProfileId: report.assessment.adapterProfileId,
     supportedVersions: Object.freeze(report.config.supportedVersions.map((entry) => entry.codexVersion)),

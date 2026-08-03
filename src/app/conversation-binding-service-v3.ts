@@ -7,6 +7,7 @@ import { type BindingStore, type ChatThreadBinding } from './binding-store';
 import { DEFAULT_BOT_KEY, type LarkBotConfig } from './bot-config-store';
 import { createTaskCard, type CardKitJson } from './cards/layouts';
 import { sanitizeCardMarkdown, sanitizeCardPlainText, sanitizeCardText } from './cards/sanitizer';
+import { FEISHU_CHANNEL_ID } from './channel-paths';
 import { type ThreadNavigation } from './codex/app-navigation-adapter';
 import type { Thread, ThreadItem, ThreadListResponse, ThreadResumeResponse, Turn } from './codex/protocol';
 import type {
@@ -77,6 +78,7 @@ export class ConversationBindingServiceV3 {
   private readonly consumedOpenTokens = new Map<string, number>();
   private readonly pendingBindingCards = new Map<string, PendingBindingCard>();
   private readonly pushedHistoryTurns = new Set<string>();
+  private readonly pendingHistoryBindings = new Set<string>();
 
   public constructor(
     private readonly config: BridgeConfig,
@@ -377,7 +379,7 @@ export class ConversationBindingServiceV3 {
     binding: ChatThreadBinding,
     messageId: string,
   ): Promise<void> {
-    if (this.getBinding(binding.tenantKey, binding.chatId, binding.botKey)?.revision !== binding.revision) {
+    if (!this.isCurrentBinding(binding)) {
       return;
     }
     try {
@@ -398,10 +400,28 @@ export class ConversationBindingServiceV3 {
         threadId: binding.threadId,
       });
     }
+    if (!this.isCurrentBinding(binding)) {
+      return;
+    }
     await this.pushLatestHistoryCard(
       binding,
       `history:${messageId}:${binding.threadId}`,
       'card_action',
+    );
+  }
+
+  private isCurrentBinding(binding: ChatThreadBinding): boolean {
+    const botIdentifier = binding.larkAppId ?? binding.botKey ?? DEFAULT_BOT_KEY;
+    const current = this.store.get(
+      binding.tenantKey,
+      binding.chatId,
+      botIdentifier,
+      binding.channel ?? FEISHU_CHANNEL_ID,
+    );
+    return Boolean(
+      current
+      && current.threadId === binding.threadId
+      && current.revision === binding.revision
     );
   }
 
@@ -422,6 +442,11 @@ export class ConversationBindingServiceV3 {
     idempotencyPrefix: string,
     source: 'picker' | 'card_action',
   ): Promise<void> {
+    const bindingHistoryKey = historyBindingKey(binding);
+    if (!this.isCurrentBinding(binding) || this.pendingHistoryBindings.has(bindingHistoryKey)) {
+      return;
+    }
+    this.pendingHistoryBindings.add(bindingHistoryKey);
     try {
       this.logger?.info('history_push_started', {
         source,
@@ -432,13 +457,24 @@ export class ConversationBindingServiceV3 {
         threadId: binding.threadId,
         excludeTurns: false,
       });
-      const newestTurn = response.thread.turns.at(-1);
+      if (!this.isCurrentBinding(binding)) {
+        return;
+      }
+      const newestTurn = latestTurn(response.thread.turns);
       if (newestTurn?.status === 'inProgress') {
         this.logger?.info('history_push_skipped_active_turn', {
           source,
           chatId: binding.chatId,
           threadId: binding.threadId,
           turnId: newestTurn.id,
+        });
+        return;
+      }
+      if (response.thread.status.type === 'active') {
+        this.logger?.info('history_push_skipped_active_thread', {
+          source,
+          chatId: binding.chatId,
+          threadId: binding.threadId,
         });
         return;
       }
@@ -452,15 +488,21 @@ export class ConversationBindingServiceV3 {
         });
         return;
       }
-      const historyKey = `${binding.threadId.length}:${binding.threadId}${turn.id.length}:${turn.id}`;
+      const historyKey = `${bindingHistoryKey}:${turn.id.length}:${turn.id}`;
       if (this.pushedHistoryTurns.has(historyKey)) {
         return;
       }
       const rateLimitText = this.readRateLimits
         ? formatHistoryRateLimits(await this.readRateLimits().catch(() => null))
         : null;
+      if (!this.isCurrentBinding(binding)) {
+        return;
+      }
       const card = createHistoryTaskCard(binding, turn, response.model, rateLimitText);
       const cardId = await this.cards.createCard(card);
+      if (!this.isCurrentBinding(binding)) {
+        return;
+      }
       await this.cards.sendCard(binding.chatId, cardId, `${idempotencyPrefix}:${turn.id}`);
       this.pushedHistoryTurns.add(historyKey);
       this.logger?.info('history_push_sent', {
@@ -476,7 +518,11 @@ export class ConversationBindingServiceV3 {
         threadId: binding.threadId,
         idempotencyPrefix,
       });
-      await this.sendHistoryFailureCard(binding, idempotencyPrefix, error);
+      if (this.isCurrentBinding(binding)) {
+        await this.sendHistoryFailureCard(binding, idempotencyPrefix, error);
+      }
+    } finally {
+      this.pendingHistoryBindings.delete(bindingHistoryKey);
     }
   }
 
@@ -542,13 +588,61 @@ export class ConversationBindingServiceV3 {
 }
 
 function latestTerminalTurn(thread: Thread): Turn | null {
-  for (let index = thread.turns.length - 1; index >= 0; index -= 1) {
+  let latest: Turn | null = null;
+  for (let index = 0; index < thread.turns.length; index += 1) {
     const turn = thread.turns[index];
-    if (turn && (turn.status === 'completed' || turn.status === 'failed' || turn.status === 'interrupted')) {
-      return turn;
+    if (
+      !turn
+      || (turn.status !== 'completed' && turn.status !== 'failed' && turn.status !== 'interrupted')
+    ) {
+      continue;
+    }
+    if (!latest || compareTurnsByRecency(turn, latest) > 0) {
+      latest = turn;
     }
   }
-  return null;
+  return latest;
+}
+
+function latestTurn(turns: readonly Turn[]): Turn | null {
+  let latest: Turn | null = null;
+  for (const turn of turns) {
+    if (!latest || compareTurnsByRecency(turn, latest) > 0) {
+      latest = turn;
+    }
+  }
+  return latest;
+}
+
+function compareTurnsByRecency(left: Turn, right: Turn): number {
+  const leftTime = turnRecencyTimestamp(left);
+  const rightTime = turnRecencyTimestamp(right);
+  if (leftTime !== rightTime) {
+    return leftTime - rightTime;
+  }
+  return left.id.localeCompare(right.id);
+}
+
+function turnRecencyTimestamp(turn: Turn): number {
+  return turn.completedAt ?? turn.startedAt ?? Number.NEGATIVE_INFINITY;
+}
+
+function historyBindingKey(binding: ChatThreadBinding): string {
+  const channel = binding.channel ?? FEISHU_CHANNEL_ID;
+  const botIdentifier = binding.larkAppId ?? binding.botKey ?? DEFAULT_BOT_KEY;
+  return [
+    channel.length,
+    channel,
+    botIdentifier.length,
+    botIdentifier,
+    binding.tenantKey.length,
+    binding.tenantKey,
+    binding.chatId.length,
+    binding.chatId,
+    binding.threadId.length,
+    binding.threadId,
+    binding.revision,
+  ].join(':');
 }
 
 function errorTypeName(error: unknown): string {

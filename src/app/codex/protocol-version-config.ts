@@ -9,7 +9,6 @@ import {
 import { join } from 'node:path';
 
 import { BridgeProcessLock } from '../process-lock';
-import { APP_SERVER_SCHEMA_DIGEST_0_146_0_ALPHA_3 } from './contract';
 import {
   APP_SERVER_PROTOCOL_PROFILES,
   APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18,
@@ -22,13 +21,12 @@ const CONFIG_FILE_NAME = 'protocol-versions.json';
 const CONFIG_SCHEMA_VERSION = 1;
 export const PROTOCOL_VERSION_CONFIG_LOCK_FILE_NAME = 'protocol-versions.lock';
 
-export type ProtocolVersionSource = 'builtin' | 'approved';
-export type CompatibilityStatus = 'supported' | 'upgrade_available' | 'incompatible';
+export type ProtocolVersionSource = 'builtin' | 'approved' | 'auto_smoke';
+export type CompatibilityStatus = 'supported' | 'incompatible';
 export type CompatibilityConclusion = '兼容' | '不兼容';
 
 export interface SupportedProtocolVersion {
   readonly codexVersion: string;
-  readonly schemaDigest: string;
   readonly adapterProfileId: AppServerProtocolProfileId;
   readonly source: ProtocolVersionSource;
 }
@@ -38,33 +36,28 @@ export const BUILT_IN_SUPPORTED_PROTOCOL_VERSIONS: readonly SupportedProtocolVer
   Object.freeze([
     ...APP_SERVER_PROTOCOL_PROFILES.map((profile) => Object.freeze({
       codexVersion: profile.codexVersion,
-      schemaDigest: profile.schemaDigest,
       adapterProfileId: profile.id,
       source: 'builtin' as const,
     })),
     Object.freeze({
       codexVersion: '0.145.0-alpha.27',
-      schemaDigest: APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18.schemaDigest,
       adapterProfileId: APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18.id,
       source: 'builtin' as const,
     }),
     Object.freeze({
       codexVersion: '0.145.0-alpha.30',
-      schemaDigest: APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18.schemaDigest,
       adapterProfileId: APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18.id,
       source: 'builtin' as const,
     }),
-    // 0.146 adds unused App/audio/search schema, while the Bridge control plane
-    // remains smoke-verified through the 145 adapter.
+    // 0.146 adds unused App/audio/search protocol surface, while the Bridge
+    // control plane remains smoke-verified through the 145 adapter.
     Object.freeze({
       codexVersion: '0.146.0-alpha.3',
-      schemaDigest: APP_SERVER_SCHEMA_DIGEST_0_146_0_ALPHA_3,
       adapterProfileId: APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18.id,
       source: 'builtin' as const,
     }),
     Object.freeze({
       codexVersion: '0.146.0-alpha.3.1',
-      schemaDigest: APP_SERVER_SCHEMA_DIGEST_0_146_0_ALPHA_3,
       adapterProfileId: APP_SERVER_PROTOCOL_PROFILE_0_145_0_ALPHA_18.id,
       source: 'builtin' as const,
     }),
@@ -83,7 +76,6 @@ export interface RuntimeVersionDetection {
   readonly codexBinary: string;
   readonly codexVersion: string;
   readonly binarySha256: string;
-  readonly schemaDigest: string;
   readonly chatGptApp: ChatGptAppVersion | null;
   readonly compatibility: {
     readonly conclusion: CompatibilityConclusion;
@@ -124,7 +116,6 @@ export class ProtocolVersionConfigStore {
       const assessment = assessProtocolCompatibility(
         config.supportedVersions,
         detection.codexVersion,
-        detection.schemaDigest,
       );
       const updated = freezeConfig({
         schemaVersion: CONFIG_SCHEMA_VERSION,
@@ -136,41 +127,48 @@ export class ProtocolVersionConfigStore {
     });
   }
 
-  public approveCompatibleVersion(detection: RuntimeVersionDetection): ProtocolVersionConfig {
+  public recordDetectionWithAssessment(
+    detection: RuntimeVersionDetection,
+    assessment: CompatibilityAssessment,
+  ): ProtocolVersionConfig {
     return this.withMutationLock(() => {
       const config = this.loadOrCreateUnlocked();
-      const assessment = assessProtocolCompatibility(
-        config.supportedVersions,
-        detection.codexVersion,
-        detection.schemaDigest,
-      );
-      if (assessment.status === 'incompatible' || assessment.adapterProfileId === null) {
-        throw new Error('Only a schema-compatible exact version can be approved');
-      }
-      if (assessment.status === 'supported') {
-        const updated = freezeConfig({
-          schemaVersion: CONFIG_SCHEMA_VERSION,
-          supportedVersions: config.supportedVersions,
-          lastDetection: detectionWithAssessment(detection, assessment),
-        });
-        this.write(updated);
-        return updated;
-      }
+      const updated = freezeConfig({
+        schemaVersion: CONFIG_SCHEMA_VERSION,
+        supportedVersions: config.supportedVersions,
+        lastDetection: detectionWithAssessment(detection, assessment),
+      });
+      this.write(updated);
+      return updated;
+    });
+  }
 
-      const supportedVersions = Object.freeze([
-        ...config.supportedVersions,
-        Object.freeze({
-          codexVersion: detection.codexVersion,
-          schemaDigest: detection.schemaDigest,
-          adapterProfileId: assessment.adapterProfileId,
-          source: 'approved' as const,
-        }),
-      ]);
+  public approveProtocolSmokeVersion(
+    detection: RuntimeVersionDetection,
+    adapterProfileId: AppServerProtocolProfileId,
+  ): ProtocolVersionConfig {
+    return this.withMutationLock(() => {
+      const config = this.loadOrCreateUnlocked();
+      const existing = config.supportedVersions.find((entry) => (
+        entry.codexVersion === detection.codexVersion
+      ));
+      if (existing !== undefined && existing.adapterProfileId !== adapterProfileId) {
+        throw new Error('Protocol smoke selected a different adapter for an existing version');
+      }
+      const supportedVersions = existing === undefined
+        ? Object.freeze([
+          ...config.supportedVersions,
+          Object.freeze({
+            codexVersion: detection.codexVersion,
+            adapterProfileId,
+            source: 'auto_smoke' as const,
+          }),
+        ])
+        : config.supportedVersions;
       assertSupportedVersions(supportedVersions);
       const approvedAssessment = assessProtocolCompatibility(
         supportedVersions,
         detection.codexVersion,
-        detection.schemaDigest,
       );
       const updated = freezeConfig({
         schemaVersion: CONFIG_SCHEMA_VERSION,
@@ -231,9 +229,9 @@ export class ProtocolVersionConfigStore {
 }
 
 function mergeMissingBuiltInVersions(config: ProtocolVersionConfig): ProtocolVersionConfig {
-  const persistedVersions = new Set(config.supportedVersions.map((entry) => entry.codexVersion));
+  const persistedVersions = new Set(config.supportedVersions.map(versionIdentity));
   const missingBuiltIns = BUILT_IN_SUPPORTED_PROTOCOL_VERSIONS.filter(
-    (entry) => !persistedVersions.has(entry.codexVersion),
+    (entry) => !persistedVersions.has(versionIdentity(entry)),
   );
   if (missingBuiltIns.length === 0) {
     return config;
@@ -267,28 +265,14 @@ function detectionWithAssessment(
 export function assessProtocolCompatibility(
   supportedVersions: readonly SupportedProtocolVersion[],
   codexVersion: string,
-  schemaDigest: string,
 ): CompatibilityAssessment {
-  const exactVersion = supportedVersions.find((entry) => entry.codexVersion === codexVersion);
-  if (exactVersion?.schemaDigest === schemaDigest) {
+  const versionMatch = supportedVersions.find((entry) => entry.codexVersion === codexVersion);
+  if (versionMatch !== undefined) {
     return Object.freeze({
       conclusion: '兼容',
       status: 'supported',
-      adapterProfileId: exactVersion.adapterProfileId,
-      matchedVersion: exactVersion,
-    });
-  }
-  if (exactVersion !== undefined) {
-    return incompatibleAssessment();
-  }
-  const schemaMatches = supportedVersions.filter((entry) => entry.schemaDigest === schemaDigest);
-  const adapterProfileIds = new Set(schemaMatches.map((entry) => entry.adapterProfileId));
-  if (schemaMatches.length > 0 && adapterProfileIds.size === 1) {
-    return Object.freeze({
-      conclusion: '兼容',
-      status: 'upgrade_available',
-      adapterProfileId: schemaMatches[0]!.adapterProfileId,
-      matchedVersion: schemaMatches[0]!,
+      adapterProfileId: versionMatch.adapterProfileId,
+      matchedVersion: versionMatch,
     });
   }
   return incompatibleAssessment();
@@ -303,17 +287,13 @@ export function profileForSupportedVersion(
   if (baseProfile === undefined) {
     throw new Error('Configured protocol version references an unavailable adapter profile');
   }
-  if (
-    baseProfile.codexVersion === supportedVersion.codexVersion
-    && baseProfile.schemaDigest === supportedVersion.schemaDigest
-  ) {
+  if (baseProfile.codexVersion === supportedVersion.codexVersion) {
     return baseProfile;
   }
   return Object.freeze({
     ...baseProfile,
     codexVersion: supportedVersion.codexVersion,
     cliVersionOutput: `codex-cli ${supportedVersion.codexVersion}`,
-    schemaDigest: supportedVersion.schemaDigest,
     diagnosticLabel: `${baseProfile.diagnosticLabel} (${supportedVersion.codexVersion})`,
   });
 }
@@ -354,14 +334,16 @@ function parseSupportedVersion(value: unknown): SupportedProtocolVersion {
   const adapterProfileId = parseAdapterProfileId(value.adapterProfileId);
   if (
     typeof value.codexVersion !== 'string'
-    || !isSha256(value.schemaDigest)
-    || (value.source !== 'builtin' && value.source !== 'approved')
+    || (
+      value.source !== 'builtin'
+      && value.source !== 'approved'
+      && value.source !== 'auto_smoke'
+    )
   ) {
     throw new Error('Protocol version configuration contains an invalid supported version');
   }
   return Object.freeze({
     codexVersion: value.codexVersion,
-    schemaDigest: value.schemaDigest,
     adapterProfileId,
     source: value.source,
   });
@@ -374,7 +356,7 @@ function parseDetection(value: unknown): RuntimeVersionDetection {
   const adapterProfileId = value.compatibility.adapterProfileId === null
     ? null
     : parseAdapterProfileId(value.compatibility.adapterProfileId);
-  const status = value.compatibility.status;
+  const status = parseCompatibilityStatus(value.compatibility.status);
   const conclusion = value.compatibility.conclusion;
   if (
     typeof value.checkedAt !== 'string'
@@ -382,20 +364,25 @@ function parseDetection(value: unknown): RuntimeVersionDetection {
     || typeof value.codexBinary !== 'string'
     || typeof value.codexVersion !== 'string'
     || !isSha256(value.binarySha256)
-    || !isSha256(value.schemaDigest)
-    || (status !== 'supported' && status !== 'upgrade_available' && status !== 'incompatible')
+    || status === null
     || (conclusion !== '兼容' && conclusion !== '不兼容')
+    || (status === 'supported' && adapterProfileId === null)
   ) {
     throw new Error('Protocol version configuration contains an invalid detection');
   }
+  const normalizedConclusion: CompatibilityConclusion = status === 'supported' ? '兼容' : '不兼容';
+  const normalizedAdapterProfileId = status === 'supported' ? adapterProfileId : null;
   return Object.freeze({
     checkedAt: value.checkedAt,
     codexBinary: value.codexBinary,
     codexVersion: value.codexVersion,
     binarySha256: value.binarySha256,
-    schemaDigest: value.schemaDigest,
     chatGptApp: parseChatGptApp(value.chatGptApp),
-    compatibility: Object.freeze({ conclusion, status, adapterProfileId }),
+    compatibility: Object.freeze({
+      conclusion: normalizedConclusion,
+      status,
+      adapterProfileId: normalizedAdapterProfileId,
+    }),
   });
 }
 
@@ -414,25 +401,36 @@ function parseChatGptApp(value: unknown): ChatGptAppVersion | null {
   return Object.freeze({ appPath: value.appPath, version: value.version, build: value.build });
 }
 
+function parseCompatibilityStatus(value: unknown): CompatibilityStatus | null {
+  if (value === 'supported' || value === 'incompatible') {
+    return value;
+  }
+  if (value === 'upgrade_available') {
+    return 'incompatible';
+  }
+  return null;
+}
+
 function assertSupportedVersions(supportedVersions: readonly SupportedProtocolVersion[]): void {
   if (supportedVersions.length === 0) {
     throw new Error('Protocol version configuration must contain at least one supported version');
   }
-  const versions = new Set<string>();
-  const adaptersByDigest = new Map<string, AppServerProtocolProfileId>();
+  const versionIdentities = new Set<string>();
   for (const entry of supportedVersions) {
     parseCodexCliVersion(`codex-cli ${entry.codexVersion}`);
-    if (versions.has(entry.codexVersion)) {
+    const identity = versionIdentity(entry);
+    if (versionIdentities.has(identity)) {
       throw new Error('Protocol version configuration contains a duplicate Codex version');
     }
-    const digestAdapter = adaptersByDigest.get(entry.schemaDigest);
-    if (digestAdapter !== undefined && digestAdapter !== entry.adapterProfileId) {
-      throw new Error('Protocol version configuration maps one schema to multiple adapters');
-    }
-    versions.add(entry.codexVersion);
-    adaptersByDigest.set(entry.schemaDigest, entry.adapterProfileId);
+    versionIdentities.add(identity);
     profileForSupportedVersion(entry);
   }
+}
+
+function versionIdentity(
+  version: Pick<SupportedProtocolVersion, 'codexVersion'>,
+): string {
+  return version.codexVersion;
 }
 
 function incompatibleAssessment(): CompatibilityAssessment {

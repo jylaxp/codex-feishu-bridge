@@ -21,6 +21,24 @@ import { DESKTOP_IPC_CONTRACT } from './desktop-ipc-contract';
 
 type UnknownRecord = Record<string, unknown>;
 
+const TURN_ERROR_FIELDS = [
+  'error',
+  'lastError',
+  'runtimeError',
+  'streamError',
+  'responseError',
+  'responseStreamError',
+  'failure',
+] as const;
+
+const TURN_ERROR_MESSAGE_FIELDS = [
+  'errorMessage',
+  'failureMessage',
+  'failureReason',
+  'streamErrorMessage',
+  'responseErrorMessage',
+] as const;
+
 /** The Desktop follower state broadcast contract pinned by the runtime probe. */
 export const DESKTOP_THREAD_STREAM_PROTOCOL_VERSION = DESKTOP_IPC_CONTRACT.stateProtocolVersion;
 
@@ -505,7 +523,7 @@ function normalizeTurn(value: unknown): Turn | null {
     items,
     itemsView: items.length > 0 ? 'full' : 'notLoaded',
     status,
-    error: normalizeTurnError(record.error),
+    error: normalizeTurnRecordError(record, items),
     startedAt,
     completedAt,
     durationMs,
@@ -651,18 +669,96 @@ function messagePhase(value: unknown): MessagePhase | null {
   return value === 'commentary' || value === 'final_answer' ? value : null;
 }
 
+function normalizeTurnRecordError(
+  record: UnknownRecord,
+  items: readonly ThreadItem[],
+): TurnError | null {
+  for (const field of TURN_ERROR_FIELDS) {
+    const error = normalizeTurnError(record[field]);
+    if (error) {
+      return error;
+    }
+  }
+  for (const field of TURN_ERROR_MESSAGE_FIELDS) {
+    const message = stringValue(record[field]);
+    if (message) {
+      return turnErrorFromMessage(message, record);
+    }
+  }
+  const codexErrorMessage = messageFromCodexErrorInfo(record.codexErrorInfo);
+  if (codexErrorMessage) {
+    return turnErrorFromMessage(codexErrorMessage, record);
+  }
+  return normalizeTurnErrorFromItems(items);
+}
+
 function normalizeTurnError(value: unknown): TurnError | null {
+  if (typeof value === 'string') {
+    return turnErrorFromMessage(value);
+  }
   const record = asRecord(value);
-  if (!record || typeof record.message !== 'string') {
+  const message = stringValue(record?.message) ?? stringValue(record?.errorMessage);
+  if (!record || !message) {
     return null;
   }
   return {
-    message: record.message,
+    message,
     codexErrorInfo: record.codexErrorInfo ?? null,
     additionalDetails: typeof record.additionalDetails === 'string'
       ? record.additionalDetails
       : null,
   };
+}
+
+function normalizeTurnErrorFromItems(items: readonly ThreadItem[]): TurnError | null {
+  for (const item of items) {
+    const itemType = item.type.toLowerCase();
+    if (!itemType.includes('error') && item.status !== 'failed') {
+      continue;
+    }
+    const record = item as UnknownRecord;
+    for (const field of TURN_ERROR_FIELDS) {
+      const error = normalizeTurnError(record[field]);
+      if (error) {
+        return error;
+      }
+    }
+    const message = stringValue(record.text)
+      ?? stringValue(record.message)
+      ?? stringValue(record.errorMessage)
+      ?? messageFromCodexErrorInfo(record.codexErrorInfo);
+    if (message) {
+      return turnErrorFromMessage(message, record);
+    }
+  }
+  return null;
+}
+
+function turnErrorFromMessage(message: string, source?: UnknownRecord): TurnError {
+  return {
+    message,
+    codexErrorInfo: source?.codexErrorInfo ?? null,
+    additionalDetails: typeof source?.additionalDetails === 'string'
+      ? source.additionalDetails
+      : null,
+  };
+}
+
+function messageFromCodexErrorInfo(value: unknown): string | null {
+  const info = asRecord(value);
+  if (!info) {
+    return null;
+  }
+  if (asRecord(info.responseStreamDisconnected)) {
+    return 'stream disconnected before completion';
+  }
+  if (asRecord(info.responseStreamConnectionFailed)) {
+    return 'failed to connect to the response stream';
+  }
+  if (asRecord(info.httpConnectionFailed)) {
+    return 'failed to connect to ChatGPT backend';
+  }
+  return null;
 }
 
 function nullableNumber(value: unknown): number | null {
