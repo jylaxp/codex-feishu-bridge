@@ -48,6 +48,58 @@ Bridge 当前是飞书优先实现。飞书 inbound normalization、WebSocket �
 - R10. fake-channel 测试必须证明无卡片、无 update、无 bot-trigger mention、无文件或严格大小限制时核心链路仍按能力降级或 fail closed。
 - R11. 诊断必须独立暴露 channel readiness 和 capability 决策，不能和 App Server/Desktop runtime health 混在一起。
 - R12. 后续新增渠道只应新增 adapter package、renderer/transport、capability profile、config block 和 CUJ 测试，不应修改核心编排。
+- R13. 单聊行为必须保持当前飞书私聊控制面的等价体验，包括绑定、解绑、改模型、改 CWD、审批、图片任务、命令卡、任务卡和历史卡。
+- R14. 绑定基数必须明确：一个渠道可以有多个机器人实例，一个机器人实例可以绑定多个聊天端点，一个聊天端点默认绑定一个当前 ChatGPT 会话，一个 ChatGPT 会话可以被多个端点绑定。
+- R15. 同一个 bot 和同一个聊天端点默认不能同时绑定多个当前 ChatGPT 会话；如果需要多会话，必须另做 session selector/routing 功能，不属于默认 adapter 抽象。
+- R16. 多个端点绑定同一个 ChatGPT 会话时，outbound projection 必须 fan out 到每个当前 binding，且投递失败隔离、幂等 key 稳定、不重复触发 runtime execution。
+- R17. Bot-to-bot handoff 只有在渠道 capability profile 声明支持真实 bot-trigger mention 时才启用；否则必须 fail closed 并输出诊断。
+
+---
+
+## 绑定模型和兼容性验收
+
+本节是实施期必须遵守的验收标准，用于消除多机器人、多渠道、单聊兼容和共享会话 fan-out 的歧义。
+
+### 基数模型
+
+| 关系 | 基数 | 说明 |
+|---|---:|---|
+| Bridge 进程 -> 渠道 | 1 -> 多 | 飞书是第一个渠道；后续企业微信、钉钉等渠道使用同级 `channels/<channel>/` 目录。 |
+| 渠道 -> 机器人实例 | 1 -> 多 | 飞书机器人实例用 app id 标识；其他渠道选择该渠道下稳定的 bot identity。 |
+| 机器人实例 -> 聊天端点 | 1 -> 多 | 一个机器人可以进入多个单聊或群聊，并分别绑定每个端点。 |
+| 聊天端点 -> 当前 ChatGPT 会话 | 多 -> 1 | 聊天端点由 channel、bot identity、tenant/workspace、chat id 和 surface type 共同限定。默认模型下每个端点只有一个当前会话。 |
+| ChatGPT 会话 -> 聊天端点 | 1 -> 多 | 多个端点可以跨渠道、跨机器人绑定同一个 ChatGPT 会话，并接收 outbound projection。 |
+
+默认 endpoint key 是 `channel + bot identity + tenant/workspace + chat id + surface type`。同一端点重新绑定会替换当前 ChatGPT 会话。若要支持同一 bot、同一群里同时挂多个当前会话，必须新增独立 session selector 或 routing 功能，不属于本 adapter 抽象的默认能力。
+
+### 单聊兼容性
+
+飞书私聊体验是兼容性基线，不是可选能力。adapter 迁移后，以下单聊流程必须保持用户可见等价：
+
+- 绑定和解绑 ChatGPT 会话。
+- 创建、选择、打开、派生、压缩和归档已绑定会话。
+- 查看和修改模型、CWD/workspace、active skill、goal、MCP 状态以及现有命令卡配置。
+- 按现有 token 和授权保护处理审批卡和审批决策。
+- 发送普通文本任务、图片任务、图片加文本混合任务。
+- 以等价飞书行为渲染任务进度、最终结果、分页、rate-limit 元数据、历史卡和失败卡。
+- 在 disabled-bot、unavailable、queue-full、image-batch、binding-required 等场景给出反馈，且不路由不安全任务。
+
+如果某个渠道无法用 rich card 或 action 支持某项单聊能力，必须通过 renderer/delivery policy 明确降级或 fail closed，不能静默回落到飞书 CardKit 专属行为。
+
+### 共享会话 Fan-Out
+
+当 `threadId -> bindings[]` 返回多个端点时，Bridge 必须为每个当前 binding 创建一份 outbound delivery plan。fan-out 规则如下：
+
+- Runtime execution 仍然以 ChatGPT 会话为单位；fan-out 绝不能重复创建 runtime turn。
+- 每个端点投递时 snapshot 当前 binding、channel identity、capabilities 和 reply context。
+- 一个端点投递失败必须隔离并记录，不阻塞其他端点投递。
+- 幂等 key 至少包含 channel、bot identity、tenant/workspace、chat id、thread id、turn/projection id 和 operation。
+- 卡片或消息 update 的串行化以端点为单位，避免一个端点的 stale card id 更新到另一个端点。
+- 投递顺序应便于诊断且保持确定性，但某个端点失败时，已成功端点不回滚。
+
+### Bot-To-Bot Handoff 触发
+
+Bot-to-bot handoff 是渠道能力，不是文本格式技巧。渠道必须声明自己是否能发送会真实触发另一个机器人的 mention。对飞书来说，这意味着使用原生 text 或 post mention 语义，而不是卡片里渲染出来的 mention 文本。没有真实 trigger 能力的渠道必须 fail closed 并输出诊断，不发送不会触发或不安全的 handoff 消息。
 
 ---
 

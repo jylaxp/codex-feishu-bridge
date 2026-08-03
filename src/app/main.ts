@@ -2,7 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 
-import { BindingStore, type ChatThreadBinding } from './binding-store';
+import {
+  BindingStore,
+  resolveLegacyDefaultBindingBotIdentifier,
+  type ChatThreadBinding,
+} from './binding-store';
 import {
   BotConfigStore,
   botConfigToBridgeConfig,
@@ -181,11 +185,18 @@ export async function startBridge(
     if (materializeDefault) {
       botStore.save(materializeDefaultBot(config));
     }
+    configuredBots = botStore.list();
+    const legacyDefaultBotIdentifier = resolveLegacyDefaultBindingBotIdentifier(
+      config.larkAppId || undefined,
+      configuredBots,
+    );
     bindings.load({
-      legacyDefaultBotIdentifier: config.larkAppId || undefined,
+      legacyDefaultBotIdentifier,
     });
     if (materializeDefault) {
       materializeDefaultBotScope(botStore, bindings.list(), config);
+    }
+    if (materializeDefault || (bindings.requiresMaterialization && legacyDefaultBotIdentifier)) {
       bindings.materialize();
     }
     externalBotDirectory.load();

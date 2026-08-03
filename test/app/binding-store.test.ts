@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { BindingStore } from '../../src/app/binding-store';
+import { BindingStore, resolveLegacyDefaultBindingBotIdentifier } from '../../src/app/binding-store';
 
 test('binding store loads schema v1 bindings as the default bot', () => {
   const configHome = mkdtempSync(join(tmpdir(), 'bridge-binding-v1-'));
@@ -47,11 +47,48 @@ test('binding store maps legacy default bindings to the migrated app id', () => 
     const store = new BindingStore(configHome);
     store.load({ legacyDefaultBotIdentifier: 'cli_0123456789abcdef' });
 
+    assert.equal(store.requiresMaterialization, true);
     assert.equal(store.get('tenant', 'chat', 'cli_0123456789abcdef')?.larkAppId, 'cli_0123456789abcdef');
     assert.equal(store.get('tenant', 'chat', 'cli_0123456789abcdef')?.threadId, 'thread');
+
+    store.materialize();
+    assert.equal(store.requiresMaterialization, false);
+    const document = JSON.parse(readFileSync(join(configHome, 'bindings.json'), 'utf8')) as {
+      readonly schemaVersion: number;
+      readonly bindings: readonly { readonly channel?: string; readonly larkAppId?: string }[];
+    };
+    assert.equal(document.schemaVersion, 6);
+    assert.deepEqual(document.bindings, [{
+      channel: 'feishu',
+      larkAppId: 'cli_0123456789abcdef',
+      tenantKey: 'tenant',
+      chatId: 'chat',
+      threadId: 'thread',
+      workspaceId: '/workspace',
+      revision: 1,
+      updatedAtMs: 1,
+    }]);
   } finally {
     rmSync(configHome, { recursive: true, force: true });
   }
+});
+
+test('legacy default binding bot identifier resolves to a sole configured bot', () => {
+  assert.equal(
+    resolveLegacyDefaultBindingBotIdentifier(undefined, [{ appId: 'cli_0123456789abcdef' }]),
+    'cli_0123456789abcdef',
+  );
+  assert.equal(
+    resolveLegacyDefaultBindingBotIdentifier('cli_fedcba9876543210', [{ appId: 'cli_0123456789abcdef' }]),
+    'cli_fedcba9876543210',
+  );
+  assert.equal(
+    resolveLegacyDefaultBindingBotIdentifier(undefined, [
+      { appId: 'cli_0123456789abcdef' },
+      { appId: 'cli_fedcba9876543210' },
+    ]),
+    undefined,
+  );
 });
 
 test('binding store scopes the same tenant chat by bot key', () => {

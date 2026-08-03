@@ -1,6 +1,6 @@
 import { statSync } from 'node:fs';
 
-import { BindingStore } from './binding-store';
+import { BindingStore, resolveLegacyDefaultBindingBotIdentifier } from './binding-store';
 import { BotConfigStore } from './bot-config-store';
 import {
   appServerIdentityAssurance,
@@ -69,7 +69,10 @@ export async function runDoctor(
   botStore.load(preflight.config);
   const store = new BindingStore(preflight.configHome);
   store.load({
-    legacyDefaultBotIdentifier: preflight.config.larkAppId || undefined,
+    legacyDefaultBotIdentifier: resolveLegacyDefaultBindingBotIdentifier(
+      preflight.config.larkAppId || undefined,
+      botStore.list(),
+    ),
   });
   const contract = await (dependencies.verifyRuntimeContract ?? verifyCodexRuntimeContract)(
     preflight.config,

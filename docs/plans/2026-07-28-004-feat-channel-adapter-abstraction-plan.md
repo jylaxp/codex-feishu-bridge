@@ -48,6 +48,58 @@ That direct wiring is workable for one channel, but it will not scale to WeCom, 
 - R10. Fake-channel tests prove the core pipeline works when a channel has no cards, no update API, no bot-trigger mention, no files, or strict size limits.
 - R11. Diagnostics expose channel readiness and effective capability decisions independently from App Server and Desktop runtime health.
 - R12. Adding a future channel requires a bounded adapter package, renderer/transport pair, capability profile, config block, and CUJ coverage, not changes to core orchestration.
+- R13. Direct-chat behavior remains equivalent to the current Feishu private-chat control plane, including bind, unbind, model selection, CWD selection, approvals, image tasks, command cards, task cards, and history cards.
+- R14. Binding cardinality is explicit: one channel can own many bot instances, one bot instance can bind many chat endpoints, one chat endpoint binds one active ChatGPT thread by default, and one ChatGPT thread can be bound by many endpoints.
+- R15. A same bot and same chat endpoint cannot bind multiple active ChatGPT threads unless a separate session selector/routing feature is added; that selector is outside the default adapter abstraction.
+- R16. When multiple endpoints bind the same ChatGPT thread, outbound projections fan out to every current binding with isolated delivery failures, stable idempotency keys, and no duplicate runtime execution.
+- R17. Bot-to-bot handoff is enabled only when the channel capability profile declares a real bot-trigger mention mechanism; otherwise the handoff fails closed with diagnostics.
+
+---
+
+## Binding Model and Compatibility Acceptance
+
+This section is normative for implementation. It removes ambiguity between multi-bot, multi-channel, direct-chat compatibility, and shared-thread fan-out behavior.
+
+### Cardinality Model
+
+| Relationship | Cardinality | Notes |
+|---|---:|---|
+| Bridge process -> channel | 1 -> many | Feishu is the first channel; future channels such as WeCom or DingTalk use sibling `channels/<channel>/` directories. |
+| Channel -> bot instance | 1 -> many | A Feishu bot instance is identified by its app id. Other channels choose a stable channel-owned bot identity. |
+| Bot instance -> chat endpoint | 1 -> many | One bot can be present in many direct chats or groups and can bind each endpoint independently. |
+| Chat endpoint -> active ChatGPT thread | many -> 1 | A chat endpoint is scoped by channel, bot identity, tenant/workspace, chat id, and surface type. The default model allows one active thread per endpoint. |
+| ChatGPT thread -> chat endpoint | 1 -> many | Many endpoints, across one or more channels and bots, can subscribe to the same ChatGPT thread and receive outbound projections. |
+
+The default endpoint key is `channel + bot identity + tenant/workspace + chat id + surface type`. Rebinding the same endpoint replaces its active ChatGPT thread. Supporting multiple active threads inside the same bot and same chat requires a separate session selector or routing feature and is not part of this adapter abstraction.
+
+### Direct-Chat Compatibility
+
+The Feishu private-chat experience is a compatibility baseline, not optional behavior. After the adapter migration, the following direct-chat flows must remain user-visible equivalent:
+
+- Binding and unbinding a ChatGPT thread.
+- Creating, selecting, opening, forking, compacting, and archiving bound threads.
+- Viewing and changing model, CWD/workspace, active skill, goal, MCP status, and other existing command-card settings.
+- Handling approval cards and approval decisions with the same token and authorization protections.
+- Sending ordinary text tasks, image tasks, and mixed image/text tasks.
+- Rendering task progress, final answer, pagination, rate-limit metadata, history cards, and failure cards with equivalent Feishu behavior.
+- Receiving disabled-bot, unavailable, queue-full, image-batch, and binding-required feedback without routing unsafe work.
+
+Channels that cannot support a direct-chat feature through rich cards or actions must explicitly degrade through the renderer/delivery policy or fail closed. They must not silently fall back to Feishu-specific CardKit behavior.
+
+### Shared-Thread Fan-Out
+
+When `threadId -> bindings[]` returns multiple endpoints, Bridge creates one outbound delivery plan per current binding. Fan-out has these rules:
+
+- Runtime execution remains per ChatGPT thread; fan-out must never create duplicate runtime turns.
+- Delivery uses a snapshot of the current binding, channel identity, capabilities, and reply context for each endpoint.
+- A delivery failure on one endpoint is isolated and recorded; it does not block delivery to other endpoints.
+- Idempotency keys include at least channel, bot identity, tenant/workspace, chat id, thread id, turn/projection id, and operation.
+- Card/message update serialization is per endpoint so stale card ids from one endpoint cannot update another endpoint.
+- Ordering should be deterministic for diagnostics, but successful endpoints are not rolled back if another endpoint fails.
+
+### Bot-To-Bot Handoff Trigger
+
+Bot-to-bot handoff is a channel capability, not a text formatting trick. A channel must declare whether it can send a real mention that triggers another bot. For Feishu, this means using native text or post mention semantics rather than card-rendered mention text. Channels without a real trigger capability fail closed and emit diagnostics instead of sending a non-triggering or unsafe handoff message.
 
 ---
 

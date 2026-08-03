@@ -71,6 +71,20 @@ export interface BindingLoadOptions {
   readonly legacyDefaultBotIdentifier?: string;
 }
 
+export function resolveLegacyDefaultBindingBotIdentifier(
+  configuredLarkAppId: string | undefined,
+  bots: readonly { readonly appId: string }[],
+): string | undefined {
+  if (configuredLarkAppId?.trim()) {
+    return requiredBotIdentifier(configuredLarkAppId, 'legacy default bot identifier');
+  }
+  const botAppIds = new Set<string>();
+  for (const bot of bots) {
+    botAppIds.add(requiredBotIdentifier(bot.appId, 'bot appId'));
+  }
+  return botAppIds.size === 1 ? [...botAppIds][0] : undefined;
+}
+
 /**
  * Minimal persistent Bridge state. This file never stores task execution or
  * CardKit state, so a process restart cannot replay an in-flight request.
@@ -79,6 +93,7 @@ export class BindingStore {
   private readonly now: () => number;
   private readonly bindingsPath: string;
   private readonly bindings = new Map<string, ChatThreadBinding>();
+  private materializationRequired = false;
 
   public constructor(configHome: string, options: BindingStoreOptions = {}) {
     if (!configHome.trim()) {
@@ -95,6 +110,7 @@ export class BindingStore {
   /** Loads and validates the whole document once at Bridge startup. */
   public load(options: BindingLoadOptions = {}): void {
     this.bindings.clear();
+    this.materializationRequired = false;
     if (!existsSync(this.bindingsPath)) {
       return;
     }
@@ -113,6 +129,7 @@ export class BindingStore {
     } catch (error) {
       throw new BindingStoreError('bindings.json is not valid JSON', { cause: error });
     }
+    const materializationRequired = documentSchemaVersion(document) !== BINDINGS_SCHEMA_VERSION;
     const parsed = parseDocument(document, options);
     for (const binding of parsed.bindings) {
       const key = bindingKey(
@@ -126,6 +143,7 @@ export class BindingStore {
       }
       this.bindings.set(key, binding);
     }
+    this.materializationRequired = materializationRequired;
   }
 
   public get(
@@ -144,6 +162,10 @@ export class BindingStore {
   /** Lists every channel endpoint subscribed to one ChatGPT thread. */
   public listByThreadId(threadId: string): readonly ChatThreadBinding[] {
     return Object.freeze([...this.bindings.values()].filter((binding) => binding.threadId === threadId));
+  }
+
+  public get requiresMaterialization(): boolean {
+    return this.materializationRequired;
   }
 
   /** Deprecated: use listByThreadId for multi-channel fan-out. */
@@ -328,6 +350,7 @@ export class BindingStore {
       descriptor = undefined;
       renameSync(temporaryPath, this.bindingsPath);
       syncDirectory(directory);
+      this.materializationRequired = false;
     } catch (error) {
       if (descriptor !== undefined) {
         closeSync(descriptor);
@@ -352,6 +375,10 @@ function parseDocument(value: unknown, options: BindingLoadOptions): BindingDocu
     schemaVersion: BINDINGS_SCHEMA_VERSION,
     bindings: Object.freeze(value.bindings.map((binding) => parseBinding(binding, value.schemaVersion, options))),
   });
+}
+
+function documentSchemaVersion(value: unknown): unknown {
+  return isRecord(value) ? value.schemaVersion : undefined;
 }
 
 function parseBinding(value: unknown, schemaVersion: unknown, options: BindingLoadOptions): ChatThreadBinding {
